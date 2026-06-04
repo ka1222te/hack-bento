@@ -10,10 +10,13 @@ services:
       - ./orchestrator:/app
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock
-    network_mode: host
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    networks:
+      - vm_net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:${PORT:-8000}/health"]
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -24,7 +27,7 @@ networks:
     name: hackbento-vm
     driver: macvlan
     driver_opts:
-      parent: enp6s0
+      parent: eth0
     ipam:
       config:
         - subnet: 192.168.176.0/20
