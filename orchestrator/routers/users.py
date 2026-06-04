@@ -67,6 +67,26 @@ async def setup_username(
     return UsernameSetupResponse(access_token=token, username=body.username)
 
 
+@router.get("/search")
+async def search_users(
+    q: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ユーザ名の前方一致検索（候補サジェスト用）。自分自身は除外。"""
+    if len(q) < 1:
+        return []
+    from sqlalchemy import func
+    result = await db.execute(
+        select(User.username).where(
+            User.username.ilike(f"{q}%"),
+            User.id != current_user.id,
+            User.is_active == True,
+        ).limit(8)
+    )
+    return [row[0] for row in result.fetchall()]
+
+
 @router.get("/check-username")
 async def check_username(username: str, db: AsyncSession = Depends(get_db)):
     """ユーザ名の使用可否を確認する（認証不要）。"""
@@ -118,7 +138,7 @@ async def change_password(
 
 class CollaboratorAdd(BaseModel):
     username: str
-    role: CollaboratorRole = CollaboratorRole.read
+    role: str = "read"
 
 
 class CollaboratorResponse(BaseModel):
@@ -175,7 +195,11 @@ async def add_collaborator(
     if exists.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="既にコラボレーターです")
 
-    collab = ImageCollaborator(image_id=image.id, user_id=target_user.id, role=body.role)
+    role_map = {r.value: r for r in CollaboratorRole}
+    role = role_map.get(body.role)
+    if role is None:
+        raise HTTPException(status_code=422, detail=f"無効なロール: {body.role}")
+    collab = ImageCollaborator(image_id=image.id, user_id=target_user.id, role=role)
     db.add(collab)
     await db.commit()
     return {"message": f"{body.username} をコラボレーターに追加しました"}

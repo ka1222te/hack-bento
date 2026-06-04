@@ -9,7 +9,7 @@ from typing import Optional
 from datetime import datetime
 
 from database import get_db
-from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator
+from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
 from deps import get_current_user, require_admin
 from services.smolvm import docker_load
 
@@ -483,6 +483,7 @@ async def can_edit(
         select(ImageCollaborator).where(
             ImageCollaborator.image_id == image_id,
             ImageCollaborator.user_id == current_user.id,
+            ImageCollaborator.role == CollaboratorRole.read_write,
         )
     )
     return {"can_edit": collab.scalar_one_or_none() is not None}

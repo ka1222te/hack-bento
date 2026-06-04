@@ -114,9 +114,22 @@
         <div class="np-field" id="collab-section">
           <label class="np-label">Collaborators</label>
           <div id="collab-list" class="collab-edit-list"></div>
-          <div style="display:flex;gap:.5rem;margin-top:.5rem">
-            <input class="np-input" id="collab-input" placeholder="ユーザ名" style="flex:1" />
-            <button type="button" class="btn btn-sm btn-primary" onclick="addCollaborator()">Add</button>
+          <div style="position:relative;margin-top:.5rem">
+            <input class="np-input" id="collab-input" placeholder="ユーザ名を入力..." autocomplete="off"
+                   style="width:100%" oninput="onCollabInput(this.value)" />
+            <div id="collab-suggest" class="collab-suggest hidden"></div>
+          </div>
+          <!-- 権限選択（候補クリック後に表示） -->
+          <div id="collab-role-row" class="hidden" style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;flex-wrap:wrap">
+            <span id="collab-selected-name" style="font-weight:600;color:var(--accent)"></span>
+            <label style="display:flex;align-items:center;gap:.3rem;font-size:.875rem;cursor:pointer">
+              <input type="radio" name="collab-role" value="read" checked /> Read
+            </label>
+            <label style="display:flex;align-items:center;gap:.3rem;font-size:.875rem;cursor:pointer">
+              <input type="radio" name="collab-role" value="read_write" /> Read-Write
+            </label>
+            <button type="button" class="btn btn-sm btn-primary" onclick="confirmAddCollaborator()">追加</button>
+            <button type="button" class="btn btn-sm btn-ghost" onclick="cancelCollabSelect()">キャンセル</button>
           </div>
         </div>
 
@@ -324,23 +337,88 @@ async function loadCollaborators() {
       <div class="collab-row">
         <span class="collab-name">@${escHtml(c.username)}</span>
         <span class="cat-badge">${c.role}</span>
-        <button class="btn btn-xs btn-danger" onclick="removeCollaborator('${escHtml(c.username)}')">✕</button>
+        <button type="button" class="btn btn-xs btn-danger" onclick="removeCollaborator('${escHtml(c.username)}')">✕</button>
       </div>`).join('');
 }
 
-async function addCollaborator() {
-  const input = document.getElementById('collab-input');
-  const username = input.value.trim();
-  if (!username) return;
-  const res = await API.post(`/api/users/${OWNER}/${SLUG}/collaborators`, { username, role: 'read' });
-  if (res.ok) { showToast('追加しました', 'success'); input.value = ''; loadCollaborators(); }
-  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+// サジェスト
+let _suggestTimer = null;
+let _selectedCollab = null;
+
+async function onCollabInput(val) {
+  clearTimeout(_suggestTimer);
+  const suggest = document.getElementById('collab-suggest');
+  if (!val.trim()) { suggest.classList.add('hidden'); return; }
+  _suggestTimer = setTimeout(async () => {
+    const res = await API.get(`/api/users/search?q=${encodeURIComponent(val.trim())}`);
+    if (!res.ok) return;
+    const users = await res.json();
+    if (users.length === 0) { suggest.classList.add('hidden'); return; }
+    suggest.innerHTML = users.map(u => `
+      <div class="collab-suggest-item" onmousedown="selectCollab('${escHtml(u)}')">${escHtml(u)}</div>
+    `).join('');
+    suggest.classList.remove('hidden');
+  }, 200);
 }
 
+function selectCollab(username) {
+  _selectedCollab = username;
+  document.getElementById('collab-input').value = username;
+  document.getElementById('collab-suggest').classList.add('hidden');
+  document.getElementById('collab-selected-name').textContent = '@' + username;
+  document.querySelector('input[name="collab-role"][value="read"]').checked = true;
+  const row = document.getElementById('collab-role-row');
+  row.classList.remove('hidden');
+  row.style.display = 'flex';
+}
+
+function cancelCollabSelect() {
+  _selectedCollab = null;
+  document.getElementById('collab-input').value = '';
+  document.getElementById('collab-suggest').classList.add('hidden');
+  document.getElementById('collab-role-row').classList.add('hidden');
+}
+
+async function confirmAddCollaborator() {
+  if (!_selectedCollab) return;
+  const role = document.querySelector('input[name="collab-role"]:checked').value;
+  let res;
+  try {
+    res = await API.post(`/api/users/${OWNER}/${SLUG}/collaborators`, { username: _selectedCollab, role });
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+    return;
+  }
+  if (res.ok) {
+    showToast('追加しました', 'success');
+    cancelCollabSelect();
+    loadCollaborators();
+  } else {
+    let msg = 'エラーが発生しました';
+    try { const d = await res.json(); msg = d.detail || msg; } catch {}
+    showToast(msg, 'error');
+  }
+}
+
+// 入力欄からフォーカスが外れたらサジェストを閉じる
+document.getElementById('collab-input').addEventListener('blur', () => {
+  setTimeout(() => document.getElementById('collab-suggest').classList.add('hidden'), 150);
+});
+
 async function removeCollaborator(username) {
-  const res = await API.del(`/api/users/${OWNER}/${SLUG}/collaborators/${username}`);
+  let res;
+  try {
+    res = await API.del(`/api/users/${OWNER}/${SLUG}/collaborators/${username}`);
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+    return;
+  }
   if (res.ok) { showToast('削除しました', 'success'); loadCollaborators(); }
-  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+  else {
+    let msg = 'エラーが発生しました';
+    try { const d = await res.json(); msg = d.detail || msg; } catch {}
+    showToast(msg, 'error');
+  }
 }
 
 // フォーム送信

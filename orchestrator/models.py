@@ -44,8 +44,8 @@ class Visibility(str, PyEnum):
 
 
 class CollaboratorRole(str, PyEnum):
-    read = "read"    # 閲覧・起動のみ
-    write = "write"  # 設定変更も可（将来用）
+    read = "read"            # 閲覧・起動のみ
+    read_write = "read_write"  # 閲覧・起動・編集
 
 
 class User(Base):

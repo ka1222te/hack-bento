@@ -571,6 +571,9 @@ textarea { resize: vertical; min-height: 70px; }
 .alert-error   { background: rgba(191,97,106,.1);  border: 1px solid rgba(191,97,106,.3);  color: #e06c75; }
 .alert-success { background: rgba(163,190,140,.1); border: 1px solid rgba(163,190,140,.3); color: var(--green); }
 .collab-edit-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: .25rem; }
+.collab-suggest { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.3); z-index: 200; max-height: 220px; overflow-y: auto; margin-top: 2px; }
+.collab-suggest-item { padding: 8px 12px; font-size: .875rem; cursor: pointer; color: var(--text1); }
+.collab-suggest-item:hover { background: var(--bg4); }
 
 /* ===== Admin ===== */
 .admin-container { padding-top: 2rem; padding-bottom: 3rem; }
