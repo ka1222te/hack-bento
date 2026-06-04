@@ -10,7 +10,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="envs">起動中の環境</button>
       <button class="tab-btn" data-tab="users">ユーザ管理</button>
-      <button class="tab-btn" data-tab="images">イメージ管理</button>
+      <button class="tab-btn" data-tab="images">プロジェクト管理</button>
     </div>
 
     <!-- Running Envs -->
@@ -18,7 +18,7 @@
       <h2 class="panel-title">起動中の環境 <button class="btn btn-sm btn-outline" onclick="loadAdminEnvs()">更新</button></h2>
       <div class="table-wrap">
         <table class="data-table" id="envs-table">
-          <thead><tr><th>ID</th><th>ユーザ</th><th>イメージ</th><th>IP</th><th>ステータス</th><th>開始</th><th>期限</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>起動ユーザ</th><th>イメージ</th><th>IP</th><th>ステータス</th><th>開始</th><th>期限</th><th>操作</th></tr></thead>
           <tbody id="envs-tbody"></tbody>
         </table>
       </div>
@@ -28,7 +28,7 @@
     <div id="tab-users" class="tab-panel hidden">
       <div class="panel-header">
         <h2 class="panel-title">ユーザ管理</h2>
-        <button class="btn btn-sm btn-primary" onclick="showCreateUserModal()">+ ユーザ追加</button>
+        <button class="btn btn-sm btn-primary" onclick="showCreateUserModal()">+ ローカルユーザ追加</button>
       </div>
       <div class="table-wrap">
         <table class="data-table" id="users-table">
@@ -42,11 +42,10 @@
     <div id="tab-images" class="tab-panel hidden">
       <div class="panel-header">
         <h2 class="panel-title">プロジェクト管理</h2>
-        <a href="/new" class="btn btn-sm btn-primary">+ New Project</a>
       </div>
       <div class="table-wrap">
         <table class="data-table" id="images-table">
-          <thead><tr><th>ID</th><th>オーナー</th><th>プロジェクト名</th><th>Slug</th><th>難易度</th><th>公開設定</th><th>有効</th><th>操作</th></tr></thead>
+          <thead><tr><th>プロジェクト名</th><th>Link</th><th>難易度</th><th>公開設定</th><th>有効</th><th>操作</th></tr></thead>
           <tbody id="images-tbody"></tbody>
         </table>
       </div>
@@ -58,66 +57,41 @@
 <div id="modal-user" class="modal hidden">
   <div class="modal-backdrop" onclick="closeModal('modal-user')"></div>
   <div class="modal-box">
-    <h3 class="modal-title">ユーザ追加</h3>
+    <h3 class="modal-title">ローカルユーザ追加</h3>
     <form id="form-user">
       <div class="form-group"><label>ユーザ名</label><input name="username" required /></div>
-      <div class="form-group"><label>メール</label><input name="email" type="email" /></div>
       <div class="form-group"><label>パスワード</label><input name="password" type="password" required /></div>
       <div class="form-group"><label>ロール</label>
         <select name="role"><option value="user">user</option><option value="admin">admin</option></select>
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-user')">キャンセル</button>
         <button type="submit" class="btn btn-primary">作成</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-user')">キャンセル</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- Modal: Create Image -->
-<div id="modal-image" class="modal hidden">
-  <div class="modal-backdrop" onclick="closeModal('modal-image')"></div>
-  <div class="modal-box">
-    <h3 class="modal-title">イメージ追加</h3>
-    <form id="form-image" enctype="multipart/form-data" novalidate>
-      <div class="form-group">
-        <label>イメージアーカイブ <span class="ext-hint">(.tar / .tar.gz / .tgz / .tar.zst)</span></label>
-        <div class="upload-area" id="upload-area">
-          <input type="file" name="file" id="file-input" accept=".tar,.tar.gz,.tgz,.tar.zst" class="file-input-hidden" />
-          <div class="upload-placeholder" id="upload-placeholder">
-            <span class="upload-icon">&#x1F4E4;</span>
-            <span>クリックまたはドロップしてファイルを選択</span>
-            <span class="upload-sub">docker save で出力した .tar ファイル</span>
-          </div>
-          <div class="upload-selected hidden" id="upload-selected">
-            <span class="upload-icon">&#x2705;</span>
-            <span id="upload-filename"></span>
-            <span id="upload-filesize" class="upload-sub"></span>
-          </div>
-        </div>
-      </div>
-      <div class="form-group"><label>名前</label><input name="name" required placeholder="CVE-2021-4034 (Polkit)" /></div>
-      <div class="form-group"><label>Slug</label><input name="slug" required placeholder="cve-2021-4034" /></div>
-      <div class="form-group"><label>説明</label><textarea name="description" rows="3" placeholder="脆弱性の概要・目標を記述..."></textarea></div>
-      <div class="form-group"><label>難易度</label>
-        <select name="difficulty"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option><option value="insane">Insane</option></select>
-      </div>
-      <div class="form-group"><label>カテゴリ</label><input name="category" placeholder="CVE, Privilege Escalation, RCE, ..." /></div>
-      <div class="form-row">
-        <div class="form-group"><label>推定時間 (分)</label><input name="estimated_minutes" type="number" value="60" min="5" /></div>
-        <div class="form-group"><label>タイムアウト (分)</label><input name="timeout_minutes" type="number" value="60" min="5" /></div>
-      </div>
-      <div id="upload-progress-wrap" class="hidden">
-        <div class="progress-bar"><div class="progress-bar-inner" id="progress-bar-inner"></div></div>
-        <span class="progress-label" id="progress-label">アップロード中...</span>
-      </div>
+<!-- Overlay: Change Password (admin) -->
+<div id="overlay-pw" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeModal('overlay-pw')"></div>
+  <div class="modal-box" style="max-width:400px">
+    <h3 class="modal-title">パスワード変更</h3>
+    <p id="overlay-pw-username" style="color:var(--text2);font-size:.875rem;margin-bottom:1rem"></p>
+    <form id="form-pw">
+      <div class="form-group"><label>新しいパスワード</label><input id="overlay-pw-new" type="password" placeholder="8文字以上" required /></div>
+      <div class="form-group"><label>新しいパスワード（確認）</label><input id="overlay-pw-confirm" type="password" placeholder="もう一度入力" required /></div>
+      <div id="overlay-pw-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
       <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-image')">キャンセル</button>
-        <button type="submit" class="btn btn-primary" id="upload-submit-btn">登録</button>
+        <button type="submit" class="btn btn-primary">変更</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal('overlay-pw')">キャンセル</button>
       </div>
     </form>
   </div>
 </div>
+
+<!-- 3点ドロップダウン（body直下・position:fixed） -->
+<div id="user-action-dropdown" class="user-action-dropdown hidden"></div>
 
 <div id="toast-container"></div>
 {% endblock %}
@@ -151,14 +125,13 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 function fmt(iso) {
-  const d = new Date(iso + 'Z');
-  return d.toLocaleString('ja-JP');
+  return new Date(iso + 'Z').toLocaleString('ja-JP');
 }
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// Envs
+// ---- Envs ----
 async function loadAdminEnvs() {
   const res = await API.get('/api/admin/envs');
   if (!res.ok) return;
@@ -185,7 +158,7 @@ async function forceStop(envId) {
   else { const d = await res.json(); showToast(d.detail, 'error'); }
 }
 
-// Users
+// ---- Users ----
 async function loadUsers() {
   const res = await API.get('/api/admin/users');
   if (!res.ok) return;
@@ -194,20 +167,30 @@ async function loadUsers() {
   const myUsername = localStorage.getItem('hb_username') || '';
   tbody.innerHTML = users.map(u => {
     const isSelf = u.username === myUsername;
+    const isLocal = u.auth_provider === 'local';
+    const emailDisplay = u.email || '-';
+
+    const actionBtns = isSelf
+      ? '<span class="cat-badge">変更不可</span>'
+      : `
+        <button class="btn btn-xs btn-outline" onclick="toggleUser(${u.id}, ${u.is_active})">
+          ${u.is_active ? '無効化' : '有効化'}
+        </button>
+        <button class="btn btn-xs btn-outline" onclick="toggleRole(${u.id}, '${u.role}')">
+          ${u.role === 'admin' ? '一般ユーザに降格' : '管理者に昇格'}
+        </button>
+        <button class="btn btn-xs btn-outline" onclick="toggleDropdown(event, ${u.id}, ${isLocal}, '${escHtml(u.username)}', '${u.role}')">&#8942;</button>
+      `;
+
     return `
     <tr>
       <td>${u.id}</td>
       <td>${escHtml(u.username)}${isSelf ? ' <span class="cat-badge">you</span>' : ''}</td>
-      <td>${escHtml(u.email||'-')}</td>
+      <td>${escHtml(emailDisplay)}</td>
       <td><span class="role-badge role-${u.role}">${u.role}</span></td>
       <td>${u.auth_provider}</td>
       <td><span class="active-dot ${u.is_active ? 'active' : 'inactive'}"></span></td>
-      <td>
-        ${isSelf ? '<span class="cat-badge">変更不可</span>' : `
-          <button class="btn btn-xs btn-outline" onclick="toggleUser(${u.id}, ${u.is_active})">${u.is_active ? '無効化' : '有効化'}</button>
-          ${u.role !== 'admin' ? `<button class="btn btn-xs btn-outline" onclick="promoteUser(${u.id})">管理者に昇格</button>` : ''}
-        `}
-      </td>
+      <td style="white-space:nowrap">${actionBtns}</td>
     </tr>`;
   }).join('');
 }
@@ -217,24 +200,115 @@ async function toggleUser(userId, current) {
   if (res.ok) { showToast('更新しました', 'success'); loadUsers(); }
   else { const d = await res.json(); showToast(d.detail, 'error'); }
 }
-async function promoteUser(userId) {
-  if (!confirm('管理者に昇格しますか？')) return;
-  const res = await API.patch(`/api/admin/users/${userId}`, { role: 'admin' });
-  if (res.ok) { showToast('昇格しました', 'success'); loadUsers(); }
+
+async function toggleRole(userId, currentRole) {
+  const newRole = currentRole === 'admin' ? 'user' : 'admin';
+  const label = newRole === 'admin' ? '管理者に昇格' : '一般ユーザに降格';
+  if (!confirm(`${label}しますか？`)) return;
+  const res = await API.patch(`/api/admin/users/${userId}`, { role: newRole });
+  if (res.ok) { showToast('更新しました', 'success'); loadUsers(); }
+  else { const d = await res.json(); showToast(d.detail, 'error'); }
 }
+
+async function deleteUser(userId, username, role) {
+  const adminNote = role === 'admin' ? '\n※管理者ユーザは削除できません。先に一般ユーザに降格してください。' : '';
+  if (!confirm(`ユーザ「${username}」を削除しますか？\nこのユーザのプロジェクト・環境もすべて削除されます。${adminNote}`)) return;
+  const res = await API.del(`/api/admin/users/${userId}`);
+  if (res.ok) { showToast('削除しました', 'success'); loadUsers(); }
+  else { const d = await res.json(); showToast(d.detail, 'error'); }
+}
+
+// 3点ドロップダウン（body直下・fixed配置）
+const _dd = document.getElementById('user-action-dropdown');
+let _ddOpen = false;
+
+function toggleDropdown(e, userId, isLocal, username, role) {
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const rect = btn.getBoundingClientRect();
+
+  if (_ddOpen && _dd.dataset.userId === String(userId)) {
+    _dd.classList.add('hidden');
+    _ddOpen = false;
+    return;
+  }
+
+  _dd.dataset.userId = userId;
+  _dd.dataset.role = role;
+  _dd.innerHTML = [
+    isLocal ? `<button onclick="showPwOverlay(${userId}, '${username}'); _closeDropdown()">設定変更</button>` : '',
+    `<button class="danger" onclick="deleteUser(${userId}, '${username}', _dd.dataset.role); _closeDropdown()">ユーザ削除</button>`,
+  ].join('');
+
+  // ボタン直下に表示、画面右端を超えないよう調整
+  const ddWidth = 130;
+  let left = rect.right - ddWidth;
+  if (left < 4) left = 4;
+  _dd.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  _dd.style.left = left + 'px';
+  _dd.classList.remove('hidden');
+  _ddOpen = true;
+}
+
+function _closeDropdown() {
+  _dd.classList.add('hidden');
+  _ddOpen = false;
+}
+
+document.addEventListener('click', _closeDropdown);
+
+// パスワード変更オーバーレイ
+let _pwTargetId = null;
+function showPwOverlay(userId, username) {
+  _pwTargetId = userId;
+  document.getElementById('overlay-pw-username').textContent = `対象: ${username}`;
+  document.getElementById('overlay-pw-new').value = '';
+  document.getElementById('overlay-pw-confirm').value = '';
+  document.getElementById('overlay-pw-error').classList.add('hidden');
+  document.getElementById('overlay-pw').classList.remove('hidden');
+}
+
+document.getElementById('form-pw').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errBox = document.getElementById('overlay-pw-error');
+  errBox.classList.add('hidden');
+  const newPw = document.getElementById('overlay-pw-new').value;
+  const confirmPw = document.getElementById('overlay-pw-confirm').value;
+  if (newPw !== confirmPw) {
+    errBox.textContent = 'パスワードが一致しません';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  if (newPw.length < 8) {
+    errBox.textContent = 'パスワードは8文字以上にしてください';
+    errBox.classList.remove('hidden');
+    return;
+  }
+  const res = await API.patch(`/api/admin/users/${_pwTargetId}`, { password: newPw });
+  if (res.ok) {
+    showToast('パスワードを変更しました', 'success');
+    closeModal('overlay-pw');
+  } else {
+    const d = await res.json();
+    errBox.textContent = d.detail || 'エラーが発生しました';
+    errBox.classList.remove('hidden');
+  }
+});
 
 function showCreateUserModal() { document.getElementById('modal-user').classList.remove('hidden'); }
 
 document.getElementById('form-user').addEventListener('submit', async e => {
   e.preventDefault();
   const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd);
-  const res = await API.post('/api/admin/users', body);
+  const data = Object.fromEntries(fd);
+  // メールはユーザ名@local で自動生成
+  data.email = `${data.username}@local`;
+  const res = await API.post('/api/admin/users', data);
   if (res.ok) { showToast('ユーザを作成しました', 'success'); closeModal('modal-user'); e.target.reset(); loadUsers(); }
   else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
 });
 
-// Images
+// ---- Images ----
 async function loadAdminImages() {
   const res = await API.get('/api/images/');
   if (!res.ok) return;
@@ -243,26 +317,16 @@ async function loadAdminImages() {
   const tbody = document.getElementById('images-tbody');
   tbody.innerHTML = images.map(img => `
     <tr>
-      <td>${img.id}</td>
-      <td style="color:var(--accent)">${escHtml(img.owner_username||'-')}</td>
-      <td><a href="/${escHtml(img.owner_username)}/${escHtml(img.slug)}" style="color:var(--accent)">${escHtml(img.name)}</a></td>
-      <td><code>${escHtml(img.slug)}</code></td>
+      <td><a href="/${escHtml(img.owner_username)}/${escHtml(img.slug)}" style="color:var(--accent);font-weight:600">${escHtml(img.name)}</a></td>
+      <td style="color:var(--text2);font-size:.85rem">${escHtml(img.owner_username||'-')} / <code>${escHtml(img.slug)}</code></td>
       <td><span class="diff-badge diff-${img.difficulty}">${img.difficulty}</span></td>
       <td>${visLabel[img.visibility] || img.visibility}</td>
       <td><span class="active-dot ${img.is_active ? 'active' : 'inactive'}"></span></td>
       <td>
-        ${img.archive_path ? `<button class="btn btn-xs btn-extend" onclick="reloadImage(${img.id})">再ロード</button>` : ''}
         <button class="btn btn-xs btn-danger" onclick="deleteImage(${img.id})">削除</button>
       </td>
     </tr>
-  `).join('') || '<tr><td colspan="8" class="empty-cell">プロジェクトがありません</td></tr>';
-}
-
-async function reloadImage(imageId) {
-  if (!confirm('アーカイブを docker load し直しますか？')) return;
-  const res = await API.post(`/api/images/${imageId}/reload`);
-  if (res.ok) { showToast('再ロードしました', 'success'); loadAdminImages(); }
-  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+  `).join('') || '<tr><td colspan="6" class="empty-cell">プロジェクトがありません</td></tr>';
 }
 
 async function deleteImage(imageId) {
@@ -272,106 +336,9 @@ async function deleteImage(imageId) {
   else { const d = await res.json(); showToast(d.detail, 'error'); }
 }
 
-// ---- ファイル選択 UI ----
-const fileInput = document.getElementById('file-input');
-const uploadArea = document.getElementById('upload-area');
-
-uploadArea.addEventListener('click', () => fileInput.click());
-
-uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('upload-drag'); });
-uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('upload-drag'));
-uploadArea.addEventListener('drop', e => {
-  e.preventDefault();
-  uploadArea.classList.remove('upload-drag');
-  if (e.dataTransfer.files[0]) {
-    fileInput.files = e.dataTransfer.files;
-    updateFileDisplay(e.dataTransfer.files[0]);
-  }
-});
-
-fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) updateFileDisplay(fileInput.files[0]);
-});
-
-function updateFileDisplay(f) {
-  document.getElementById('upload-placeholder').classList.add('hidden');
-  const sel = document.getElementById('upload-selected');
-  sel.classList.remove('hidden');
-  document.getElementById('upload-filename').textContent = f.name;
-  document.getElementById('upload-filesize').textContent = (f.size / 1024 / 1024).toFixed(1) + ' MB';
+function closeModal(id) {
+  document.getElementById(id).classList.add('hidden');
 }
-
-// ---- アップロード送信 ----
-document.getElementById('form-image').addEventListener('submit', async e => {
-  e.preventDefault();
-  const submitBtn = document.getElementById('upload-submit-btn');
-  const progressWrap = document.getElementById('upload-progress-wrap');
-  const progressBar = document.getElementById('progress-bar-inner');
-  const progressLabel = document.getElementById('progress-label');
-
-  if (!fileInput.files[0]) {
-    showToast('イメージファイルを選択してください', 'error');
-    return;
-  }
-
-  submitBtn.disabled = true;
-  progressWrap.classList.remove('hidden');
-  progressBar.style.width = '0%';
-  progressLabel.textContent = 'アップロード中...';
-
-  const fd = new FormData(e.target);
-
-  await new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/images/upload');
-    xhr.setRequestHeader('Authorization', `Bearer ${API.token()}`);
-
-    xhr.upload.addEventListener('progress', ev => {
-      if (ev.lengthComputable) {
-        const pct = Math.round(ev.loaded / ev.total * 100);
-        progressBar.style.width = pct + '%';
-        progressLabel.textContent = `アップロード中... ${pct}%`;
-      }
-    });
-
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 201) {
-        progressBar.style.width = '100%';
-        progressLabel.textContent = 'docker load 完了';
-        showToast('イメージを登録しました', 'success');
-        setTimeout(() => {
-          closeModal('modal-image');
-          e.target.reset();
-          document.getElementById('upload-placeholder').classList.remove('hidden');
-          document.getElementById('upload-selected').classList.add('hidden');
-          progressWrap.classList.add('hidden');
-          submitBtn.disabled = false;
-          loadAdminImages();
-        }, 800);
-        resolve();
-      } else {
-        try {
-          const d = JSON.parse(xhr.responseText);
-          showToast(d.detail || 'エラーが発生しました', 'error');
-        } catch { showToast('エラーが発生しました', 'error'); }
-        progressWrap.classList.add('hidden');
-        submitBtn.disabled = false;
-        reject();
-      }
-    });
-
-    xhr.addEventListener('error', () => {
-      showToast('通信エラーが発生しました', 'error');
-      progressWrap.classList.add('hidden');
-      submitBtn.disabled = false;
-      reject();
-    });
-
-    xhr.send(fd);
-  }).catch(() => {});
-});
-
-function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
 
 function showToast(msg, type='info') {
   const c = document.getElementById('toast-container');
@@ -385,4 +352,30 @@ function showToast(msg, type='info') {
 
 loadAdminEnvs();
 </script>
+
+<style>
+.user-action-dropdown {
+  position: absolute;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.25);
+  z-index: 9999;
+  min-width: 130px;
+  padding: 4px 0;
+}
+.user-action-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  font-size: .85rem;
+  background: none;
+  border: none;
+  color: var(--text1);
+  cursor: pointer;
+}
+.user-action-dropdown button:hover { background: var(--bg4); }
+.user-action-dropdown button.danger { color: var(--red); }
+</style>
 {% endblock %}

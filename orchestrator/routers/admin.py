@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
 from database import get_db
-from models import User, UserRole, AuthProvider, Environment, EnvStatus
+from models import User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator
 from reserved import is_reserved
 from deps import require_admin
 from services.auth_local import hash_password
@@ -113,6 +113,47 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
     return user
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: int,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if user_id == current_admin.id:
+        raise HTTPException(status_code=400, detail="自分自身を削除することはできません")
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="ユーザが見つかりません")
+    if user.role == UserRole.admin:
+        raise HTTPException(status_code=400, detail="管理者ユーザは削除できません。先に一般ユーザに降格してください")
+
+    # 起動中の環境を強制停止
+    env_result = await db.execute(
+        select(Environment).where(
+            Environment.user_id == user_id,
+            Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+        )
+    )
+    for env in env_result.scalars().all():
+        await destroy_env(env)
+
+    # ユーザが所有するイメージのコラボレーター・環境・イメージ本体を削除
+    img_result = await db.execute(select(Image).where(Image.owner_id == user_id))
+    for img in img_result.scalars().all():
+        await db.execute(delete(ImageCollaborator).where(ImageCollaborator.image_id == img.id))
+        await db.execute(delete(Environment).where(Environment.image_id == img.id))
+        await db.delete(img)
+
+    # コラボレーター参加分を削除
+    await db.execute(delete(ImageCollaborator).where(ImageCollaborator.user_id == user_id))
+    # 残存環境を削除
+    await db.execute(delete(Environment).where(Environment.user_id == user_id))
+
+    await db.delete(user)
+    await db.commit()
 
 
 @router.get("/envs", response_model=list[EnvAdminResponse])
