@@ -3,19 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models import User, AuthProvider, UserRole
 from config import settings
-from authlib.integrations.starlette_client import OAuth
 from reserved import is_reserved
-
-oauth = OAuth()
-
-if settings.GOOGLE_OAUTH_ENABLED:
-    oauth.register(
-        name="google",
-        client_id=settings.GOOGLE_CLIENT_ID,
-        client_secret=settings.GOOGLE_CLIENT_SECRET,
-        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
-    )
 
 _VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]+$')
 

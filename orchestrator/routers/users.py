@@ -34,6 +34,7 @@ class UsernameSetupRequest(BaseModel):
 class UsernameSetupResponse(BaseModel):
     access_token: str
     username: str
+    role: str
 
 
 @router.post("/setup-username", response_model=UsernameSetupResponse)
@@ -46,7 +47,7 @@ async def setup_username(
     if not user.needs_username_setup and user.username == body.username:
         # 既に設定済みで同じ名前なら OK
         token = create_access_token(user.id, user.username, user.role.value, False)
-        return UsernameSetupResponse(access_token=token, username=user.username)
+        return UsernameSetupResponse(access_token=token, username=user.username, role=user.role.value)
 
     # 他ユーザとの重複チェック
     existing = await db.execute(
@@ -64,7 +65,7 @@ async def setup_username(
     await db.commit()
 
     token = create_access_token(user.id, body.username, user.role.value, False)
-    return UsernameSetupResponse(access_token=token, username=body.username)
+    return UsernameSetupResponse(access_token=token, username=body.username, role=user.role.value)
 
 
 @router.get("/search")
@@ -89,12 +90,31 @@ async def search_users(
 
 @router.get("/check-username")
 async def check_username(username: str, db: AsyncSession = Depends(get_db)):
-    """ユーザ名の使用可否を確認する（認証不要）。"""
+    """ユーザ名の使用可否を確認する（認証不要）。自分自身は除外。"""
     if not _VALID_USERNAME.match(username):
         return {"available": False, "reason": "英数字・ハイフン・アンダースコアのみ使用可"}
     if is_reserved(username):
         return {"available": False, "reason": f"'{username}' は予約語のため使用できません"}
     existing = await db.execute(select(User).where(User.username == username))
+    if existing.scalar_one_or_none():
+        return {"available": False, "reason": "このユーザ名は既に使用されています"}
+    return {"available": True}
+
+
+@router.get("/check-username-for-setup")
+async def check_username_for_setup(
+    username: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ユーザ名設定画面専用: 自分自身のユーザ名は使用可として扱う。"""
+    if not _VALID_USERNAME.match(username):
+        return {"available": False, "reason": "英数字・ハイフン・アンダースコアのみ使用可"}
+    if is_reserved(username):
+        return {"available": False, "reason": f"'{username}' は予約語のため使用できません"}
+    existing = await db.execute(
+        select(User).where(User.username == username, User.id != current_user.id)
+    )
     if existing.scalar_one_or_none():
         return {"available": False, "reason": "このユーザ名は既に使用されています"}
     return {"available": True}

@@ -8,6 +8,12 @@
       <img src="/static/img/bento.svg" class="login-logo-svg" alt="HackBento" />
       <h1 class="logo-text">HackBento</h1>
       <p class="logo-sub">Enjoy the Hacking</p>
+      <div id="ldap-badge" class="hidden" style="margin-top:.5rem">
+        <span class="cat-badge" style="background:var(--bg4);color:var(--text2);font-size:.75rem;padding:.2rem .6rem;border-radius:99px">
+          <span id="ldap-badge-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text3);margin-right:.35rem;vertical-align:middle"></span>
+          LDAP
+        </span>
+      </div>
     </div>
 
     <div id="login-error" class="alert alert-error hidden"></div>
@@ -42,6 +48,26 @@
 
 {% block scripts %}
 <script>
+// LDAPバッジ: 有効かつ到達可能なら緑ドットで表示
+(async () => {
+  try {
+    const res = await fetch('/api/auth/ldap-status');
+    if (!res.ok) return;
+    const { enabled, reachable } = await res.json();
+    if (!enabled) return;
+    const badge = document.getElementById('ldap-badge');
+    const dot = document.getElementById('ldap-badge-dot');
+    badge.classList.remove('hidden');
+    if (reachable) {
+      dot.style.background = 'var(--green, #3fb950)';
+      badge.querySelector('span').title = 'LDAPサーバに接続可能';
+    } else {
+      dot.style.background = 'var(--red, #f85149)';
+      badge.querySelector('span').title = 'LDAPサーバに接続できません';
+    }
+  } catch {}
+})();
+
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('login-btn');

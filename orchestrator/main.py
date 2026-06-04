@@ -59,7 +59,12 @@ async def _seed_admin():
 
 
 app = FastAPI(title=settings.APP_TITLE, lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SECRET_KEY,
+    https_only=False,
+    same_site="lax",
+)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -175,6 +180,21 @@ async def login_page(request: Request):
 
 @app.get("/setup-username", response_class=HTMLResponse)
 async def setup_username_page(request: Request):
+    from services.jwt_utils import decode_token
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+    if not token:
+        return RedirectResponse(url="/login", status_code=303)
+    try:
+        payload = decode_token(token)
+    except Exception:
+        return RedirectResponse(url="/login", status_code=303)
+    # needs_username_setup が false のユーザはアクセス不可
+    if not payload.get("needs_username_setup", False):
+        return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse("setup_username.html", {"request": request, "settings": settings})
 
 

@@ -35,8 +35,41 @@
 
 {% block scripts %}
 <script>
-const token = localStorage.getItem('hb_token');
-if (!token) { window.location.href = '/login'; }
+// Cookie経由でもトークンを取得できる（OAuthコールバック後はCookieのみセットされる）
+let token = localStorage.getItem('hb_token');
+
+(async () => {
+  // /api/auth/me はCookie・Bearerどちらも受け付けるため、まず認証確認
+  const meRes = await fetch('/api/auth/me', {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!meRes.ok) { window.location.href = '/login'; return; }
+  const me = await meRes.json();
+
+  // OAuthユーザなどlocalStorageが未設定の場合はCookieトークンをlocalStorageに同期
+  if (!token) {
+    // トークン自体はCookieにありJSからは読めないが、meのデータでlocalStorageを更新
+    localStorage.setItem('hb_username', me.username);
+    localStorage.setItem('hb_role', me.role);
+  }
+
+  // ユーザ名設定不要なら / へ
+  if (!me.needs_username_setup) { window.location.href = '/'; return; }
+
+  // access_tokenをlocalStorageに同期
+  if (me.access_token) {
+    token = me.access_token;
+    localStorage.setItem('hb_token', token);
+    localStorage.setItem('hb_username', me.username);
+    localStorage.setItem('hb_role', me.role);
+  }
+
+  const input = document.getElementById('username');
+  if (me.username) {
+    input.value = me.username;
+    input.dispatchEvent(new Event('input'));
+  }
+})();
 
 let checkTimer = null;
 
@@ -59,7 +92,9 @@ document.getElementById('username').addEventListener('input', (e) => {
   }
   status.textContent = '確認中...'; status.style.color = 'var(--text2)';
   checkTimer = setTimeout(async () => {
-    const res = await fetch(`/api/users/check-username?username=${encodeURIComponent(val)}`);
+    const res = await fetch(`/api/users/check-username-for-setup?username=${encodeURIComponent(val)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     const data = await res.json();
     if (data.available) {
       status.textContent = '✓ 使用可能';
@@ -81,9 +116,11 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   btn.querySelector('.btn-text').textContent = '設定中...';
 
   const username = document.getElementById('username').value.trim();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch('/api/users/setup-username', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    headers,
     body: JSON.stringify({ username }),
   });
 
@@ -91,6 +128,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     const data = await res.json();
     localStorage.setItem('hb_token', data.access_token);
     localStorage.setItem('hb_username', data.username);
+    localStorage.setItem('hb_role', data.role || localStorage.getItem('hb_role') || 'user');
     localStorage.setItem('hb_needs_setup', 'false');
     window.location.href = '/';
   } else {

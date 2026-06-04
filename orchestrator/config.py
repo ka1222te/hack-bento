@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     DOMAIN: str = "localhost"
     SCHEME: str = "http"
+    PORT: int = 8000
 
     # DB
     DATABASE_URL: str = "sqlite+aiosqlite:///./hackbento.db"
@@ -24,11 +25,14 @@ class Settings(BaseSettings):
 
     # 認証
     LDAP_ENABLED: bool = False
-    LDAP_SERVER: str = "ldap://ldap.example.com:389"
-    LDAP_BASE_DN: str = "dc=example,dc=com"
-    LDAP_BIND_DN: str = "cn=service,dc=example,dc=com"
+    LDAP_URI: str = "ldap://ldap.example.com:389"
+    LDAP_TOP_DOMAIN: str = "dc=example,dc=com"
     LDAP_BIND_PASSWORD: str = ""
-    LDAP_USER_FILTER: str = "(sAMAccountName={username})"
+    LDAP_USER_FILTER: str = "(uid={username})"
+    LDAP_MAIL_DOMAIN: str = "example.com"
+    LDAP_OU_USER: str = "people"
+    LDAP_OU_GROUP: str = "groups"
+    LDAP_SSH_ATTR_NAME: str = ""
 
     GOOGLE_OAUTH_ENABLED: bool = False
     GOOGLE_CLIENT_ID: str = ""

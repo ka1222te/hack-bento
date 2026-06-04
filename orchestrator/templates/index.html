@@ -30,10 +30,25 @@ const API = {
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
 };
 
-if (!API.token()) { window.location.href = '/login'; }
-if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
-
-initNavbar();
+(async () => {
+  // localStorageにトークンがない場合はCookie認証を試みてlocalStorageを同期する
+  if (!API.token()) {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) { window.location.href = '/login'; return; }
+    const me = await res.json();
+    if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
+    // CookieのJWTをlocalStorageに同期してAPI呼び出しを統一する
+    localStorage.setItem('hb_token', me.access_token);
+    localStorage.setItem('hb_username', me.username);
+    localStorage.setItem('hb_role', me.role);
+    localStorage.setItem('hb_needs_setup', 'false');
+  } else if (localStorage.getItem('hb_needs_setup') === 'true') {
+    window.location.href = '/setup-username'; return;
+  }
+  initNavbar();
+  loadMyEnvs();
+  loadImages();
+})();
 
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 let myEnvs = [];
@@ -164,6 +179,6 @@ async function stopEnv(envId) {
 
 // copyToClipboard / copyIP は navbar.html で定義済み
 
-(async () => { await loadMyEnvs(); setInterval(loadMyEnvs, 15000); })();
+setInterval(loadMyEnvs, 15000);
 </script>
 {% endblock %}
