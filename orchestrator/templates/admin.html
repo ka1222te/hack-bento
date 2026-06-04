@@ -1,0 +1,388 @@
+{% extends "base.html" %}
+{% block title %}管理画面 — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="container admin-container">
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="envs">起動中の環境</button>
+      <button class="tab-btn" data-tab="users">ユーザ管理</button>
+      <button class="tab-btn" data-tab="images">イメージ管理</button>
+    </div>
+
+    <!-- Running Envs -->
+    <div id="tab-envs" class="tab-panel active">
+      <h2 class="panel-title">起動中の環境 <button class="btn btn-sm btn-outline" onclick="loadAdminEnvs()">更新</button></h2>
+      <div class="table-wrap">
+        <table class="data-table" id="envs-table">
+          <thead><tr><th>ID</th><th>ユーザ</th><th>イメージ</th><th>IP</th><th>ステータス</th><th>開始</th><th>期限</th><th>操作</th></tr></thead>
+          <tbody id="envs-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users -->
+    <div id="tab-users" class="tab-panel hidden">
+      <div class="panel-header">
+        <h2 class="panel-title">ユーザ管理</h2>
+        <button class="btn btn-sm btn-primary" onclick="showCreateUserModal()">+ ユーザ追加</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="users-table">
+          <thead><tr><th>ID</th><th>ユーザ名</th><th>メール</th><th>ロール</th><th>認証方式</th><th>有効</th><th>操作</th></tr></thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Projects -->
+    <div id="tab-images" class="tab-panel hidden">
+      <div class="panel-header">
+        <h2 class="panel-title">プロジェクト管理</h2>
+        <a href="/new" class="btn btn-sm btn-primary">+ New Project</a>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="images-table">
+          <thead><tr><th>ID</th><th>オーナー</th><th>プロジェクト名</th><th>Slug</th><th>難易度</th><th>公開設定</th><th>有効</th><th>操作</th></tr></thead>
+          <tbody id="images-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Create User -->
+<div id="modal-user" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeModal('modal-user')"></div>
+  <div class="modal-box">
+    <h3 class="modal-title">ユーザ追加</h3>
+    <form id="form-user">
+      <div class="form-group"><label>ユーザ名</label><input name="username" required /></div>
+      <div class="form-group"><label>メール</label><input name="email" type="email" /></div>
+      <div class="form-group"><label>パスワード</label><input name="password" type="password" required /></div>
+      <div class="form-group"><label>ロール</label>
+        <select name="role"><option value="user">user</option><option value="admin">admin</option></select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-user')">キャンセル</button>
+        <button type="submit" class="btn btn-primary">作成</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Create Image -->
+<div id="modal-image" class="modal hidden">
+  <div class="modal-backdrop" onclick="closeModal('modal-image')"></div>
+  <div class="modal-box">
+    <h3 class="modal-title">イメージ追加</h3>
+    <form id="form-image" enctype="multipart/form-data" novalidate>
+      <div class="form-group">
+        <label>イメージアーカイブ <span class="ext-hint">(.tar / .tar.gz / .tgz / .tar.zst)</span></label>
+        <div class="upload-area" id="upload-area">
+          <input type="file" name="file" id="file-input" accept=".tar,.tar.gz,.tgz,.tar.zst" class="file-input-hidden" />
+          <div class="upload-placeholder" id="upload-placeholder">
+            <span class="upload-icon">&#x1F4E4;</span>
+            <span>クリックまたはドロップしてファイルを選択</span>
+            <span class="upload-sub">docker save で出力した .tar ファイル</span>
+          </div>
+          <div class="upload-selected hidden" id="upload-selected">
+            <span class="upload-icon">&#x2705;</span>
+            <span id="upload-filename"></span>
+            <span id="upload-filesize" class="upload-sub"></span>
+          </div>
+        </div>
+      </div>
+      <div class="form-group"><label>名前</label><input name="name" required placeholder="CVE-2021-4034 (Polkit)" /></div>
+      <div class="form-group"><label>Slug</label><input name="slug" required placeholder="cve-2021-4034" /></div>
+      <div class="form-group"><label>説明</label><textarea name="description" rows="3" placeholder="脆弱性の概要・目標を記述..."></textarea></div>
+      <div class="form-group"><label>難易度</label>
+        <select name="difficulty"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option><option value="insane">Insane</option></select>
+      </div>
+      <div class="form-group"><label>カテゴリ</label><input name="category" placeholder="CVE, Privilege Escalation, RCE, ..." /></div>
+      <div class="form-row">
+        <div class="form-group"><label>推定時間 (分)</label><input name="estimated_minutes" type="number" value="60" min="5" /></div>
+        <div class="form-group"><label>タイムアウト (分)</label><input name="timeout_minutes" type="number" value="60" min="5" /></div>
+      </div>
+      <div id="upload-progress-wrap" class="hidden">
+        <div class="progress-bar"><div class="progress-bar-inner" id="progress-bar-inner"></div></div>
+        <span class="progress-label" id="progress-label">アップロード中...</span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-image')">キャンセル</button>
+        <button type="submit" class="btn btn-primary" id="upload-submit-btn">登録</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = {
+  token: () => localStorage.getItem('hb_token'),
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+  async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+  async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
+};
+
+if (!API.token() || localStorage.getItem('hb_role') !== 'admin') { window.location.href = '/login'; }
+
+initNavbar();
+
+// Tabs
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+    btn.classList.add('active');
+    document.getElementById(`tab-${btn.dataset.tab}`).classList.remove('hidden');
+    if (btn.dataset.tab === 'envs') loadAdminEnvs();
+    if (btn.dataset.tab === 'users') loadUsers();
+    if (btn.dataset.tab === 'images') loadAdminImages();
+  });
+});
+
+function fmt(iso) {
+  const d = new Date(iso + 'Z');
+  return d.toLocaleString('ja-JP');
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Envs
+async function loadAdminEnvs() {
+  const res = await API.get('/api/admin/envs');
+  if (!res.ok) return;
+  const envs = await res.json();
+  const tbody = document.getElementById('envs-tbody');
+  tbody.innerHTML = envs.map(e => `
+    <tr>
+      <td>${e.id}</td>
+      <td>${escHtml(e.username)}</td>
+      <td>${escHtml(e.image_name)}</td>
+      <td><code>${escHtml(e.ip_address||'-')}</code></td>
+      <td><span class="status-badge ${e.status}">${e.status}</span></td>
+      <td>${fmt(e.started_at)}</td>
+      <td>${fmt(e.expires_at)}</td>
+      <td><button class="btn btn-xs btn-danger" onclick="forceStop(${e.id})">強制停止</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="8" class="empty-cell">起動中の環境はありません</td></tr>';
+}
+
+async function forceStop(envId) {
+  if (!confirm(`環境 #${envId} を強制停止しますか？`)) return;
+  const res = await API.post(`/api/admin/envs/${envId}/force-stop`);
+  if (res.ok) { showToast('強制停止しました', 'success'); loadAdminEnvs(); }
+  else { const d = await res.json(); showToast(d.detail, 'error'); }
+}
+
+// Users
+async function loadUsers() {
+  const res = await API.get('/api/admin/users');
+  if (!res.ok) return;
+  const users = await res.json();
+  const tbody = document.getElementById('users-tbody');
+  const myUsername = localStorage.getItem('hb_username') || '';
+  tbody.innerHTML = users.map(u => {
+    const isSelf = u.username === myUsername;
+    return `
+    <tr>
+      <td>${u.id}</td>
+      <td>${escHtml(u.username)}${isSelf ? ' <span class="cat-badge">you</span>' : ''}</td>
+      <td>${escHtml(u.email||'-')}</td>
+      <td><span class="role-badge role-${u.role}">${u.role}</span></td>
+      <td>${u.auth_provider}</td>
+      <td><span class="active-dot ${u.is_active ? 'active' : 'inactive'}"></span></td>
+      <td>
+        ${isSelf ? '<span class="cat-badge">変更不可</span>' : `
+          <button class="btn btn-xs btn-outline" onclick="toggleUser(${u.id}, ${u.is_active})">${u.is_active ? '無効化' : '有効化'}</button>
+          ${u.role !== 'admin' ? `<button class="btn btn-xs btn-outline" onclick="promoteUser(${u.id})">管理者に昇格</button>` : ''}
+        `}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function toggleUser(userId, current) {
+  const res = await API.patch(`/api/admin/users/${userId}`, { is_active: !current });
+  if (res.ok) { showToast('更新しました', 'success'); loadUsers(); }
+  else { const d = await res.json(); showToast(d.detail, 'error'); }
+}
+async function promoteUser(userId) {
+  if (!confirm('管理者に昇格しますか？')) return;
+  const res = await API.patch(`/api/admin/users/${userId}`, { role: 'admin' });
+  if (res.ok) { showToast('昇格しました', 'success'); loadUsers(); }
+}
+
+function showCreateUserModal() { document.getElementById('modal-user').classList.remove('hidden'); }
+
+document.getElementById('form-user').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd);
+  const res = await API.post('/api/admin/users', body);
+  if (res.ok) { showToast('ユーザを作成しました', 'success'); closeModal('modal-user'); e.target.reset(); loadUsers(); }
+  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+});
+
+// Images
+async function loadAdminImages() {
+  const res = await API.get('/api/images/');
+  if (!res.ok) return;
+  const images = await res.json();
+  const visLabel = { public: '🌍 Public', protected: '🔒 Protected', private: '🔐 Private' };
+  const tbody = document.getElementById('images-tbody');
+  tbody.innerHTML = images.map(img => `
+    <tr>
+      <td>${img.id}</td>
+      <td style="color:var(--accent)">${escHtml(img.owner_username||'-')}</td>
+      <td><a href="/${escHtml(img.owner_username)}/${escHtml(img.slug)}" style="color:var(--accent)">${escHtml(img.name)}</a></td>
+      <td><code>${escHtml(img.slug)}</code></td>
+      <td><span class="diff-badge diff-${img.difficulty}">${img.difficulty}</span></td>
+      <td>${visLabel[img.visibility] || img.visibility}</td>
+      <td><span class="active-dot ${img.is_active ? 'active' : 'inactive'}"></span></td>
+      <td>
+        ${img.archive_path ? `<button class="btn btn-xs btn-extend" onclick="reloadImage(${img.id})">再ロード</button>` : ''}
+        <button class="btn btn-xs btn-danger" onclick="deleteImage(${img.id})">削除</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="8" class="empty-cell">プロジェクトがありません</td></tr>';
+}
+
+async function reloadImage(imageId) {
+  if (!confirm('アーカイブを docker load し直しますか？')) return;
+  const res = await API.post(`/api/images/${imageId}/reload`);
+  if (res.ok) { showToast('再ロードしました', 'success'); loadAdminImages(); }
+  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+}
+
+async function deleteImage(imageId) {
+  if (!confirm('このプロジェクトを無効化しますか？')) return;
+  const res = await API.del(`/api/images/${imageId}`);
+  if (res.ok) { showToast('無効化しました', 'success'); loadAdminImages(); }
+  else { const d = await res.json(); showToast(d.detail, 'error'); }
+}
+
+// ---- ファイル選択 UI ----
+const fileInput = document.getElementById('file-input');
+const uploadArea = document.getElementById('upload-area');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('upload-drag'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('upload-drag'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('upload-drag');
+  if (e.dataTransfer.files[0]) {
+    fileInput.files = e.dataTransfer.files;
+    updateFileDisplay(e.dataTransfer.files[0]);
+  }
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) updateFileDisplay(fileInput.files[0]);
+});
+
+function updateFileDisplay(f) {
+  document.getElementById('upload-placeholder').classList.add('hidden');
+  const sel = document.getElementById('upload-selected');
+  sel.classList.remove('hidden');
+  document.getElementById('upload-filename').textContent = f.name;
+  document.getElementById('upload-filesize').textContent = (f.size / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+// ---- アップロード送信 ----
+document.getElementById('form-image').addEventListener('submit', async e => {
+  e.preventDefault();
+  const submitBtn = document.getElementById('upload-submit-btn');
+  const progressWrap = document.getElementById('upload-progress-wrap');
+  const progressBar = document.getElementById('progress-bar-inner');
+  const progressLabel = document.getElementById('progress-label');
+
+  if (!fileInput.files[0]) {
+    showToast('イメージファイルを選択してください', 'error');
+    return;
+  }
+
+  submitBtn.disabled = true;
+  progressWrap.classList.remove('hidden');
+  progressBar.style.width = '0%';
+  progressLabel.textContent = 'アップロード中...';
+
+  const fd = new FormData(e.target);
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/images/upload');
+    xhr.setRequestHeader('Authorization', `Bearer ${API.token()}`);
+
+    xhr.upload.addEventListener('progress', ev => {
+      if (ev.lengthComputable) {
+        const pct = Math.round(ev.loaded / ev.total * 100);
+        progressBar.style.width = pct + '%';
+        progressLabel.textContent = `アップロード中... ${pct}%`;
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 201) {
+        progressBar.style.width = '100%';
+        progressLabel.textContent = 'docker load 完了';
+        showToast('イメージを登録しました', 'success');
+        setTimeout(() => {
+          closeModal('modal-image');
+          e.target.reset();
+          document.getElementById('upload-placeholder').classList.remove('hidden');
+          document.getElementById('upload-selected').classList.add('hidden');
+          progressWrap.classList.add('hidden');
+          submitBtn.disabled = false;
+          loadAdminImages();
+        }, 800);
+        resolve();
+      } else {
+        try {
+          const d = JSON.parse(xhr.responseText);
+          showToast(d.detail || 'エラーが発生しました', 'error');
+        } catch { showToast('エラーが発生しました', 'error'); }
+        progressWrap.classList.add('hidden');
+        submitBtn.disabled = false;
+        reject();
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      showToast('通信エラーが発生しました', 'error');
+      progressWrap.classList.add('hidden');
+      submitBtn.disabled = false;
+      reject();
+    });
+
+    xhr.send(fd);
+  }).catch(() => {});
+});
+
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function showToast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.classList.add('toast-show'), 10);
+  setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+loadAdminEnvs();
+</script>
+{% endblock %}

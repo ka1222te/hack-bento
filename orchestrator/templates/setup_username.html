@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}ユーザ名を設定 — HackBento{% endblock %}
+
+{% block body %}
+<div class="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="/static/img/bento.svg" class="login-logo-svg" alt="HackBento" />
+      <h1 class="logo-text">HackBento</h1>
+      <p class="logo-sub">ユーザ名を設定してください</p>
+    </div>
+
+    <p style="color:var(--text2);font-size:.875rem;margin-bottom:1rem;text-align:center">
+      このユーザ名はあなたのプロジェクトのパスに使われます。<br>
+      英数字・ハイフン・アンダースコアのみ使用できます。
+    </p>
+
+    <div id="setup-error" class="alert alert-error hidden"></div>
+
+    <form id="setup-form" class="login-form">
+      <div class="form-group">
+        <label for="username">ユーザ名</label>
+        <input type="text" id="username" name="username" placeholder="your-username"
+               pattern="[a-zA-Z0-9_\-]{1,64}" autocomplete="username" required />
+        <span id="username-status" style="font-size:.8rem;margin-top:.25rem"></span>
+      </div>
+      <button type="submit" class="btn btn-primary btn-full" id="setup-btn">
+        <span class="btn-text">設定して開始</span>
+        <span class="btn-spinner hidden"></span>
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const token = localStorage.getItem('hb_token');
+if (!token) { window.location.href = '/login'; }
+
+let checkTimer = null;
+
+const RESERVED = ['health','login','logout','explore','new','admin','user','setup-username','setup_username','api','static','root','system','hackbento','support','help'];
+
+document.getElementById('username').addEventListener('input', (e) => {
+  clearTimeout(checkTimer);
+  const val = e.target.value.trim();
+  const status = document.getElementById('username-status');
+  if (!val) { status.textContent = ''; return; }
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(val)) {
+    status.textContent = '英数字・ハイフン・アンダースコアのみ使用可';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  if (RESERVED.includes(val.toLowerCase())) {
+    status.textContent = `'${val}' は予約語のため使用できません`;
+    status.style.color = 'var(--red)';
+    return;
+  }
+  status.textContent = '確認中...'; status.style.color = 'var(--text2)';
+  checkTimer = setTimeout(async () => {
+    const res = await fetch(`/api/users/check-username?username=${encodeURIComponent(val)}`);
+    const data = await res.json();
+    if (data.available) {
+      status.textContent = '✓ 使用可能';
+      status.style.color = 'var(--green)';
+    } else {
+      status.textContent = data.reason || '使用不可';
+      status.style.color = 'var(--red)';
+    }
+  }, 400);
+});
+
+document.getElementById('setup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('setup-btn');
+  const errBox = document.getElementById('setup-error');
+  errBox.classList.add('hidden');
+  btn.disabled = true;
+  btn.querySelector('.btn-spinner').classList.remove('hidden');
+  btn.querySelector('.btn-text').textContent = '設定中...';
+
+  const username = document.getElementById('username').value.trim();
+  const res = await fetch('/api/users/setup-username', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ username }),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    localStorage.setItem('hb_token', data.access_token);
+    localStorage.setItem('hb_username', data.username);
+    localStorage.setItem('hb_needs_setup', 'false');
+    window.location.href = '/';
+  } else {
+    const data = await res.json();
+    errBox.textContent = data.detail || 'エラーが発生しました';
+    errBox.classList.remove('hidden');
+    btn.disabled = false;
+    btn.querySelector('.btn-spinner').classList.add('hidden');
+    btn.querySelector('.btn-text').textContent = '設定して開始';
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}{{ username }} — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="container" style="max-width:900px;padding-top:2rem;padding-bottom:3rem">
+
+    <!-- プロフィールヘッダ -->
+    <div class="profile-header">
+      <div class="profile-avatar" id="profile-avatar"></div>
+      <div class="profile-info">
+        <h1 class="profile-username" id="profile-username">{{ username }}</h1>
+        <p class="profile-sub" id="profile-sub"></p>
+      </div>
+    </div>
+
+    <!-- プロジェクト一覧 -->
+    <div class="profile-section">
+      <h2 class="profile-section-title">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink:0"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8V1.5Z"/></svg>
+        Repositories
+        <span class="profile-count" id="project-count"></span>
+      </h2>
+      <div id="project-list" class="profile-project-list"></div>
+      <p id="project-empty" class="empty-msg hidden">公開プロジェクトがありません</p>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TARGET_USER = {{ username | tojson }};
+
+const API = {
+  token: () => localStorage.getItem('hb_token'),
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+};
+
+if (!API.token()) { window.location.href = '/login'; }
+initNavbar();
+
+const diffLabel = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
+const visIcon   = { public: '🌍', protected: '🔒', private: '🔐' };
+const diffColor = { none: 'diff-none', easy: 'diff-easy', medium: 'diff-medium', hard: 'diff-hard', insane: 'diff-insane' };
+
+let myEnvs = [];
+
+async function init() {
+  // アバター（頭文字）
+  const av = document.getElementById('profile-avatar');
+  av.textContent = TARGET_USER ? TARGET_USER[0].toUpperCase() : '?';
+
+  // 自分のプロフィールかどうか
+  const isMe = localStorage.getItem('hb_username') === TARGET_USER;
+  if (isMe) {
+    document.getElementById('profile-sub').textContent = 'あなたのプロフィール';
+  }
+
+  const [imgRes, envRes] = await Promise.all([
+    API.get('/api/images/'),
+    API.get('/api/envs/'),
+  ]);
+  const allImages = imgRes.ok ? await imgRes.json() : [];
+  myEnvs = envRes.ok ? await envRes.json() : [];
+
+  const projects = allImages.filter(i => i.owner_username === TARGET_USER);
+
+  document.getElementById('project-count').textContent = projects.length;
+
+  const list  = document.getElementById('project-list');
+  const empty = document.getElementById('project-empty');
+
+  if (projects.length === 0) { empty.classList.remove('hidden'); return; }
+
+  const activeEnvIds = new Set(myEnvs.map(e => e.image_id));
+  const atLimit = myEnvs.length >= {{ settings.MAX_ENVS_PER_USER }};
+
+  list.innerHTML = projects.map(img => {
+    const running  = activeEnvIds.has(img.id);
+    const disabled = atLimit && !running;
+    return `
+      <div class="profile-project-row">
+        <div class="profile-project-main">
+          <div class="profile-project-title">
+            <a href="/${escHtml(img.owner_username)}/${escHtml(img.slug)}" class="profile-project-link">
+              ${escHtml(img.slug)}
+            </a>
+            ${img.difficulty && img.difficulty !== 'none' ? `<span class="diff-badge diff-${img.difficulty}">${diffLabel[img.difficulty]}</span>` : ''}
+            ${img.category ? `<span class="cat-badge">${escHtml(img.category)}</span>` : ''}
+            <span class="vis-badge" title="${img.visibility}">${visIcon[img.visibility] || ''}</span>
+          </div>
+          <p class="profile-project-name">${escHtml(img.name)}</p>
+          ${img.description ? `<p class="profile-project-desc">${escHtml(img.description)}</p>` : ''}
+          <div class="profile-project-meta">
+            <span>&#x23F0; タイムアウト ${img.timeout_minutes}分</span>
+          </div>
+        </div>
+        <div class="profile-project-action">
+          ${running
+            ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
+            : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
+                 onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
+                 &#x25B6; 起動
+               </button>`
+          }
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function startEnv(imageId) {
+  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+  const res = await API.post(`/api/envs/${imageId}/start`);
+  if (res.ok) { showToast('環境を起動しました', 'success'); setTimeout(() => window.location.href = '/', 800); }
+  else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); btn.disabled = false; btn.textContent = '▶ 起動'; }
+}
+
+init();
+</script>
+{% endblock %}

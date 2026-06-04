@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <!-- 漆の深い赤黒グラデ -->
+    <radialGradient id="urushi" cx="35%" cy="30%" r="70%">
+      <stop offset="0%"   stop-color="#5a1a1a"/>
+      <stop offset="60%"  stop-color="#2d0a0a"/>
+      <stop offset="100%" stop-color="#1a0505"/>
+    </radialGradient>
+    <!-- 漆のツヤハイライト -->
+    <radialGradient id="urushi-hi" cx="30%" cy="25%" r="55%">
+      <stop offset="0%"   stop-color="#fff" stop-opacity=".18"/>
+      <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- ご飯 -->
+    <radialGradient id="rice-top" cx="50%" cy="40%" r="60%">
+      <stop offset="0%"   stop-color="#faf7f0"/>
+      <stop offset="100%" stop-color="#d8ccb4"/>
+    </radialGradient>
+    <!-- うなぎ -->
+    <linearGradient id="unagi-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#d06018"/>
+      <stop offset="100%" stop-color="#7a2e06"/>
+    </linearGradient>
+    <!-- タレ -->
+    <linearGradient id="tare-top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#ff9030" stop-opacity=".5"/>
+      <stop offset="100%" stop-color="#a04000" stop-opacity="0"/>
+    </linearGradient>
+    <!-- ブロッコリー -->
+    <radialGradient id="broc-top" cx="40%" cy="35%" r="65%">
+      <stop offset="0%"   stop-color="#90d040"/>
+      <stop offset="100%" stop-color="#2e6010"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ===== 重箱の外枠（漆塗り） ===== -->
+  <rect x="2" y="2" width="60" height="60" rx="5" fill="url(#urushi)"/>
+  <!-- 漆のツヤ（光の反射） -->
+  <rect x="2" y="2" width="60" height="60" rx="5" fill="url(#urushi-hi)"/>
+  <!-- 外枠の金線 -->
+  <rect x="2" y="2" width="60" height="60" rx="5" stroke="#c8a050" stroke-width="1.8" fill="none"/>
+  <!-- 内枠の金線 -->
+  <rect x="5" y="5" width="54" height="54" rx="3.5" stroke="#c8a050" stroke-width="0.8" fill="none" stroke-dasharray="2 1.5"/>
+
+  <!-- ===== 内側の背景 ===== -->
+  <rect x="6" y="6" width="52" height="52" rx="3" fill="#1e0808"/>
+
+  <!-- ===== 仕切り（漆・金縁） ===== -->
+  <!-- 縦仕切り -->
+  <rect x="30" y="6" width="2" height="52" fill="#2d0a0a"/>
+  <line x1="31" y1="6" x2="31" y2="58" stroke="#c8a050" stroke-width="0.7"/>
+  <!-- 横仕切り（右半分のみ） -->
+  <rect x="32" y="32" width="26" height="2" fill="#2d0a0a"/>
+  <line x1="32" y1="33" x2="58" y2="33" stroke="#c8a050" stroke-width="0.7"/>
+
+  <!-- ===== 左エリア：ご飯 ===== -->
+  <rect x="7" y="7" width="22" height="50" rx="2" fill="url(#rice-top)"/>
+  <!-- 粒の表現（楕円を整列） -->
+  <g opacity=".85">
+    <ellipse cx="12" cy="12" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="12" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="12" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="17" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="17" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="17" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="22" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="22" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="22" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="27" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="27" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="27" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="32" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="32" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="32" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="37" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="37" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="37" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="42" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="42" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="42" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="47" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="47" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="47" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="12" cy="52" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="18" cy="52" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+    <ellipse cx="24" cy="52" rx="2" ry="1.2" fill="#fff" opacity=".8"/>
+  </g>
+  <!-- 粒の影（下側） -->
+  <g opacity=".3">
+    <ellipse cx="12.5" cy="13" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="18.5" cy="13" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="24.5" cy="13" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="12.5" cy="18" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="18.5" cy="18" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="24.5" cy="18" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="12.5" cy="23" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="18.5" cy="23" rx="1.5" ry=".7" fill="#a08860"/>
+    <ellipse cx="24.5" cy="23" rx="1.5" ry=".7" fill="#a08860"/>
+  </g>
+  <!-- ごま -->
+  <circle cx="10" cy="15" r=".7" fill="#3a2008" opacity=".7"/>
+  <circle cx="22" cy="25" r=".7" fill="#3a2008" opacity=".7"/>
+  <circle cx="16" cy="35" r=".7" fill="#3a2008" opacity=".7"/>
+  <circle cx="26" cy="44" r=".7" fill="#3a2008" opacity=".7"/>
+  <circle cx="9"  cy="48" r=".6" fill="#3a2008" opacity=".6"/>
+
+  <!-- ===== 右上エリア：うなぎ蒲焼き ===== -->
+  <rect x="33" y="7" width="24" height="24" rx="2" fill="url(#unagi-top)"/>
+  <!-- 身の繊維（横ライン） -->
+  <line x1="33" y1="10.5" x2="57" y2="10.5" stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <line x1="33" y1="14"   x2="57" y2="14"   stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <line x1="33" y1="17.5" x2="57" y2="17.5" stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <line x1="33" y1="21"   x2="57" y2="21"   stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <line x1="33" y1="24.5" x2="57" y2="24.5" stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <line x1="33" y1="28"   x2="57" y2="28"   stroke="#4a1600" stroke-width="1.2" opacity=".55"/>
+  <!-- タレのツヤ -->
+  <rect x="33" y="7" width="24" height="24" rx="2" fill="url(#tare-top)"/>
+  <!-- 表面ツヤ（左上ハイライト） -->
+  <ellipse cx="40" cy="13" rx="7" ry="3.5" fill="#fff" opacity=".12" transform="rotate(-15 40 13)"/>
+  <!-- 山椒（緑の点） -->
+  <circle cx="50" cy="10" r="1.2" fill="#5a9a28"/>
+  <circle cx="53" cy="13" r="1"   fill="#5a9a28"/>
+  <circle cx="48" cy="14" r=".9"  fill="#5a9a28"/>
+
+  <!-- ===== 右下エリア：ブロッコリー ===== -->
+  <rect x="33" y="35" width="24" height="22" rx="2" fill="#1a3a0a"/>
+  <!-- 大きな房 -->
+  <circle cx="41" cy="43" r="6.5" fill="url(#broc-top)"/>
+  <circle cx="51" cy="41" r="5.5" fill="url(#broc-top)"/>
+  <circle cx="45" cy="51" r="5"   fill="url(#broc-top)"/>
+  <!-- 房の細かい粒感 -->
+  <circle cx="38" cy="40" r="2.5" fill="#78c030" opacity=".7"/>
+  <circle cx="43" cy="39" r="2"   fill="#78c030" opacity=".7"/>
+  <circle cx="41" cy="45" r="2.2" fill="#78c030" opacity=".7"/>
+  <circle cx="48" cy="38" r="2"   fill="#78c030" opacity=".7"/>
+  <circle cx="53" cy="44" r="2"   fill="#78c030" opacity=".7"/>
+  <circle cx="43" cy="53" r="2.2" fill="#78c030" opacity=".7"/>
+  <circle cx="49" cy="52" r="1.8" fill="#78c030" opacity=".7"/>
+  <!-- ハイライト -->
+  <circle cx="39" cy="39" r="1.2" fill="#c0f060" opacity=".5"/>
+  <circle cx="49" cy="38" r="1"   fill="#c0f060" opacity=".5"/>
+  <circle cx="43" cy="50" r="1"   fill="#c0f060" opacity=".5"/>
+  <!-- 茎 -->
+  <line x1="41" y1="48" x2="41" y2="56" stroke="#4a7820" stroke-width="2" stroke-linecap="round" opacity=".6"/>
+  <line x1="51" y1="46" x2="50" y2="54" stroke="#4a7820" stroke-width="1.8" stroke-linecap="round" opacity=".6"/>
+  <line x1="45" y1="55" x2="45" y2="56" stroke="#4a7820" stroke-width="1.5" stroke-linecap="round" opacity=".6"/>
+</svg>

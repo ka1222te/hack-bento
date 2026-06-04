@@ -1,0 +1,32 @@
+services:
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: hackbento-orchestrator
+    env_file:
+      - .env
+    volumes:
+      - ./orchestrator:/app
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:${PORT:-8000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+networks:
+  vm_net:
+    name: hackbento-vm
+    driver: macvlan
+    driver_opts:
+      parent: enp6s0
+    ipam:
+      config:
+        - subnet: 192.168.176.0/20
+          gateway: 192.168.180.1
+          ip_range: 192.168.181.192/27

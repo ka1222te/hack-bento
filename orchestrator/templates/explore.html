@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Explore — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="explore-layout">
+    <!-- フィルターサイドバー -->
+    <aside class="explore-sidebar">
+      <div class="explore-sidebar-inner">
+        <h3 class="sidebar-title">Filter</h3>
+
+        <div class="sidebar-section">
+          <label class="sidebar-label">Search</label>
+          <input type="text" id="search-input" class="sf-select" placeholder="プロジェクトを検索..." />
+        </div>
+
+        <div class="sidebar-section">
+          <label class="sidebar-label">Difficulty</label>
+          <select id="diff-select" class="sf-select">
+            <option value="">すべて</option>
+            <option value="none">— 指定なし —</option>
+            <option value="easy">Easy</option>
+            <option value="medium">Medium</option>
+            <option value="hard">Hard</option>
+            <option value="insane">Insane</option>
+          </select>
+        </div>
+
+        <div class="sidebar-section">
+          <label class="sidebar-label">Category</label>
+          <select id="cat-select" class="sf-select">
+            <option value="">すべて</option>
+            <optgroup label="CTF">
+              <option value="Web">Web</option>
+              <option value="Pwn">Pwn</option>
+              <option value="Crypto">Crypto</option>
+              <option value="Reversing">Reversing</option>
+              <option value="Forensics">Forensics</option>
+              <option value="OSINT">OSINT</option>
+              <option value="Misc">Misc</option>
+            </optgroup>
+            <optgroup label="CVE / 再現性確認">
+              <option value="CVE">CVE</option>
+              <option value="Privilege Escalation">Privilege Escalation</option>
+              <option value="RCE">RCE</option>
+              <option value="LFI/RFI">LFI/RFI</option>
+              <option value="SQL Injection">SQL Injection</option>
+              <option value="XSS">XSS</option>
+              <option value="SSRF">SSRF</option>
+            </optgroup>
+            <optgroup label="テスト">
+              <option value="Sandbox Test">Sandbox Test</option>
+              <option value="Network Test">Network Test</option>
+              <option value="Docker Test">Docker Test</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <div class="sidebar-section">
+          <label class="sidebar-label">Visibility</label>
+          <select id="vis-select" class="sf-select">
+            <option value="">すべて</option>
+            <option value="public">🌍 Public</option>
+            <option value="protected">🔒 Protected</option>
+            <option value="private">🔐 Private</option>
+          </select>
+        </div>
+      </div>
+    </aside>
+
+    <!-- メインコンテンツ -->
+    <main class="explore-main">
+      <div class="explore-header">
+        <h2 class="section-title" style="margin-bottom:0">
+          <span class="section-icon">&#x1F4DA;</span> Projects
+        </h2>
+        <div style="display:flex;align-items:center;gap:.75rem">
+          <span class="result-count" id="result-count"></span>
+          <a href="/new" class="btn btn-sm btn-primary">&#xFF0B; New Project</a>
+        </div>
+      </div>
+      <div id="images-list" class="project-list"></div>
+      <p id="images-empty" class="empty-msg hidden">条件に一致するプロジェクトがありません</p>
+    </main>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = {
+  token: () => localStorage.getItem('hb_token'),
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+};
+
+if (!API.token()) { window.location.href = '/login'; }
+if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
+
+initNavbar();
+
+const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+let allImages = [], myEnvs = [];
+
+async function init() {
+  const [imgRes, envRes] = await Promise.all([
+    API.get('/api/images/'),
+    API.get('/api/envs/'),
+  ]);
+  if (imgRes.ok) allImages = await imgRes.json();
+  if (envRes.ok) myEnvs = await envRes.json();
+
+  ['diff-select', 'cat-select', 'vis-select'].forEach(id =>
+    document.getElementById(id).addEventListener('change', renderImages)
+  );
+  renderImages();
+}
+
+function renderImages() {
+  const q    = document.getElementById('search-input').value.toLowerCase();
+  const diff = document.getElementById('diff-select').value;
+  const cat  = document.getElementById('cat-select').value;
+  const vis  = document.getElementById('vis-select').value;
+
+  const filtered = allImages.filter(img =>
+    (!q    || img.name.toLowerCase().includes(q) || (img.description||'').toLowerCase().includes(q) || (img.category||'').toLowerCase().includes(q)) &&
+    (!diff || img.difficulty === diff) &&
+    (!cat  || img.category === cat) &&
+    (!vis  || img.visibility === vis)
+  );
+
+  document.getElementById('result-count').textContent = `${filtered.length} projects`;
+
+  const list  = document.getElementById('images-list');
+  const empty = document.getElementById('images-empty');
+  if (filtered.length === 0) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+
+  const activeEnvImageIds = new Set(myEnvs.map(e => e.image_id));
+  const atLimit   = myEnvs.length >= MAX_ENVS;
+  const diffLabel = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
+  const visIcon   = { public: '🌍', protected: '🔒', private: '🔐' };
+
+  list.innerHTML = filtered.map(img => {
+    const running  = activeEnvImageIds.has(img.id);
+    const disabled = atLimit && !running;
+    const owner    = img.owner_username || 'unknown';
+    return `
+      <div class="project-row">
+        <div class="project-row-main">
+          <div class="project-row-title">
+            <a href="/user/${escHtml(owner)}" class="project-link-owner">${escHtml(owner)}</a>
+            <span class="project-link-sep">/</span>
+            <a href="/${escHtml(owner)}/${escHtml(img.slug)}" class="project-link"><strong>${escHtml(img.slug)}</strong></a>
+            ${img.difficulty !== 'none' ? `<span class="diff-badge diff-${img.difficulty}">${diffLabel[img.difficulty]}</span>` : ''}
+            ${img.category ? `<span class="cat-badge">${escHtml(img.category)}</span>` : ''}
+            <span class="vis-badge" title="${img.visibility}">${visIcon[img.visibility] || ''}</span>
+          </div>
+          <p class="project-row-desc">${escHtml(img.description || '説明なし')}</p>
+          <div class="project-row-meta">
+            <span>&#x23F0; タイムアウト ${img.timeout_minutes}分</span>
+          </div>
+        </div>
+        <div class="project-row-action">
+          ${running
+            ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
+            : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
+                 onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
+                 &#x25B6; 起動
+               </button>`
+          }
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function startEnv(imageId) {
+  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+  const res = await API.post(`/api/envs/${imageId}/start`);
+  if (res.ok) { showToast('環境を起動しました', 'success'); setTimeout(() => window.location.href = '/', 800); }
+  else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); btn.disabled = false; btn.textContent = '▶ 起動'; }
+}
+
+document.getElementById('search-input').addEventListener('input', renderImages);
+init();
+</script>
+{% endblock %}

@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="home-layout container">
+    <!-- 起動中の環境 -->
+    <section class="section">
+      <h2 class="section-title">
+        <span class="section-icon">&#x1F5A5;</span> 起動中の環境
+        <span class="env-count-badge" id="env-count-badge"></span>
+      </h2>
+      <div id="my-envs-grid" class="env-grid"></div>
+      <p id="my-envs-empty" class="empty-msg hidden">起動中の環境はありません &mdash; <a href="/explore">プロジェクトを探す</a></p>
+    </section>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = {
+  token: () => localStorage.getItem('hb_token'),
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+};
+
+if (!API.token()) { window.location.href = '/login'; }
+if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
+
+initNavbar();
+
+const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+let myEnvs = [];
+const timers = {};
+
+async function loadMyEnvs() {
+  const res = await API.get('/api/envs/');
+  if (!res.ok) { if (res.status === 401) { window.location.href = '/login'; } return; }
+  myEnvs = await res.json();
+  renderMyEnvs();
+}
+
+function renderMyEnvs() {
+  // カウントバッジ更新
+  const badge = document.getElementById('env-count-badge');
+  badge.textContent = `${myEnvs.length} / ${MAX_ENVS}`;
+  badge.className = 'env-count-badge' + (myEnvs.length >= MAX_ENVS ? ' env-count-full' : '');
+
+  const grid  = document.getElementById('my-envs-grid');
+  const empty = document.getElementById('my-envs-empty');
+  if (myEnvs.length === 0) { grid.innerHTML = ''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = myEnvs.map(env => `
+    <div class="env-card" id="env-${env.id}">
+      <div class="env-card-header">
+        <span class="env-status-dot ${env.status}"></span>
+        <a class="env-name" href="/${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}">${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}</a>
+      </div>
+      <div class="env-ip">
+        <span class="label">IP</span>
+        <code class="ip-code">${escHtml(env.ip_address || '取得中...')}</code>
+        ${env.ip_address ? `<button class="copy-btn" onclick="copyToClipboard('${escHtml(env.ip_address)}', this)" title="IPアドレスをコピー">&#x1F4CB;</button>` : ''}
+      </div>
+      <div class="env-timer" id="timer-${env.id}">
+        <span>残り</span>
+        <span class="countdown"></span>
+        <span class="warn-badge hidden" id="warn-${env.id}">⚠ まもなく終了</span>
+      </div>
+      <div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>
+      <div class="env-actions">
+        <button class="btn btn-sm btn-extend" onclick="extendEnv(${env.id}, ${env.timeout_minutes})">&#x23F1; 延長 (+${env.timeout_minutes}分)</button>
+        <button class="btn btn-sm btn-danger"  onclick="stopEnv(${env.id})">&#x23F9; 停止</button>
+      </div>
+    </div>
+  `).join('');
+
+  // カウントダウン開始（延長後リセットのため毎回新規）
+  myEnvs.forEach(env => startCountdown(env.id, env.seconds_remaining, env.timeout_minutes * 60));
+}
+
+// 残り時間の割合でバーと文字色を段階的に変化させる
+// >30% → blue, 10〜30% → yellow, <10% → red
+function _timerColor(s, timeoutSec) {
+  const pct = s / timeoutSec;
+  if (pct > 0.30) return 'blue';
+  if (pct > 0.10) return 'yellow';
+  return 'red';
+}
+
+function startCountdown(envId, seconds, timeoutSec) {
+  if (timers[envId]) clearInterval(timers[envId]);
+  let s = seconds;
+
+  const update = () => {
+    const timerEl = document.getElementById(`timer-${envId}`);
+    const barEl   = document.getElementById(`tbar-inner-${envId}`);
+    const cardEl  = document.getElementById(`env-${envId}`);
+    const warnEl  = document.getElementById(`warn-${envId}`);
+    if (!timerEl) { clearInterval(timers[envId]); return; }
+    if (s <= 0)   { clearInterval(timers[envId]); loadMyEnvs(); return; }
+
+    // 時間表示
+    const countEl = timerEl.querySelector('.countdown');
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    countEl.textContent = h > 0
+      ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+
+    // バー幅
+    const pct = Math.min(100, s / timeoutSec * 100);
+    if (barEl) barEl.style.width = pct + '%';
+
+    // 色フェーズ（青→黄→赤）
+    const phase = _timerColor(s, timeoutSec);
+    if (barEl) {
+      barEl.className = 'timer-bar-inner timer-' + phase;
+    }
+    if (timerEl) {
+      timerEl.className = 'env-timer timer-text-' + phase;
+    }
+    if (cardEl) {
+      cardEl.classList.toggle('env-card-warning', phase !== 'blue');
+      cardEl.classList.toggle('env-card-danger',  phase === 'red');
+    }
+    if (warnEl) {
+      warnEl.classList.toggle('hidden', phase === 'blue');
+    }
+
+    s--;
+  };
+
+  update();
+  timers[envId] = setInterval(update, 1000);
+}
+
+async function extendEnv(envId, timeoutMin) {
+  const btn = event.target; btn.disabled = true; btn.textContent = '延長中...';
+  const res = await API.post(`/api/envs/${envId}/extend`);
+  if (res.ok) {
+    showToast(`${timeoutMin}分延長しました`, 'success');
+    await loadMyEnvs(); // リセット後は青に戻る
+  } else {
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+    btn.disabled = false; btn.textContent = `&#x23F1; 延長 (+${timeoutMin}分)`;
+  }
+}
+
+async function stopEnv(envId) {
+  if (!confirm('この環境を停止しますか？')) return;
+  const res = await API.post(`/api/envs/${envId}/stop`);
+  if (res.ok) {
+    showToast('停止しました', 'success');
+    if (timers[envId]) clearInterval(timers[envId]);
+    await loadMyEnvs();
+  } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+}
+
+// copyToClipboard / copyIP は navbar.html で定義済み
+
+(async () => { await loadMyEnvs(); setInterval(loadMyEnvs, 15000); })();
+</script>
+{% endblock %}

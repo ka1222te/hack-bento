@@ -1,0 +1,429 @@
+{% extends "base.html" %}
+{% block title %}Edit — {{ owner }}/{{ slug }}{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="np-wrap">
+    <div class="np-header">
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem">
+        <a href="/{{ owner }}/{{ slug }}" class="breadcrumb-link" style="font-size:.9rem">
+          &#x2190; {{ owner }}/{{ slug }}
+        </a>
+      </div>
+      <h1 class="np-title">Edit Project</h1>
+    </div>
+
+    <div class="np-card">
+      <div id="form-error" class="alert alert-error hidden"></div>
+      <div id="form-success" class="alert alert-success hidden"></div>
+
+      <form id="edit-form" enctype="multipart/form-data" novalidate>
+
+        <!-- Project name -->
+        <div class="np-field">
+          <label class="np-label">Project name</label>
+          <input class="np-input" name="name" id="proj-name" autocomplete="off" />
+        </div>
+
+        <!-- Description -->
+        <div class="np-field">
+          <label class="np-label">Description</label>
+          <textarea class="np-input" name="description" id="proj-desc" rows="3"></textarea>
+        </div>
+
+        <!-- Category / Difficulty -->
+        <div class="np-row">
+          <div class="np-field">
+            <label class="np-label">Category</label>
+            <select class="np-input" name="category" id="proj-category">
+              <option value="">— 指定なし —</option>
+              <optgroup label="CTF カテゴリ">
+                <option value="Web">Web</option>
+                <option value="Pwn">Pwn</option>
+                <option value="Crypto">Crypto</option>
+                <option value="Reversing">Reversing</option>
+                <option value="Forensics">Forensics</option>
+                <option value="OSINT">OSINT</option>
+                <option value="Misc">Misc</option>
+              </optgroup>
+              <optgroup label="CVE / 再現性確認">
+                <option value="CVE">CVE</option>
+                <option value="Privilege Escalation">Privilege Escalation</option>
+                <option value="RCE">RCE</option>
+                <option value="LFI/RFI">LFI/RFI</option>
+                <option value="SQL Injection">SQL Injection</option>
+                <option value="XSS">XSS</option>
+                <option value="SSRF">SSRF</option>
+              </optgroup>
+              <optgroup label="テスト">
+                <option value="Sandbox Test">Sandbox Test</option>
+                <option value="Network Test">Network Test</option>
+                <option value="Docker Test">Docker Test</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="np-field">
+            <label class="np-label">Difficulty</label>
+            <select class="np-input" name="difficulty" id="proj-difficulty">
+              <option value="none">— 指定なし —</option>
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+              <option value="insane">Insane</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Timeout -->
+        <div class="np-field" style="max-width:240px">
+          <label class="np-label">タイムアウト</label>
+          <select class="np-input" name="timeout_minutes" id="proj-timeout">
+            <option value="15">15 分</option>
+            <option value="30">30 分</option>
+            <option value="45">45 分</option>
+            <option value="60">60 分</option>
+            <option value="75">75 分</option>
+            <option value="90">90 分</option>
+            <option value="105">105 分</option>
+            <option value="120">120 分</option>
+          </select>
+        </div>
+
+        <!-- Visibility -->
+        <div class="np-field">
+          <label class="np-label">Visibility</label>
+          <div class="np-vis-group" id="vis-group">
+            <label class="np-vis-btn">
+              <input type="radio" name="visibility" value="private" />
+              <span class="np-vis-inner"><span class="np-vis-icon">🔐</span><span class="np-vis-name">Private</span><span class="np-vis-desc">自分と管理者のみ</span></span>
+            </label>
+            <label class="np-vis-btn">
+              <input type="radio" name="visibility" value="protected" />
+              <span class="np-vis-inner"><span class="np-vis-icon">🔒</span><span class="np-vis-name">Protected</span><span class="np-vis-desc">ログイン済みユーザ</span></span>
+            </label>
+            <label class="np-vis-btn">
+              <input type="radio" name="visibility" value="public" />
+              <span class="np-vis-inner"><span class="np-vis-icon">🌍</span><span class="np-vis-name">Public</span><span class="np-vis-desc">全員</span></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Collaborators -->
+        <div class="np-field" id="collab-section">
+          <label class="np-label">Collaborators</label>
+          <div id="collab-list" class="collab-edit-list"></div>
+          <div style="display:flex;gap:.5rem;margin-top:.5rem">
+            <input class="np-input" id="collab-input" placeholder="ユーザ名" style="flex:1" />
+            <button type="button" class="btn btn-sm btn-primary" onclick="addCollaborator()">Add</button>
+          </div>
+        </div>
+
+        <hr class="np-divider" />
+
+        <!-- Docker image（変更任意・確認ダイアログあり） -->
+        <div class="np-field">
+          <label class="np-label">
+            Docker イメージ変更
+            <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
+          </label>
+          <div class="np-toggle-header" style="margin-bottom:.5rem">
+            <span></span>
+            <div class="np-toggle-group" id="img-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="img-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="img-link">Link</button>
+            </div>
+          </div>
+          <div id="img-file-panel">
+            <div class="np-upload-area" id="image-upload-area">
+              <input type="file" name="file" id="image-file-input"
+                     accept=".tar,.tar.gz,.tgz,.tar.zst" class="file-input-hidden" />
+              <div id="image-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">🐳</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">.tar / .tar.gz / .tgz</span>
+              </div>
+              <div id="image-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="image-filename" class="np-upload-text"></span>
+                <span id="image-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+          <div id="img-link-panel" class="hidden">
+            <input class="np-input" name="image_url" id="image-url-input"
+                   placeholder="例: docker.io/library/ubuntu:22.04" autocomplete="off" />
+            <p class="np-hint" style="margin:.3rem 0 0">対応: docker.io / ghcr.io / quay.io / gcr.io</p>
+          </div>
+        </div>
+
+        <!-- README 変更 -->
+        <div class="np-field">
+          <label class="np-label">
+            README 変更
+            <span class="np-optional">optional</span>
+          </label>
+          <div class="np-toggle-header" style="margin-bottom:.5rem">
+            <span></span>
+            <div class="np-toggle-group" id="readme-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="readme-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="readme-text">Text</button>
+            </div>
+          </div>
+          <div id="readme-file-panel">
+            <div class="np-upload-area" id="readme-upload-area">
+              <input type="file" name="readme" id="readme-file-input"
+                     accept=".md,.txt" class="file-input-hidden" />
+              <div id="readme-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">📄</span>
+                <span class="np-upload-text">クリックまたはドロップ</span>
+                <span class="np-upload-sub">.md / .txt</span>
+              </div>
+              <div id="readme-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="readme-filename" class="np-upload-text"></span>
+                <span id="readme-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+          <div id="readme-text-panel" class="hidden">
+            <textarea class="np-input" name="readme_text" id="readme-textarea" rows="8"
+                      placeholder="Markdown で記述できます"></textarea>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <div id="upload-progress-wrap" class="hidden" style="margin-top:.75rem">
+          <div class="progress-bar"><div class="progress-bar-inner" id="progress-bar-inner"></div></div>
+          <span class="progress-label" id="progress-label">更新中...</span>
+        </div>
+
+        <!-- Actions -->
+        <div class="np-actions">
+          <button type="submit" class="btn btn-primary" id="submit-btn">
+            <span class="btn-text">変更を保存</span>
+            <span class="btn-spinner hidden"></span>
+          </button>
+          <a href="/{{ owner }}/{{ slug }}" class="btn btn-ghost">キャンセル</a>
+        </div>
+
+      </form>
+    </div>
+  </div>
+</div>
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const OWNER = {{ owner | tojson }};
+const SLUG  = {{ slug  | tojson }};
+const token = localStorage.getItem('hb_token');
+if (!token) { window.location.href = '/login'; }
+
+initNavbar();
+
+const API = {
+  token: () => token,
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+  async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
+};
+
+let imageData = null;
+
+async function init() {
+  const [imgRes, editRes] = await Promise.all([
+    API.get('/api/images/'),
+    API.get('/api/images/0/can-edit'),  // dummy; 下で個別取得
+  ]);
+  const images = imgRes.ok ? await imgRes.json() : [];
+  imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
+  if (!imageData) { alert('プロジェクトが見つかりません'); window.location.href = '/explore'; return; }
+
+  // 編集権限確認
+  const ceRes = await API.get(`/api/images/${imageData.id}/can-edit`);
+  const ce = ceRes.ok ? await ceRes.json() : { can_edit: false };
+  if (!ce.can_edit) { alert('編集権限がありません'); window.location.href = `/${OWNER}/${SLUG}`; return; }
+
+  // フォームに現在値をセット
+  document.getElementById('proj-name').value        = imageData.name || '';
+  document.getElementById('proj-desc').value        = imageData.description || '';
+  document.getElementById('proj-difficulty').value  = imageData.difficulty || 'none';
+  document.getElementById('proj-timeout').value     = String(imageData.timeout_minutes || 60);
+  if (imageData.category) document.getElementById('proj-category').value = imageData.category;
+
+  // visibility
+  document.querySelectorAll('input[name="visibility"]').forEach(r => {
+    r.checked = r.value === imageData.visibility;
+    if (r.checked) r.closest('.np-vis-btn').classList.add('np-vis-selected');
+  });
+
+  // README 既存内容を textarea に
+  if (imageData.readme_path || imageData.readme) {
+    const rRes = await API.get(`/api/images/${imageData.id}/readme`);
+    if (rRes.ok) {
+      const rd = await rRes.json();
+      if (rd.readme) document.getElementById('readme-textarea').value = rd.readme;
+    }
+  }
+
+  loadCollaborators();
+}
+
+// Visibility ボタン
+document.querySelectorAll('input[name="visibility"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    document.querySelectorAll('.np-vis-btn').forEach(b => b.classList.remove('np-vis-selected'));
+    radio.closest('.np-vis-btn').classList.add('np-vis-selected');
+  });
+});
+
+// トグル
+function setupToggle(groupId, panels) {
+  document.getElementById(groupId).querySelectorAll('.np-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById(groupId).querySelectorAll('.np-toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      panels.forEach(({ id, key }) => document.getElementById(id).classList.toggle('hidden', key !== btn.dataset.target));
+    });
+  });
+}
+setupToggle('img-toggle',    [{ id:'img-file-panel', key:'img-file' },{ id:'img-link-panel', key:'img-link' }]);
+setupToggle('readme-toggle', [{ id:'readme-file-panel', key:'readme-file' },{ id:'readme-text-panel', key:'readme-text' }]);
+
+// ファイル選択
+function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
+  const area = document.getElementById(areaId), input = document.getElementById(inputId);
+  area.addEventListener('click', () => input.click());
+  area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('np-upload-drag'); });
+  area.addEventListener('dragleave', () => area.classList.remove('np-upload-drag'));
+  area.addEventListener('drop', e => { e.preventDefault(); area.classList.remove('np-upload-drag'); if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; show(e.dataTransfer.files[0]); } });
+  input.addEventListener('change', () => { if (input.files[0]) show(input.files[0]); });
+  function show(f) {
+    document.getElementById(phId).classList.add('hidden');
+    document.getElementById(selId).classList.remove('hidden');
+    document.getElementById(fnId).textContent = f.name;
+    document.getElementById(fsId).textContent = unit === 'MB' ? (f.size/1024/1024).toFixed(1)+' MB' : (f.size/1024).toFixed(1)+' KB';
+  }
+}
+setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
+setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
+
+// コラボレーター
+async function loadCollaborators() {
+  const res = await API.get(`/api/users/${OWNER}/${SLUG}/collaborators`);
+  if (!res.ok) return;
+  const collabs = await res.json();
+  const list = document.getElementById('collab-list');
+  list.innerHTML = collabs.length === 0
+    ? '<p style="font-size:.85rem;color:var(--text3);padding:.25rem 0">コラボレーターなし</p>'
+    : collabs.map(c => `
+      <div class="collab-row">
+        <span class="collab-name">@${escHtml(c.username)}</span>
+        <span class="cat-badge">${c.role}</span>
+        <button class="btn btn-xs btn-danger" onclick="removeCollaborator('${escHtml(c.username)}')">✕</button>
+      </div>`).join('');
+}
+
+async function addCollaborator() {
+  const input = document.getElementById('collab-input');
+  const username = input.value.trim();
+  if (!username) return;
+  const res = await API.post(`/api/users/${OWNER}/${SLUG}/collaborators`, { username, role: 'read' });
+  if (res.ok) { showToast('追加しました', 'success'); input.value = ''; loadCollaborators(); }
+  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+}
+
+async function removeCollaborator(username) {
+  const res = await API.del(`/api/users/${OWNER}/${SLUG}/collaborators/${username}`);
+  if (res.ok) { showToast('削除しました', 'success'); loadCollaborators(); }
+  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+}
+
+// フォーム送信
+document.getElementById('edit-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errBox = document.getElementById('form-error');
+  const sucBox = document.getElementById('form-success');
+  errBox.classList.add('hidden'); sucBox.classList.add('hidden');
+
+  const imgMode    = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
+  const readmeMode = document.querySelector('#readme-toggle .np-toggle-btn.active').dataset.target;
+
+  // アクティブでない側をクリア
+  if (imgMode === 'img-link') document.getElementById('image-file-input').value = '';
+  else document.getElementById('image-url-input').value = '';
+  if (readmeMode === 'readme-text') document.getElementById('readme-file-input').value = '';
+  else document.getElementById('readme-textarea').value = '';
+
+  const hasNewFile = !!document.getElementById('image-file-input').files[0];
+  const hasNewUrl  = !!document.getElementById('image-url-input').value.trim();
+
+  // Dockerイメージ変更時は確認ダイアログ
+  if (hasNewFile || hasNewUrl) {
+    const ok = confirm(
+      '⚠ Dockerイメージを変更します。\n\n' +
+      'このプロジェクトで起動中の環境は全て停止されます。\n' +
+      '他のユーザの作業が中断される可能性があります。\n\n' +
+      '続行しますか？'
+    );
+    if (!ok) return;
+  }
+
+  const btn = document.getElementById('submit-btn');
+  const pw  = document.getElementById('upload-progress-wrap');
+  const pb  = document.getElementById('progress-bar-inner');
+  const pl  = document.getElementById('progress-label');
+  btn.disabled = true;
+  btn.querySelector('.btn-spinner').classList.remove('hidden');
+  btn.querySelector('.btn-text').textContent = '保存中...';
+  pw.classList.remove('hidden'); pb.style.width = '0%';
+
+  const fd = new FormData(e.target);
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PATCH', `/api/images/${imageData.id}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.addEventListener('progress', ev => {
+      if (ev.lengthComputable) {
+        const pct = Math.round(ev.loaded / ev.total * 100);
+        pb.style.width = pct + '%';
+        pl.textContent = `更新中... ${pct}%`;
+      }
+    });
+    xhr.addEventListener('load', () => {
+      pw.classList.add('hidden');
+      btn.disabled = false;
+      btn.querySelector('.btn-spinner').classList.add('hidden');
+      btn.querySelector('.btn-text').textContent = '変更を保存';
+      if (xhr.status === 200) {
+        sucBox.textContent = '変更を保存しました';
+        sucBox.classList.remove('hidden');
+        showToast('保存しました', 'success');
+        setTimeout(() => { window.location.href = `/${OWNER}/${SLUG}`; }, 900);
+        resolve();
+      } else {
+        try { errBox.textContent = JSON.parse(xhr.responseText).detail || 'エラー'; }
+        catch { errBox.textContent = 'エラーが発生しました'; }
+        errBox.classList.remove('hidden');
+        reject();
+      }
+    });
+    xhr.addEventListener('error', () => {
+      pw.classList.add('hidden'); btn.disabled = false;
+      btn.querySelector('.btn-spinner').classList.add('hidden');
+      btn.querySelector('.btn-text').textContent = '変更を保存';
+      errBox.textContent = '通信エラー'; errBox.classList.remove('hidden');
+      reject();
+    });
+    xhr.send(fd);
+  }).catch(() => {});
+});
+
+init();
+</script>
+{% endblock %}

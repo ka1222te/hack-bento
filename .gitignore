@@ -1,0 +1,24 @@
+# environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# DB
+*.db
+*.db-shm
+*.db-wal
+
+# Data volumes
+data/
+
+# env
+.env
+
+# design
+CLAUDE.md
+.claude/

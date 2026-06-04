@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% block title %}New Project — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="np-wrap">
+    <div class="np-header">
+      <h1 class="np-title">Create a new project</h1>
+      <p class="np-sub">Docker イメージと README をアップロードしてプロジェクトを作成します</p>
+    </div>
+
+    <div class="np-card">
+      <div id="form-error" class="alert alert-error hidden"></div>
+
+      <form id="new-project-form" enctype="multipart/form-data" novalidate>
+
+        <!-- 1. Project name -->
+        <div class="np-field">
+          <label class="np-label">Project name <span class="np-required">*</span></label>
+          <input class="np-input" name="name" id="proj-name" required
+                 placeholder="My App" autocomplete="off" />
+        </div>
+
+        <!-- 2. Owner / Slug -->
+        <div class="np-owner-row">
+          <div class="np-field np-field-owner">
+            <label class="np-label">Owner</label>
+            <div class="np-input np-owner-box" id="owner-display"></div>
+          </div>
+          <span class="np-slash">/</span>
+          <div class="np-field np-field-slug">
+            <label class="np-label">Slug <span class="np-required">*</span></label>
+            <input class="np-input" name="slug" id="proj-slug" required
+                   placeholder="my-app" pattern="[a-zA-Z0-9_\-]+" autocomplete="off" />
+          </div>
+        </div>
+        <p class="np-hint">英数字・ハイフン・アンダースコアのみ。Project name から自動生成されます。</p>
+
+        <!-- 3. Description -->
+        <div class="np-field">
+          <label class="np-label">Description <span class="np-optional">optional</span></label>
+          <textarea class="np-input" name="description" rows="3"
+                    placeholder="脆弱性の概要、学習目標などを記述..."></textarea>
+        </div>
+
+        <!-- 4. Category / Difficulty -->
+        <div class="np-row">
+          <div class="np-field">
+            <label class="np-label">Category <span class="np-optional">optional</span></label>
+            <select class="np-input" name="category">
+              <option value="" selected>— 指定なし —</option>
+              <optgroup label="CTF カテゴリ">
+                <option value="Web">Web</option>
+                <option value="Pwn">Pwn</option>
+                <option value="Crypto">Crypto</option>
+                <option value="Reversing">Reversing</option>
+                <option value="Forensics">Forensics</option>
+                <option value="OSINT">OSINT</option>
+                <option value="Misc">Misc</option>
+              </optgroup>
+              <optgroup label="CVE / 再現性確認">
+                <option value="CVE">CVE</option>
+                <option value="Privilege Escalation">Privilege Escalation</option>
+                <option value="RCE">RCE</option>
+                <option value="LFI/RFI">LFI/RFI</option>
+                <option value="SQL Injection">SQL Injection</option>
+                <option value="XSS">XSS</option>
+                <option value="SSRF">SSRF</option>
+              </optgroup>
+              <optgroup label="テスト">
+                <option value="Sandbox Test">Sandbox Test</option>
+                <option value="Network Test">Network Test</option>
+                <option value="Docker Test">Docker Test</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="np-field">
+            <label class="np-label">Difficulty <span class="np-optional">optional</span></label>
+            <select class="np-input" name="difficulty">
+              <option value="none" selected>— 指定なし —</option>
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+              <option value="insane">Insane</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 5. Timeout -->
+        <div class="np-field" style="max-width:240px">
+          <label class="np-label">タイムアウト <span class="np-required">*</span></label>
+          <select class="np-input" name="timeout_minutes">
+            <option value="15">15 分</option>
+            <option value="30">30 分</option>
+            <option value="45">45 分</option>
+            <option value="60" selected>60 分</option>
+            <option value="75">75 分</option>
+            <option value="90">90 分</option>
+            <option value="105">105 分</option>
+            <option value="120">120 分</option>
+          </select>
+        </div>
+
+        <!-- 6. Visibility -->
+        <div class="np-field">
+          <label class="np-label">Visibility</label>
+          <div class="np-vis-group">
+            <label class="np-vis-btn np-vis-selected">
+              <input type="radio" name="visibility" value="private" checked />
+              <span class="np-vis-inner">
+                <span class="np-vis-icon">🔐</span>
+                <span class="np-vis-name">Private</span>
+                <span class="np-vis-desc">自分と管理者のみ</span>
+              </span>
+            </label>
+            <label class="np-vis-btn">
+              <input type="radio" name="visibility" value="protected" />
+              <span class="np-vis-inner">
+                <span class="np-vis-icon">🔒</span>
+                <span class="np-vis-name">Protected</span>
+                <span class="np-vis-desc">ログイン済みユーザ</span>
+              </span>
+            </label>
+            <label class="np-vis-btn">
+              <input type="radio" name="visibility" value="public" />
+              <span class="np-vis-inner">
+                <span class="np-vis-icon">🌍</span>
+                <span class="np-vis-name">Public</span>
+                <span class="np-vis-desc">全員</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <hr class="np-divider" />
+
+        <!-- 7. Docker image -->
+        <div class="np-field">
+          <div class="np-toggle-header">
+            <label class="np-label">Docker イメージ <span class="np-required">*</span></label>
+            <div class="np-toggle-group" id="img-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="img-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="img-link">Link</button>
+            </div>
+          </div>
+
+          <!-- File -->
+          <div id="img-file-panel">
+            <div class="np-upload-area" id="image-upload-area">
+              <input type="file" name="file" id="image-file-input"
+                     accept=".tar,.tar.gz,.tgz,.tar.zst" class="file-input-hidden" />
+              <div id="image-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">🐳</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">.tar / .tar.gz / .tgz</span>
+              </div>
+              <div id="image-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="image-filename" class="np-upload-text"></span>
+                <span id="image-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Link -->
+          <div id="img-link-panel" class="hidden">
+            <input class="np-input" name="image_url" id="image-url-input"
+                   placeholder="例: docker.io/library/ubuntu:22.04" autocomplete="off" />
+            <p class="np-hint" style="margin:.3rem 0 0">対応: docker.io / ghcr.io / quay.io / gcr.io</p>
+          </div>
+        </div>
+
+        <hr class="np-divider" />
+
+        <!-- 8. README -->
+        <div class="np-field">
+          <div class="np-toggle-header">
+            <label class="np-label">README <span class="np-optional">optional</span></label>
+            <div class="np-toggle-group" id="readme-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="readme-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="readme-text">Text</button>
+            </div>
+          </div>
+
+          <!-- File -->
+          <div id="readme-file-panel">
+            <div class="np-upload-area" id="readme-upload-area">
+              <input type="file" name="readme" id="readme-file-input"
+                     accept=".md,.txt" class="file-input-hidden" />
+              <div id="readme-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">📄</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">.md / .txt</span>
+              </div>
+              <div id="readme-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="readme-filename" class="np-upload-text"></span>
+                <span id="readme-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Text -->
+          <div id="readme-text-panel" class="hidden">
+            <textarea class="np-input" name="readme_text" id="readme-textarea" rows="8"
+                      placeholder="# プロジェクト名&#10;&#10;## 概要&#10;Markdown で記述できます"></textarea>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <div id="upload-progress-wrap" class="hidden" style="margin-top:.75rem">
+          <div class="progress-bar">
+            <div class="progress-bar-inner" id="progress-bar-inner"></div>
+          </div>
+          <span class="progress-label" id="progress-label">アップロード中...</span>
+        </div>
+
+        <!-- Actions: 作成ボタンが左、キャンセルが右 -->
+        <div class="np-actions">
+          <button type="submit" class="btn btn-primary" id="submit-btn">
+            <span class="btn-text">プロジェクトを作成</span>
+            <span class="btn-spinner hidden"></span>
+          </button>
+          <a href="/explore" class="btn btn-ghost">キャンセル</a>
+        </div>
+
+      </form>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const token = localStorage.getItem('hb_token');
+if (!token) { window.location.href = '/login'; }
+if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
+
+initNavbar();
+document.getElementById('owner-display').textContent = localStorage.getItem('hb_username') || '';
+
+// name → slug 自動生成
+document.getElementById('proj-name').addEventListener('input', e => {
+  const slug = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  document.getElementById('proj-slug').value = slug;
+});
+
+// Visibility ボタン
+document.querySelectorAll('input[name="visibility"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    document.querySelectorAll('.np-vis-btn').forEach(b => b.classList.remove('np-vis-selected'));
+    radio.closest('.np-vis-btn').classList.add('np-vis-selected');
+  });
+});
+
+// トグルスイッチ制御
+function setupToggle(groupId, panels) {
+  const group = document.getElementById(groupId);
+  group.querySelectorAll('.np-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      group.querySelectorAll('.np-toggle-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const target = btn.dataset.target;
+      panels.forEach(({ id, key }) => {
+        document.getElementById(id).classList.toggle('hidden', key !== target);
+      });
+    });
+  });
+}
+setupToggle('img-toggle', [
+  { id: 'img-file-panel', key: 'img-file' },
+  { id: 'img-link-panel', key: 'img-link' },
+]);
+setupToggle('readme-toggle', [
+  { id: 'readme-file-panel', key: 'readme-file' },
+  { id: 'readme-text-panel', key: 'readme-text' },
+]);
+
+// ファイル選択 UI（単位を個別指定）
+function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
+  const area  = document.getElementById(areaId);
+  const input = document.getElementById(inputId);
+  area.addEventListener('click', () => input.click());
+  area.addEventListener('dragover',  e => { e.preventDefault(); area.classList.add('np-upload-drag'); });
+  area.addEventListener('dragleave', () => area.classList.remove('np-upload-drag'));
+  area.addEventListener('drop', e => {
+    e.preventDefault(); area.classList.remove('np-upload-drag');
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; show(e.dataTransfer.files[0]); }
+  });
+  input.addEventListener('change', () => { if (input.files[0]) show(input.files[0]); });
+  function show(f) {
+    document.getElementById(phId).classList.add('hidden');
+    document.getElementById(selId).classList.remove('hidden');
+    document.getElementById(fnId).textContent = f.name;
+    if (unit === 'MB') {
+      document.getElementById(fsId).textContent = (f.size / 1024 / 1024).toFixed(1) + ' MB';
+    } else {
+      document.getElementById(fsId).textContent = (f.size / 1024).toFixed(1) + ' KB';
+    }
+  }
+}
+setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
+setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
+
+// 送信
+document.getElementById('new-project-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errBox = document.getElementById('form-error');
+  errBox.classList.add('hidden');
+  const btn = document.getElementById('submit-btn');
+  const pw  = document.getElementById('upload-progress-wrap');
+  const pb  = document.getElementById('progress-bar-inner');
+  const pl  = document.getElementById('progress-label');
+
+  // アクティブでない側をクリア（混在防止）
+  const imgMode = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
+  const readmeMode = document.querySelector('#readme-toggle .np-toggle-btn.active').dataset.target;
+  if (imgMode === 'img-link') {
+    // File モードでない → ファイル入力を無効化
+    document.getElementById('image-file-input').value = '';
+  } else {
+    document.getElementById('image-url-input').value = '';
+  }
+  if (readmeMode === 'readme-text') {
+    document.getElementById('readme-file-input').value = '';
+  } else {
+    document.getElementById('readme-textarea').value = '';
+  }
+
+  const hasFile = !!document.getElementById('image-file-input').files[0];
+  const hasUrl  = !!document.getElementById('image-url-input').value.trim();
+  if (!hasFile && !hasUrl) {
+    errBox.textContent = 'Docker イメージファイルまたはイメージ URL を指定してください';
+    errBox.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.querySelector('.btn-spinner').classList.remove('hidden');
+  btn.querySelector('.btn-text').textContent = '作成中...';
+  pw.classList.remove('hidden'); pb.style.width = '0%';
+
+  const fd = new FormData(e.target);
+  // ファイルがある場合は URL フィールドを無視（サーバ側でも同様）
+  if (hasFile) fd.delete('image_url');
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/images/upload');
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.addEventListener('progress', ev => {
+      if (ev.lengthComputable) {
+        const pct = Math.round(ev.loaded / ev.total * 100);
+        pb.style.width = pct + '%';
+        pl.textContent = hasFile ? `アップロード中... ${pct}%` : `処理中... ${pct}%`;
+      }
+    });
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 201) {
+        const data = JSON.parse(xhr.responseText);
+        pl.textContent = '完了！';
+        pb.style.width = '100%';
+        setTimeout(() => { window.location.href = `/${data.owner_username}/${data.slug}`; }, 700);
+        resolve();
+      } else {
+        try { errBox.textContent = JSON.parse(xhr.responseText).detail || 'エラー'; }
+        catch { errBox.textContent = 'エラーが発生しました'; }
+        errBox.classList.remove('hidden');
+        pw.classList.add('hidden');
+        btn.disabled = false;
+        btn.querySelector('.btn-spinner').classList.add('hidden');
+        btn.querySelector('.btn-text').textContent = 'プロジェクトを作成';
+        reject();
+      }
+    });
+    xhr.addEventListener('error', () => {
+      errBox.textContent = '通信エラー'; errBox.classList.remove('hidden');
+      pw.classList.add('hidden'); btn.disabled = false;
+      btn.querySelector('.btn-spinner').classList.add('hidden');
+      btn.querySelector('.btn-text').textContent = 'プロジェクトを作成';
+      reject();
+    });
+    xhr.send(fd);
+  }).catch(() => {});
+});
+</script>
+{% endblock %}

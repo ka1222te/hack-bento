@@ -1,0 +1,180 @@
+<!-- ドロワーオーバーレイ -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+
+<!-- ドロワーサイドバー -->
+<aside class="drawer" id="drawer">
+  <div class="drawer-header">
+    <img src="/static/img/bento.svg" class="logo-svg" alt="HackBento" />
+    <span class="logo-text">HackBento</span>
+    <button class="drawer-close" onclick="closeDrawer()">&#x2715;</button>
+  </div>
+
+  <nav class="drawer-nav">
+    <a href="/" class="drawer-link" id="drawer-home">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293L8.354 1.146z"/></svg>
+      Home
+    </a>
+    <!-- サイドバー: New Project → Explore の順 -->
+    <a href="/new" class="drawer-link" id="drawer-new">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/></svg>
+      New Project
+    </a>
+    <a href="/explore" class="drawer-link" id="drawer-explore">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm2.438 11.025-3.96-1.664-1.664-3.96 3.96 1.664 1.664 3.96z"/></svg>
+      Explore
+    </a>
+  </nav>
+
+  <div class="drawer-divider"></div>
+
+  <div class="drawer-section-title">Your Projects</div>
+  <nav class="drawer-nav" id="drawer-my-projects">
+    <span class="drawer-loading">読み込み中...</span>
+  </nav>
+</aside>
+
+<!-- ユーザメニュードロップダウン -->
+<div class="user-dropdown" id="user-dropdown">
+  <div class="user-dropdown-name" id="ud-username"></div>
+  <div class="user-dropdown-divider"></div>
+  <a href="/admin" id="ud-admin-link" class="user-dropdown-item hidden">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8.932.727c-.243-.97-1.62-.97-1.864 0l-.071.286a.96.96 0 0 1-1.622.434l-.205-.211c-.695-.719-1.888-.03-1.613.931l.08.284a.96.96 0 0 1-1.186 1.187l-.284-.081c-.96-.275-1.65.918-.931 1.613l.211.205a.96.96 0 0 1-.434 1.622l-.286.071c-.97.243-.97 1.62 0 1.864l.286.071a.96.96 0 0 1 .434 1.622l-.211.205c-.719.695-.03 1.888.931 1.613l.284-.08a.96.96 0 0 1 1.187 1.187l-.081.283c-.275.96.918 1.65 1.613.932l.205-.211a.96.96 0 0 1 1.622.434l.071.286c.243.97 1.62.97 1.864 0l.071-.286a.96.96 0 0 1 1.622-.434l.205.211c.695.719 1.888.03 1.613-.931l-.08-.284a.96.96 0 0 1 1.187-1.187l.283.081c.96.275 1.65-.918.932-1.613l-.211-.205a.96.96 0 0 1 .434-1.622l.286-.071c.97-.243.97-1.62 0-1.864l-.286-.071a.96.96 0 0 1-.434-1.622l.211-.205c.719-.695.03-1.888-.931-1.613l-.284.08a.96.96 0 0 1-1.187-1.186l.081-.284c.275-.96-.918-1.65-1.613-.931l-.205.211a.96.96 0 0 1-1.622-.434L8.932.727zM8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
+    管理者画面
+  </a>
+  <button class="user-dropdown-item user-dropdown-logout" id="ud-logout">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M10 12.5a.5.5 0 0 1-.5.5h-8a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 .5.5v2a.5.5 0 0 0 1 0v-2A1.5 1.5 0 0 0 9.5 2h-8A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h8a1.5 1.5 0 0 0 1.5-1.5v-2a.5.5 0 0 0-1 0v2z"/><path fill-rule="evenodd" d="M15.854 8.354a.5.5 0 0 0 0-.708l-3-3a.5.5 0 0 0-.708.708L14.293 7.5H5.5a.5.5 0 0 0 0 1h8.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3z"/></svg>
+    ログアウト
+  </button>
+</div>
+
+<!-- ナビバー本体 -->
+<nav class="navbar">
+  <div class="navbar-left">
+    <button class="hamburger" id="hamburger-btn" onclick="openDrawer()" aria-label="メニュー">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="/" class="navbar-brand">
+      <img src="/static/img/bento.svg" class="logo-svg" alt="HackBento" />
+      <span class="logo-text">HackBento</span>
+    </a>
+    <!-- ヘッダ: ロゴ横に + New Project → Explore の順 -->
+    <a href="/new" class="btn btn-sm btn-primary navbar-new-btn">&#xFF0B; New Project</a>
+    <a href="/explore" class="btn btn-sm btn-outline navbar-new-btn">&#x1F4DA; Explore</a>
+  </div>
+  <div class="navbar-right">
+    <!-- ユーザアイコンボタン -->
+    <button class="nav-user-btn" id="nav-user-btn" onclick="toggleUserMenu(event)" aria-label="ユーザメニュー">
+      <span class="nav-user-avatar" id="nav-user-avatar">?</span>
+      <svg class="nav-user-caret" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/></svg>
+    </button>
+  </div>
+</nav>
+
+<script>
+function openDrawer() {
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function toggleUserMenu(e) {
+  e.stopPropagation();
+  document.getElementById('user-dropdown').classList.toggle('open');
+}
+// 外クリックで閉じる
+document.addEventListener('click', () => {
+  document.getElementById('user-dropdown')?.classList.remove('open');
+});
+
+function _setDrawerActive() {
+  const path = location.pathname;
+  document.querySelectorAll('.drawer-link').forEach(a => {
+    a.classList.toggle('drawer-link-active', a.getAttribute('href') === path);
+  });
+}
+
+function initNavbar() {
+  const username = localStorage.getItem('hb_username') || '';
+  const role = localStorage.getItem('hb_role') || 'user';
+
+  // アバター（ユーザ名の頭文字）
+  const avatarEl = document.getElementById('nav-user-avatar');
+  if (avatarEl) avatarEl.textContent = username ? username[0].toUpperCase() : '?';
+
+  // ドロップダウン内のユーザ名
+  const udName = document.getElementById('ud-username');
+  if (udName) udName.textContent = username;
+
+  // 管理者リンク
+  const udAdmin = document.getElementById('ud-admin-link');
+  if (udAdmin && role === 'admin') udAdmin.classList.remove('hidden');
+
+  // ログアウト
+  const udLogout = document.getElementById('ud-logout');
+  if (udLogout) udLogout.addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    localStorage.clear(); window.location.href = '/login';
+  });
+
+  _setDrawerActive();
+  _loadMyProjects();
+}
+
+async function _loadMyProjects() {
+  const token = localStorage.getItem('hb_token');
+  if (!token) return;
+  const el = document.getElementById('drawer-my-projects');
+  try {
+    const res = await fetch('/api/images/', { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) { el.innerHTML = ''; return; }
+    const images = await res.json();
+    const mine = images.filter(i => i.owner_username === localStorage.getItem('hb_username'));
+    el.innerHTML = mine.length === 0
+      ? '<span class="drawer-loading">プロジェクトなし</span>'
+      : mine.map(i => `<a href="/${escHtml(i.owner_username)}/${escHtml(i.slug)}" class="drawer-link">${escHtml(i.name)}</a>`).join('');
+  } catch { el.innerHTML = ''; }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _copyPop(btn) {
+  const pop = document.createElement('span');
+  pop.className = 'copy-pop';
+  pop.textContent = 'Copied!';
+  btn.parentNode.appendChild(pop);
+  setTimeout(() => pop.classList.add('copy-pop-show'), 10);
+  setTimeout(() => { pop.classList.remove('copy-pop-show'); setTimeout(() => pop.remove(), 200); }, 1500);
+}
+
+function copyToClipboard(text, btn) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => _copyPop(btn));
+  } else {
+    // HTTP環境フォールバック: textarea + execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    try { document.execCommand('copy'); _copyPop(btn); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+}
+// project.html の copyIP も同じ実装に統一
+function copyIP(ip, btn) { copyToClipboard(ip, btn); }
+function showToast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  if (!c) return;
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`; t.textContent = msg; c.appendChild(t);
+  setTimeout(() => t.classList.add('toast-show'), 10);
+  setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3500);
+}
+</script>

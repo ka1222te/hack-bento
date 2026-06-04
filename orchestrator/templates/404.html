@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}404 — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+  <div class="container" style="max-width:600px;padding-top:6rem;text-align:center">
+    <p style="font-size:5rem;margin-bottom:1rem">🔒</p>
+    <h1 style="font-size:2rem;font-weight:700;margin-bottom:.75rem">404 — Not Found</h1>
+    <p style="color:var(--text2);margin-bottom:2rem">
+      このページは存在しないか、閲覧する権限がありません。
+    </p>
+    <a href="/explore" class="btn btn-primary">Explore へ戻る</a>
+  </div>
+</div>
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>initNavbar();</script>
+{% endblock %}

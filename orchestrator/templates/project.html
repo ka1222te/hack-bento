@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}{{ owner }}/{{ slug }} — HackBento{% endblock %}
+
+{% block head %}
+<!-- marked.js: マークダウン → HTML レンダリング -->
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="project-page container">
+    <!-- パンくず + タイトル -->
+    <div class="project-header" id="project-header">
+      <div>
+        <div class="project-header-title">
+          <img src="/static/img/bento.svg" class="repo-icon-svg" alt="" />
+          <a href="#" class="breadcrumb-link" id="owner-link"></a>
+          <span class="breadcrumb-sep">/</span>
+          <strong id="project-slug-title"></strong>
+          <span id="vis-badge-header" class="vis-badge-lg"></span>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:56px;margin-top:.4rem">
+          <h1 class="project-full-name" id="project-name-title"></h1>
+          <a id="edit-btn" href="#" class="btn btn-sm btn-outline hidden" style="flex-shrink:0;margin-bottom:-4px">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg>
+            Edit
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="project-body">
+      <!-- メイン -->
+      <div class="project-main">
+        <!-- 起動パネル -->
+        <div class="project-launch-panel" id="project-launch-panel"></div>
+
+        <!-- メタ情報バー -->
+        <div class="project-meta-bar">
+          <span id="proj-difficulty"></span>
+          <span id="proj-category"></span>
+          <span class="meta-item">&#x23F0; タイムアウト <span id="proj-timeout"></span>分</span>
+        </div>
+
+        <!-- 説明 -->
+        <div class="project-readme" id="project-desc"></div>
+
+        <!-- README -->
+        <div id="readme-section" class="hidden">
+          <div class="readme-header">
+            <span class="readme-icon">&#x1F4C4;</span>
+            <span id="readme-filename-label">README</span>
+          </div>
+          <div class="readme-body markdown-body" id="readme-body"></div>
+        </div>
+      </div>
+
+      <!-- サイドパネル -->
+      <aside class="project-aside">
+        <div class="aside-card">
+          <h4 class="aside-title">About</h4>
+          <div class="aside-item"><span class="aside-label">難易度</span><span id="aside-diff"></span></div>
+          <div class="aside-item"><span class="aside-label">カテゴリ</span><span id="aside-cat">—</span></div>
+          <div class="aside-item"><span class="aside-label">公開設定</span><span id="aside-vis"></span></div>
+          <div class="aside-item"><span class="aside-label">作成日</span><span id="aside-date"></span></div>
+          <div class="aside-item"><span class="aside-label">タイムアウト</span><span id="aside-timeout">—</span></div>
+        </div>
+
+        <div class="aside-card hidden" id="collab-card">
+          <h4 class="aside-title">Collaborators</h4>
+          <div id="collab-list"></div>
+        </div>
+
+      </aside>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const OWNER    = {{ owner | tojson }};
+const SLUG     = {{ slug  | tojson }};
+const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+
+const API = {
+  token: () => localStorage.getItem('hb_token'),
+  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  async get(url) { return fetch(url, { headers: API.headers() }); },
+  async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+  async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
+  async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
+};
+
+if (!API.token()) { window.location.href = '/login'; }
+initNavbar();
+
+const myUsername = localStorage.getItem('hb_username') || '';
+const myRole     = localStorage.getItem('hb_role') || 'user';
+const diffLabel  = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
+const visLabel   = { public: '🌍 Public', protected: '🔒 Protected', private: '🔐 Private' };
+
+let imageData = null;
+let myEnvs    = [];
+
+async function init() {
+  const [imgRes, envRes] = await Promise.all([
+    API.get('/api/images/'),
+    API.get('/api/envs/'),
+  ]);
+  const images = imgRes.ok ? await imgRes.json() : [];
+  myEnvs = envRes.ok ? await envRes.json() : [];
+
+  imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
+  if (!imageData) {
+    document.getElementById('project-header').innerHTML = '<p class="empty-msg">プロジェクトが見つかりません</p>';
+    return;
+  }
+
+  // ヘッダ
+  document.getElementById('owner-link').textContent = OWNER;
+  document.getElementById('owner-link').href = `/user/${OWNER}`;
+
+  // 編集権限確認
+  const ceRes = await API.get(`/api/images/${imageData.id}/can-edit`);
+  if (ceRes.ok) {
+    const ce = await ceRes.json();
+    _canEdit = ce.can_edit;
+    if (_canEdit) {
+      const eb = document.getElementById('edit-btn');
+      eb.href = `/${OWNER}/${SLUG}/edit`;
+      eb.classList.remove('hidden');
+    }
+  }
+  document.getElementById('project-slug-title').textContent = SLUG;
+  document.getElementById('project-name-title').textContent = imageData.name;
+  document.getElementById('vis-badge-header').textContent = visLabel[imageData.visibility] || imageData.visibility;
+
+  // メタバー
+  document.getElementById('proj-difficulty').innerHTML = imageData.difficulty !== 'none'
+    ? `<span class="diff-badge diff-${imageData.difficulty}">${diffLabel[imageData.difficulty]}</span>`
+    : '';
+  if (imageData.category) document.getElementById('proj-category').innerHTML = `<span class="cat-badge">${escHtml(imageData.category)}</span>`;
+  document.getElementById('proj-timeout').textContent = imageData.timeout_minutes;
+
+  // 説明
+  document.getElementById('project-desc').textContent = imageData.description || '';
+
+  // aside
+  document.getElementById('aside-diff').innerHTML = imageData.difficulty !== 'none'
+    ? `<span class="diff-badge diff-${imageData.difficulty}">${diffLabel[imageData.difficulty]}</span>`
+    : '—';
+  document.getElementById('aside-cat').textContent   = imageData.category || '—';
+  document.getElementById('aside-vis').textContent   = visLabel[imageData.visibility] || imageData.visibility;
+  document.getElementById('aside-date').textContent  = new Date(imageData.created_at + 'Z').toLocaleDateString('ja-JP');
+  document.getElementById('aside-timeout').textContent = imageData.timeout_minutes + ' 分';
+
+  renderLaunchPanel();
+
+  // README 取得
+  loadReadme();
+
+  // コラボレーターパネル: 編集権限があれば表示
+  const ceRes2 = await API.get(`/api/images/${imageData.id}/can-edit`);
+  if (ceRes2.ok) {
+    const ce2 = await ceRes2.json();
+    if (ce2.can_edit) {
+      document.getElementById('collab-card').classList.remove('hidden');
+    }
+  }
+  loadCollaborators();
+}
+
+// ---- 起動パネル ----
+let _canEdit = false;
+
+const _editSvg = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg>`;
+
+function renderLaunchPanel() {
+  const running = myEnvs.find(e => e.image_id === imageData.id);
+  const atLimit = myEnvs.length >= MAX_ENVS;
+  const panel   = document.getElementById('project-launch-panel');
+
+  if (running) {
+    panel.innerHTML = `
+      <div class="launch-panel launch-panel-running">
+        <div class="launch-panel-info">
+          <span class="launch-status-dot running"></span>
+          <div>
+            <div class="launch-panel-label">環境が起動中です</div>
+            <div class="launch-panel-ip">
+              <span class="label">IP</span>
+              <code class="ip-code">${escHtml(running.ip_address || '取得中...')}</code>
+              ${running.ip_address ? `<button class="copy-btn" onclick="copyIP('${escHtml(running.ip_address)}', this)" title="IPアドレスをコピー">📋</button>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="launch-panel-actions">
+          <button class="btn btn-danger" onclick="stopEnv(${running.id})">&#x23F9; 停止する</button>
+        </div>
+      </div>`;
+  } else {
+    const catchphrases = [
+      'この環境を使ってみよう',
+      'この環境、活かしてるぜ',
+      'さあ、ハックの時間だ',
+      '腕試しの機会がやってきた',
+      'セキュリティの境界を越えろ',
+      '脆弱性を暴いてみせろ',
+      '準備はいいか？起動しよう',
+      'この環境、攻略できるか？',
+      'ペンテスターの本領発揮だ',
+      '知識を武器に挑んでみよう',
+    ];
+    const phrase = catchphrases[Math.floor(Math.random() * catchphrases.length)];
+    panel.innerHTML = `
+      <div class="launch-panel launch-panel-idle">
+        <div class="launch-panel-info">
+          <span class="launch-status-dot idle"></span>
+          <div>
+            <div class="launch-panel-label">${phrase}</div>
+          </div>
+        </div>
+        <div class="launch-panel-actions">
+          <button class="btn btn-launch btn-launch-lg ${atLimit ? 'btn-disabled' : ''}"
+            onclick="startEnv(${imageData.id})" ${atLimit ? `disabled title="同時起動上限(${MAX_ENVS})に達しています"` : ''}>
+            &#x25B6; 起動する
+          </button>
+        </div>
+      </div>`;
+  }
+}
+
+async function startEnv(imageId) {
+  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+  const res = await API.post(`/api/envs/${imageId}/start`);
+  if (res.ok) {
+    showToast('環境を起動しました', 'success');
+    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+    renderLaunchPanel();
+  } else {
+    const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
+    btn.disabled = false; btn.textContent = '▶ 起動する';
+  }
+}
+
+async function stopEnv(envId) {
+  if (!confirm('この環境を停止しますか？')) return;
+  const res = await API.post(`/api/envs/${envId}/stop`);
+  if (res.ok) {
+    showToast('停止しました', 'success');
+    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+    renderLaunchPanel();
+  } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+}
+
+// copyIP は navbar.html で定義済み
+
+// ---- README ----
+async function loadReadme() {
+  const res = await API.get(`/api/images/${imageData.id}/readme`);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (!data.readme) return;
+
+  const section = document.getElementById('readme-section');
+  const body    = document.getElementById('readme-body');
+
+  // marked.js でマークダウン → HTML
+  const html = typeof marked !== 'undefined'
+    ? marked.parse(data.readme)
+    : `<pre>${escHtml(data.readme)}</pre>`;
+
+  body.innerHTML = html;
+  section.classList.remove('hidden');
+}
+
+// ---- Collaborators ----
+async function loadCollaborators() {
+  const res = await API.get(`/api/users/${OWNER}/${SLUG}/collaborators`);
+  if (!res.ok) return;
+  const collabs = await res.json();
+  const list = document.getElementById('collab-list');
+  list.innerHTML = collabs.length === 0
+    ? '<p style="font-size:.85rem;color:var(--text3);padding:.25rem 0">コラボレーターなし</p>'
+    : collabs.map(c => `<div style="font-size:.9rem;padding:.2rem 0;color:var(--text2)">@${escHtml(c.username)}</div>`).join('');
+}
+
+
+init();
+</script>
+{% endblock %}
