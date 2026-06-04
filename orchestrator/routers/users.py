@@ -6,9 +6,10 @@ from pydantic import BaseModel, field_validator
 from datetime import datetime
 
 from database import get_db
-from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility
+from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility, AuthProvider
 from deps import get_current_user
 from services.jwt_utils import create_access_token
+from services.auth_local import hash_password
 from config import settings
 from reserved import is_reserved
 
@@ -77,6 +78,40 @@ async def check_username(username: str, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         return {"available": False, "reason": "このユーザ名は既に使用されています"}
     return {"available": True}
+
+
+# ---- パスワード変更 ----
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
+@router.post("/me/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.auth_provider != AuthProvider.local:
+        raise HTTPException(
+            status_code=403,
+            detail="パスワード変更はローカルユーザのみ使用可能です",
+        )
+    from services.auth_local import verify_password
+    if not current_user.hashed_password or not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="現在のパスワードが正しくありません")
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="新しいパスワードが一致しません")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="パスワードは8文字以上にしてください")
+    await db.execute(
+        update(User).where(User.id == current_user.id).values(
+            hashed_password=hash_password(body.new_password)
+        )
+    )
+    await db.commit()
 
 
 # ---- コラボレーター管理 ----

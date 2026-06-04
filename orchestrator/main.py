@@ -188,6 +188,11 @@ async def new_project_page(request: Request):
     return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    return templates.TemplateResponse("settings.html", {"request": request, "settings": settings})
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request, "settings": settings})

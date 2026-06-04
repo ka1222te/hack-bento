@@ -392,7 +392,11 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);
         pb.style.width = pct + '%';
-        pl.textContent = `更新中... ${pct}%`;
+        if (pct >= 100) {
+          pl.textContent = 'アップロードされたファイルを元にイメージを構築しています...';
+        } else {
+          pl.textContent = `更新中... ${pct}%`;
+        }
       }
     });
     xhr.addEventListener('load', () => {

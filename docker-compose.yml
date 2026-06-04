@@ -10,10 +10,7 @@ services:
       - ./orchestrator:/app
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock
-    ports:
-      - "${PORT:-8000}:${PORT:-8000}"
-    networks:
-      - vm_net
+    network_mode: host
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]

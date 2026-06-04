@@ -17,6 +17,30 @@ def _ip_pool() -> list[str]:
     return [str(ipaddress.IPv4Address(i)) for i in range(int(start), int(end) + 1)]
 
 
+async def _get_docker_used_ips() -> set[str]:
+    """docker network inspect でネットワーク上の実コンテナが使用中のIPを取得する。"""
+    import json
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "network", "inspect", settings.MACVLAN_NETWORK,
+        "--format", "{{json .Containers}}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return set()
+    try:
+        containers = json.loads(stdout.decode())
+        ips = set()
+        for c in containers.values():
+            ipv4 = c.get("IPv4Address", "")
+            if ipv4:
+                ips.add(ipv4.split("/")[0])
+        return ips
+    except Exception:
+        return set()
+
+
 async def allocate_ip(db: AsyncSession) -> Optional[str]:
     async with _lock:
         result = await db.execute(
@@ -24,7 +48,9 @@ async def allocate_ip(db: AsyncSession) -> Optional[str]:
                 Environment.status.in_([EnvStatus.starting, EnvStatus.running])
             )
         )
-        used = {row[0] for row in result.fetchall() if row[0]}
+        db_used = {row[0] for row in result.fetchall() if row[0]}
+        docker_used = await _get_docker_used_ips()
+        used = db_used | docker_used
         for ip in _ip_pool():
             if ip not in used:
                 return ip

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}ユーザ設定 — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="container" style="max-width:600px;padding-top:2.5rem;padding-bottom:3rem">
+    <h1 style="font-size:1.4rem;font-weight:700;margin-bottom:1.75rem">ユーザ設定</h1>
+
+    <div class="card" style="padding:1.5rem">
+      <h2 style="font-size:1rem;font-weight:600;margin-bottom:1.25rem">パスワード変更</h2>
+
+      <div id="settings-info" class="alert alert-info hidden"
+           style="margin-bottom:1rem">
+        パスワードの変更はローカルユーザのみ使用可能です。
+      </div>
+      <div id="settings-error" class="alert alert-error hidden"
+           style="margin-bottom:1rem"></div>
+      <div id="settings-success" class="alert alert-success hidden"
+           style="margin-bottom:1rem">パスワードを変更しました。</div>
+
+      <form id="pw-form" class="login-form" style="gap:.9rem">
+        <div class="form-group">
+          <label for="current-password">現在のパスワード</label>
+          <input type="password" id="current-password" placeholder="現在のパスワード" autocomplete="current-password" required />
+        </div>
+        <div class="form-group">
+          <label for="new-password">新しいパスワード</label>
+          <input type="password" id="new-password" placeholder="8文字以上" autocomplete="new-password" required />
+        </div>
+        <div class="form-group">
+          <label for="confirm-password">新しいパスワード（確認）</label>
+          <input type="password" id="confirm-password" placeholder="もう一度入力" autocomplete="new-password" required />
+        </div>
+        <button type="submit" class="btn btn-primary" id="pw-btn" style="width:100%">
+          <span class="btn-text">パスワードを変更</span>
+          <span class="btn-spinner hidden"></span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const token = localStorage.getItem('hb_token');
+  if (!token) { window.location.href = '/login'; return; }
+
+  initNavbar();
+
+  // auth_provider を API から取得してローカルユーザか判定
+  const res = await fetch('/api/auth/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) { window.location.href = '/login'; return; }
+  const me = await res.json();
+
+  const isLocal = me.auth_provider === 'local';
+  const form = document.getElementById('pw-form');
+  const infoBox = document.getElementById('settings-info');
+
+  if (!isLocal) {
+    // フォームを非表示にしてメッセージのみ表示
+    form.classList.add('hidden');
+    infoBox.classList.remove('hidden');
+    return;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errBox = document.getElementById('settings-error');
+    const sucBox = document.getElementById('settings-success');
+    const btn = document.getElementById('pw-btn');
+    errBox.classList.add('hidden');
+    sucBox.classList.add('hidden');
+
+    const currentPw = document.getElementById('current-password').value;
+    const newPw = document.getElementById('new-password').value;
+    const confirmPw = document.getElementById('confirm-password').value;
+
+    if (newPw !== confirmPw) {
+      errBox.textContent = '新しいパスワードが一致しません';
+      errBox.classList.remove('hidden');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.querySelector('.btn-spinner').classList.remove('hidden');
+    btn.querySelector('.btn-text').textContent = '変更中...';
+
+    const r = await fetch('/api/users/me/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ current_password: currentPw, new_password: newPw, confirm_password: confirmPw }),
+    });
+
+    btn.disabled = false;
+    btn.querySelector('.btn-spinner').classList.add('hidden');
+    btn.querySelector('.btn-text').textContent = 'パスワードを変更';
+
+    if (r.status === 204) {
+      sucBox.classList.remove('hidden');
+      document.getElementById('current-password').value = '';
+      document.getElementById('new-password').value = '';
+      document.getElementById('confirm-password').value = '';
+      showToast('パスワードを変更しました', 'success');
+    } else {
+      const data = await r.json().catch(() => ({}));
+      errBox.textContent = data.detail || 'エラーが発生しました';
+      errBox.classList.remove('hidden');
+    }
+  });
+})();
+</script>
+{% endblock %}

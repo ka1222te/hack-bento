@@ -2,10 +2,7 @@ import asyncio
 import uuid
 import logging
 from config import settings
-from services.network import (
-    detach_container_network,
-    create_tap, delete_tap,
-)
+from services.network import create_tap, delete_tap
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +66,6 @@ async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMSt
 
 
 async def _stop_docker(vm_id: str) -> None:
-    await detach_container_network(vm_id)
     proc = await asyncio.create_subprocess_exec(
         "docker", "rm", "-f", vm_id,
         stdout=asyncio.subprocess.DEVNULL,

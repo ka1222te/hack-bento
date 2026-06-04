@@ -9,6 +9,7 @@ from database import get_db
 from models import User
 from services import auth_local, auth_ldap, auth_oauth
 from services.jwt_utils import create_access_token
+from deps import get_current_user
 from config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -57,6 +58,17 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
 async def logout(response: Response):
     response.delete_cookie("access_token")
     return {"message": "ログアウトしました"}
+
+
+@router.get("/me")
+async def me(current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "role": current_user.role.value,
+        "auth_provider": current_user.auth_provider.value,
+    }
 
 
 @router.get("/oauth/google")

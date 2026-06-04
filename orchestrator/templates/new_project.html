@@ -356,7 +356,11 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);
         pb.style.width = pct + '%';
-        pl.textContent = hasFile ? `アップロード中... ${pct}%` : `処理中... ${pct}%`;
+        if (pct >= 100 && hasFile) {
+          pl.textContent = 'アップロードされたファイルを元にイメージを構築しています...';
+        } else {
+          pl.textContent = hasFile ? `アップロード中... ${pct}%` : `処理中... ${pct}%`;
+        }
       }
     });
     xhr.addEventListener('load', () => {
