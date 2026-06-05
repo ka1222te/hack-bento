@@ -20,7 +20,7 @@ UPLOAD_DIR = "/data/images/uploads"
 README_DIR = "/data/images/readmes"
 ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst")
 ALLOWED_README   = (".md", ".txt")
-TRUSTED_DOMAINS  = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
+TRUSTED_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
 
 
 class ImageResponse(BaseModel):
@@ -49,6 +49,42 @@ def _allowed_image(filename: str) -> bool:
 
 def _allowed_readme(filename: str) -> bool:
     return any(filename.lower().endswith(s) for s in ALLOWED_README)
+
+def _validate_image_ref(ref: str) -> None:
+    """Docker image reference のレジストリホストが許可リストに含まれるか検証する。
+
+    Docker image reference の形式:
+      [registry-host[:port]/]name[:tag][@digest]
+
+    レジストリ未指定（例: ubuntu:22.04）は Docker Hub として扱い許可する。
+    IP アドレスや許可外ホストを含む場合は ValueError を送出する。
+    """
+    import re
+    # name 部分（タグ・ダイジェストを除いたパス）を取り出す
+    name_part = ref.split("@")[0].split(":")[0]
+    segments = name_part.split("/")
+
+    # 先頭セグメントにドット・コロン・大文字が含まれる場合はレジストリホストと判定
+    # （Docker の規則: https://docs.docker.com/engine/reference/commandline/pull/）
+    first = segments[0]
+    is_registry = ("." in first or ":" in first or first == "localhost")
+
+    if not is_registry:
+        # レジストリ未指定 → Docker Hub (docker.io) として扱い許可
+        return
+
+    # IP アドレスを拒否（IPv4・IPv6）
+    host = first.split(":")[0]
+    ipv4_pattern = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+    if ipv4_pattern.match(host) or host == "localhost" or host.startswith("["):
+        raise ValueError(f"レジストリに IP アドレス・localhost は使用できません: {host}")
+
+    # ホストが許可リストのいずれかと一致するか、そのサブドメインか確認
+    if not any(host == d or host.endswith(f".{d}") for d in TRUSTED_REGISTRIES):
+        raise ValueError(
+            f"許可されていないレジストリです: {host}  "
+            f"（許可: {', '.join(TRUSTED_REGISTRIES)}）"
+        )
 
 
 async def _can_see(image: Image, user: Optional[User], db: AsyncSession) -> bool:
@@ -124,6 +160,7 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
 
 async def _docker_pull(ref: str) -> tuple[str, str]:
     """docker pull してアーカイブに保存し、(oci_ref, save_path) を返す。"""
+    _validate_image_ref(ref)
     # pull
     pull = await asyncio.create_subprocess_exec(
         "docker", "pull", ref,
@@ -284,6 +321,8 @@ async def upload_image(
         ref = image_url.strip()
         try:
             oci_ref, save_path = await _docker_pull(ref)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"docker pull に失敗しました: {e}")
 
@@ -479,6 +518,8 @@ async def update_image(
                 new_oci_ref, save_path = await _docker_pull(ref)
                 image.oci_ref = new_oci_ref
                 image.archive_path = save_path
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"docker pull に失敗しました: {e}")
 
