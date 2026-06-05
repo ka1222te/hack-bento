@@ -108,7 +108,7 @@ const API = {
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
 };
 
-if (!API.token() || localStorage.getItem('hb_role') !== 'admin') { window.location.href = '/login'; }
+if (!API.token()) { window.location.href = '/login'; }
 
 initNavbar();
 
