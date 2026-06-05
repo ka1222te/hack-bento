@@ -282,6 +282,8 @@ document.addEventListener('click', e => {
   } else if (btn.classList.contains('js-dd-delete')) {
     deleteUser(Number(_dd.dataset.userId), _dd.dataset.username, _dd.dataset.role);
     _closeDropdown();
+  } else if (btn.classList.contains('js-delete-image')) {
+    deleteImage(Number(btn.dataset.iid));
   }
 });
 
@@ -362,7 +364,7 @@ async function loadAdminImages() {
       <td>${visLabel[img.visibility] || img.visibility}</td>
       <td><span class="active-dot ${img.is_active ? 'active' : 'inactive'}"></span></td>
       <td>
-        <button class="btn btn-xs btn-danger" onclick="deleteImage(${img.id})">削除</button>
+        <button class="btn btn-xs btn-danger js-delete-image" data-iid="${img.id}">削除</button>
       </td>
     </tr>
   `).join('') || '<tr><td colspan="6" class="empty-cell">プロジェクトがありません</td></tr>';

@@ -119,7 +119,7 @@ const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 let allImages = [], myEnvs = [];
 
 async function init() {
-  const requests = [fetch('/api/images/', { headers: { 'Content-Type': 'application/json' } })];
+  const requests = [API.get('/api/images/')];
   if (isLoggedIn) requests.push(API.get('/api/envs/'));
   const [imgRes, envRes] = await Promise.all(requests);
   if (imgRes.ok) allImages = await imgRes.json();
