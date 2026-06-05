@@ -294,9 +294,20 @@ async def upload_image(
         readme_ext = ".md" if readme.filename.lower().endswith(".md") else ".txt"
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}{readme_ext}")
         try:
+            written = 0
             with open(readme_path, "wb") as f:
                 while chunk := await readme.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > readme_max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+                        )
                     f.write(chunk)
+        except HTTPException:
+            if os.path.exists(readme_path):
+                os.remove(readme_path)
+            raise
         except Exception:
             readme_path = None
     elif readme_text and readme_text.strip():
@@ -501,10 +512,21 @@ async def update_image(
         readme_ext = ".md" if (readme.filename or "").lower().endswith(".md") else ".txt"
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}{readme_ext}")
         try:
+            written = 0
             with open(readme_path, "wb") as f:
                 while chunk := await readme.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > readme_max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+                        )
                     f.write(chunk)
             image.readme_path = readme_path
+        except HTTPException:
+            if os.path.exists(readme_path):
+                os.remove(readme_path)
+            raise
         except Exception:
             pass
     elif has_new_readme_text:
