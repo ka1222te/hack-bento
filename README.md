@@ -1,113 +1,114 @@
 # HackBento
 
-社内研修・脆弱性再現用のオンプレミス環境プラットフォーム。  
-Docker イメージをアップロード・登録し、ユーザが独立したコンテナ環境を即座に起動できるシステムです。完全オンプレ・内部ネットワーク完結で動作します。
+An on-premises environment platform for internal security training and vulnerability reproduction.  
+Users can upload and register Docker images, then instantly launch isolated container environments — a TryHackMe-like experience that runs entirely on-premises within your internal network.
 
-> **本プロジェクトは、社内ネットワーク・プライベート IP 空間でのデプロイを前提として設計されています。
-> インターネットに直接公開する用途は想定していません。**
+> **This project is designed to be deployed within a corporate/private network (private IP space).  
+> It is not intended to be exposed directly to the internet.**
 
-HackBento は **macvlan によるコンテナへの直接 IP 付与** を採用することで、ポートマッピングや Bastion ホストを必要とせず、ユーザが払い出された IP に直接 SSH できる設計を実現しています。
+HackBento uses **direct IP assignment via macvlan**, eliminating the need for port mappings or Bastion hosts. Users can SSH directly into the allocated IP address of their environment.
 
 ![HackBento Overview](assets/overview.png)
 
-## 特徴
+## Features
 
-- **ワンクリック起動** — Docker イメージを選択してボタンを押すだけで環境が立ち上がり、IP アドレスが払い出される
-- **IP 直アクセス** — ユーザは払い出された IP に直接 SSH・curl・nmap できる（Bastion/VPN 不要）。ただし、立ち上げる Docker イメージが SSH・curl・nmap に対応している必要があります。
-- **macvlan ネットワーク** — コンテナに物理ネットワーク上の IP を直接付与（ポートマッピング不要）
-- **タイムアウト管理** — 一定時間で環境を自動削除、延長ボタンで時間リセット
-- **3種の認証** — ローカル認証 / LDAP / Google OAuth2 をサポート
-- **プロジェクト管理** — GitHub ライクなオーナー/slug URL でプロジェクトを管理・共有
+- **One-click launch** — Select a Docker image and press a button to spin up an environment with an IP address assigned instantly
+- **Direct IP access** — Users can SSH, curl, and nmap the allocated IP directly (no Bastion or VPN required). Note: the launched Docker image must have SSH/curl/nmap support built in.
+- **macvlan network** — Assigns physical-network IP addresses directly to containers (no port mapping required)
+- **Timeout management** — Environments are automatically deleted after a set period; an extend button resets the timer
+- **3 authentication methods** — Local accounts / LDAP / Google OAuth2
+- **Project management** — Manage and share projects via GitHub-style `owner/slug` URLs
 
-## ユースケース
+## Use Cases
 
-- 社内セキュリティ研修（CTF 形式）
-- CVE・脆弱性の PoC 再現環境の保存と共有
-- フラグを仕込んだ脆弱マシンの作成・配布
-- 再現性が保証されたサンドボックス環境の提供
+- Internal security training (CTF format)
+- Storing and sharing CVE / vulnerability PoC reproduction environments
+- Creating and distributing vulnerable machines with embedded flags
+- Providing reproducible sandbox environments
 
-## アーキテクチャ
+## Architecture
 
 ```
-【内部ネットワーク】
+[Internal Network]
 
-社内ユーザ端末
+Corporate user terminal
   │
-  ├─ ブラウザ → HackBento Web UI（ライフサイクル管理）
+  ├─ Browser → HackBento Web UI (lifecycle management)
   │
-  └─ ssh user@192.168.180.200  ← IP直打ち（Bastion不要）
+  └─ ssh user@192.168.180.200  ← Direct IP access (no Bastion required)
                 │
                 ▼
-         Dockerコンテナ or microVM
-         （macvlan経由でIPを直付与）
+         Docker container or microVM
+         (IP assigned directly via macvlan)
 
-【Webサーバの立ち位置】
-  HackBento ──Docker API──► コンテナランタイム
-  （管理APIのみ）              │
+[Web server role]
+  HackBento ──Docker API──► Container runtime
+  (management API only)      │
                               ├─ env-001: 192.168.180.200
                               ├─ env-002: 192.168.180.201
                               └─ env-003: 192.168.180.202
 ```
 
-## 技術スタック
+## Tech Stack
 
-| 項目 | 内容 |
+| Component | Details |
 |---|---|
-| バックエンド | Python 3.12 + FastAPI |
-| フロントエンド | Jinja2 テンプレート + バニラ JS |
-| DB | SQLite（aiosqlite 非同期）|
-| 認証 | JWT（Cookie + Bearer）/ LDAP / Google OAuth2 |
-| コンテナ基盤 | Docker + macvlan ネットワーク |
-| デプロイ | Docker Compose（network_mode: host）|
+| Backend | Python 3.12 + FastAPI |
+| Frontend | Jinja2 templates + Vanilla JS |
+| Database | SQLite (async via aiosqlite) |
+| Authentication | JWT (Cookie + Bearer) / LDAP / Google OAuth2 |
+| Container infrastructure | Docker + macvlan network |
+| Deployment | Docker Compose (`network_mode: host`) |
 
-## 必要要件
+## Requirements
 
-- Linux ホスト
+- Linux host
 - Docker Engine / Docker Compose
-- macvlan ドライバが使える NIC
+- NIC that supports the macvlan driver
 
-> KVM が利用可能な環境に対して、将来的に SmolVM + Firecracker バックエンドに切り替えてカーネルレベルでの分離ができるよう実装予定。
+> Future plan: when KVM is available, the backend can be switched to SmolVM + Firecracker for kernel-level isolation.
 
-## セットアップ
+## Setup
 
-### 1. リポジトリを取得
+### 1. Clone the repository
 
 ```bash
 git clone <repository-url> hack-bento
 cd hack-bento
 ```
 
-### 2. 環境設定ファイルを作成
+### 2. Create the environment configuration file
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` を編集して最低限以下を設定してください。
+Edit `.env` and set at minimum the following:
 
 ```bash
-# 公開ホスト名とポート
+# Public hostname and port
 DOMAIN=your-server.example.com
 PORT=8000
 
-# JWT署名キー（必ず変更）
+# JWT signing key (must be changed)
 SECRET_KEY=$(openssl rand -hex 32)
 
-# macvlan IPプール
-# IP_POOL_START / IP_POOL_END は docker-compose.yml の networks.vm_net で定義した
-# subnet のアドレス空間内に収める必要があります。
-# 範囲外の IP を指定した場合、Docker デーモンが docker run 時にエラーを返し
-# コンテナの起動に失敗します（HackBento 側での事前検証は行っていません）。
+# macvlan IP pool
+# IP_POOL_START / IP_POOL_END must fall within the subnet defined
+# in docker-compose.yml under networks.vm_net.
+# If an out-of-range IP is specified, the Docker daemon will return an error
+# at docker run time and the container will fail to start
+# (HackBento does not validate this in advance).
 IP_POOL_START=192.168.180.200
 IP_POOL_END=192.168.180.230
 ```
 
-### 3. macvlan ネットワークの設定
+### 3. Configure the macvlan network
 
-`docker-compose.yml` の `parent` をホストの実際の NIC 名に変更します。また、macvlanのサブネットとゲートウェイの設定を行います。
+Update `docker-compose.yml` with your actual NIC name and network settings:
 
 ```bash
-ip link show  # NIC名を確認
+ip link show  # Check NIC name
 ```
 
 ```yaml
@@ -116,136 +117,136 @@ networks:
   vm_net:
     driver: macvlan
     driver_opts:
-      parent: eth0  # ← 実際のNIC名に変更
+      parent: eth0  # ← Change to your actual NIC name
     ipam:
       config:
-        - subnet: 192.168.176.0/20 # ← ホストOSで設定されているサブネットに変更
-          gateway: 192.168.180.1 # ← ホストOSで設定されているデフォルトゲートウェイに変更
+        - subnet: 192.168.176.0/20  # ← Change to your host subnet
+          gateway: 192.168.180.1    # ← Change to your default gateway
 ```
 
-macvlan の設定（`parent`・`subnet`・`gateway`）を間違えた場合は、ネットワークを作り直す必要があります。
+If you make a mistake in the macvlan settings (`parent`, `subnet`, or `gateway`), you need to recreate the network:
 
 ```bash
-# ネットワークの再作成
+# Recreate the network
 docker compose down
 docker network rm hackbento-vm 2>/dev/null || true
-# docker-compose.yml を修正してから再起動
+# Fix docker-compose.yml, then restart
 docker compose up -d
 ```
 
-### 4. 起動
+### 4. Start
 
 ```bash
 docker compose up -d
 ```
 
-### 5. アクセス
+### 5. Access
 
 ```
 http://<DOMAIN>:<PORT>/
 ```
 
-初期管理者アカウント: `admin` / `admin`
+Default admin account: `admin` / `admin`
 
-**初回ログイン後すぐにパスワードを変更してください。**  
-パスワードの変更は右上のユーザアイコン → **ユーザ設定** から行えます（ローカルユーザのみ）。
+**Please change the password immediately after the first login.**  
+Go to the user icon in the top right → **User Settings** to change it (local users only).
 
-### LDAP / Google OAuth2 ユーザの初回ログイン
+### First login for LDAP / Google OAuth2 users
 
-LDAP または Google OAuth2 でログインした場合、初回のみユーザ名設定画面（`/setup-username`）に遷移します。  
-任意のユーザ名を設定すると通常のホーム画面に移動します。一度設定したユーザ名は変更できません。
+When logging in via LDAP or Google OAuth2 for the first time, you will be redirected to the username setup screen (`/setup-username`).  
+Set your desired username to proceed to the home screen. The username cannot be changed once set.
 
-## 認証設定
+## Authentication Configuration
 
-### LDAP（任意）
+### LDAP (optional)
 
 ```bash
 LDAP_ENABLED=true
-LDAP_URI=ldap://ldap.example.com:389       # LDAP サーバの URI
+LDAP_URI=ldap://ldap.example.com:389       # LDAP server URI
 LDAP_TOP_DOMAIN=dc=example,dc=com          # BaseDN
-LDAP_USER_FILTER=(uid={username})          # ユーザ検索フィルタ
-LDAP_OU_USER=people                        # ユーザ OU
-LDAP_OU_GROUP=groups                       # グループ OU
+LDAP_USER_FILTER=(uid={username})          # User search filter
+LDAP_OU_USER=people                        # User OU
+LDAP_OU_GROUP=groups                       # Group OU
 ```
 
-ログイン画面に LDAP 接続状態バッジ（緑=到達可能・赤=不可）が表示されます。
+An LDAP connectivity badge (green = reachable, red = unreachable) is displayed on the login screen.
 
-### Google OAuth2（任意）
+### Google OAuth2 (optional)
 
-1. [Google Cloud Console](https://console.cloud.google.com/) で OAuth 2.0 クライアント ID を作成
-2. 承認済みリダイレクト URI に以下を登録:
+1. Create an OAuth 2.0 Client ID in [Google Cloud Console](https://console.cloud.google.com/)
+2. Register the following as authorized redirect URIs:
    ```
-   http://<DOMAIN>/api/auth/oauth/google/callback        # ポート80の場合
-   http://<DOMAIN>:<PORT>/api/auth/oauth/google/callback  # その他のポート（http）
+   http://<DOMAIN>/api/auth/oauth/google/callback        # Port 80
+   http://<DOMAIN>:<PORT>/api/auth/oauth/google/callback  # Other ports (http)
    ```
-3. `.env` に設定:
+3. Set in `.env`:
 
 ```bash
 GOOGLE_OAUTH_ENABLED=true
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
-OAUTH_ALLOWED_DOMAINS=example.com  # 空にすると全Googleアカウントを許可
+OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 ```
 
-## 主な機能
+## Features
 
-### プロジェクト管理
+### Project Management
 
-- Docker イメージ（`.tar` / `.tar.gz` / `.tgz` / `.tar.zst`）をアップロード、または Docker Hub URL を指定して登録
-- `/{owner}/{slug}` 形式の URL でプロジェクトにアクセス
-- 公開設定: `public`（全員）/ `protected`（ログイン済み）/ `private`（限定）
-- コラボレーター: `Read`（閲覧・起動）/ `Read-Write`（閲覧・起動・編集）
+- Upload Docker images (`.tar` / `.tar.gz` / `.tgz` / `.tar.zst`) or register via Docker Hub URL
+- Access projects via `/{owner}/{slug}` URLs
+- Visibility settings: `public` (everyone) / `protected` (logged-in users) / `private` (restricted)
+- Collaborators: `Read` (view & launch) / `Read-Write` (view, launch & edit)
 
-### 環境管理
+### Environment Management
 
-- ワンクリックで環境を起動、IP アドレスが即座に払い出される
-- デフォルト 60 分でタイムアウト、「延長する（+60分）」で延長可能
-- 残り 10 分で警告表示
-- 1 ユーザあたり最大 2 環境、システム全体で最大 20 環境（設定変更可能）
+- Launch an environment with one click; an IP address is allocated immediately
+- Default 60-minute timeout; extendable with the "+60 min" button
+- Warning displayed when 10 minutes remain
+- Maximum 2 environments per user, 20 system-wide (configurable)
 
-### 管理画面（`/admin`）
+### Admin Panel (`/admin`)
 
-- **起動中の環境**: 全ユーザの環境一覧・強制停止
-- **ユーザ管理**: ローカルユーザ追加・有効化/無効化・ロール変更・パスワードリセット・削除
-- **プロジェクト管理**: 全プロジェクト一覧・削除
+- **Running environments**: List all active environments across users; force-stop any of them
+- **User management**: Add local users, enable/disable, change roles, reset passwords, delete
+- **Project management**: List all projects; delete
 
-## 環境変数一覧
+## Environment Variables
 
-| 変数 | デフォルト | 説明 |
+| Variable | Default | Description |
 |---|---|---|
-| `APP_TITLE` | `HackBento` | Web UI に表示されるアプリ名 |
-| `DOMAIN` | `localhost` | 公開ホスト名 |
-| `SCHEME` | `http` | `http` または `https` |
-| `PORT` | `8000` | リッスンポート |
-| `SECRET_KEY` | （要変更）| JWT 署名キー |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | JWT の有効期限（分）|
-| `DATABASE_URL` | SQLite | DB 接続 URL |
-| `DEFAULT_TIMEOUT_MINUTES` | `60` | 環境のデフォルトタイムアウト（分）|
-| `TIMEOUT_WARNING_MINUTES` | `10` | タイムアウト警告を出す残り時間（分）|
-| `MAX_ENVS_PER_USER` | `2` | 1 ユーザあたりの最大同時起動数 |
-| `MAX_ENVS_TOTAL` | `20` | システム全体の最大同時起動数 |
-| `VM_CPU_LIMIT` | `1` | 1 環境あたりの CPU 上限（コア）|
-| `VM_MEMORY_LIMIT_MB` | `1024` | 1 環境あたりのメモリ上限（MB）|
-| `VM_BACKEND` | `docker` | `docker` または `firecracker` |
-| `MACVLAN_NETWORK` | `hackbento-vm` | macvlan ネットワーク名 |
-| `IP_POOL_START` | `192.168.181.200` | IP プール開始アドレス（subnet 内に収めること）|
-| `IP_POOL_END` | `192.168.181.230` | IP プール終了アドレス（subnet 内に収めること）|
-| `LDAP_ENABLED` | `false` | LDAP 認証の有効化 |
-| `LDAP_URI` | `ldap://...` | LDAP サーバの URI |
+| `APP_TITLE` | `HackBento` | Application name displayed in the Web UI |
+| `DOMAIN` | `localhost` | Public hostname |
+| `SCHEME` | `http` | `http` or `https` |
+| `PORT` | `8000` | Listening port |
+| `SECRET_KEY` | (required) | JWT signing key |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | JWT expiry (minutes) |
+| `DATABASE_URL` | SQLite | Database connection URL |
+| `DEFAULT_TIMEOUT_MINUTES` | `60` | Default environment timeout (minutes) |
+| `TIMEOUT_WARNING_MINUTES` | `10` | Minutes remaining before timeout warning |
+| `MAX_ENVS_PER_USER` | `2` | Max simultaneous environments per user |
+| `MAX_ENVS_TOTAL` | `20` | Max simultaneous environments system-wide |
+| `VM_CPU_LIMIT` | `1` | CPU limit per environment (cores) |
+| `VM_MEMORY_LIMIT_MB` | `1024` | Memory limit per environment (MB) |
+| `VM_BACKEND` | `docker` | `docker` or `firecracker` |
+| `MACVLAN_NETWORK` | `hackbento-vm` | macvlan network name |
+| `IP_POOL_START` | `192.168.181.200` | IP pool start address (must be within subnet) |
+| `IP_POOL_END` | `192.168.181.230` | IP pool end address (must be within subnet) |
+| `LDAP_ENABLED` | `false` | Enable LDAP authentication |
+| `LDAP_URI` | `ldap://...` | LDAP server URI |
 | `LDAP_TOP_DOMAIN` | `dc=example,dc=com` | BaseDN |
-| `LDAP_USER_FILTER` | `(uid={username})` | ユーザ検索フィルタ |
-| `LDAP_OU_USER` | `people` | ユーザ OU |
-| `LDAP_OU_GROUP` | `groups` | グループ OU |
-| `GOOGLE_OAUTH_ENABLED` | `false` | Google OAuth2 の有効化 |
-| `GOOGLE_CLIENT_ID` | （空）| Google OAuth2 クライアント ID |
-| `GOOGLE_CLIENT_SECRET` | （空）| Google OAuth2 クライアントシークレット |
-| `OAUTH_ALLOWED_DOMAINS` | （空=全許可）| 許可するメールドメイン（カンマ区切り）|
+| `LDAP_USER_FILTER` | `(uid={username})` | User search filter |
+| `LDAP_OU_USER` | `people` | User OU |
+| `LDAP_OU_GROUP` | `groups` | Group OU |
+| `GOOGLE_OAUTH_ENABLED` | `false` | Enable Google OAuth2 |
+| `GOOGLE_CLIENT_ID` | (empty) | Google OAuth2 Client ID |
+| `GOOGLE_CLIENT_SECRET` | (empty) | Google OAuth2 Client Secret |
+| `OAUTH_ALLOWED_DOMAINS` | (empty = all) | Allowed email domains (comma-separated) |
 
-詳細は `.env.example` を参照してください。
+See `.env.example` for full details.
 
-## https 化
+## HTTPS
 
-`SCHEME=https` に設定すると、uvicorn が直接 TLS を終端します（nginx 等のリバースプロキシは不要）。
+When `SCHEME=https` is set, uvicorn terminates TLS directly (no reverse proxy such as nginx is required).
 
 ```bash
 # .env
@@ -254,36 +255,38 @@ PORT=443
 DOMAIN=your-server.example.com
 ```
 
-起動時に `/data/certs/server.crt` と `/data/certs/server.key` が存在しない場合は自己署名証明書が自動生成されます。
-正式な証明書を使う場合はこのパスに配置してください。
+If `/data/certs/server.crt` and `/data/certs/server.key` do not exist at startup, a self-signed certificate is generated automatically.  
+To use a proper certificate, place it at those paths.
 
-Google OAuth2 を使う場合は Google Cloud Console のリダイレクト URI も `https://...` に更新してください。
+If using Google OAuth2, also update the redirect URI in Google Cloud Console to `https://...`.
 
-## やらないこと（理由）
+## Out of Scope (and Why)
 
-- SSH の仲介・Webターミナル
-- 公開鍵の注入（CTF 的に認証情報は問題の一部となるべきであるため）
-- VPN 管理（内部ネットワーク完結であるため）
-- フラグ提出・正誤判定（スコープ外）
+- SSH proxying / Web terminal — users SSH directly to the IP
+- Public key injection — in CTF scenarios, credentials are part of the challenge
+- VPN management — the system is self-contained within the internal network
+- Flag submission / scoring — out of scope
 
-## 想定デプロイ環境・利用上の注意
+## Intended Deployment Environment
 
-本プロジェクトは以下の環境でのデプロイを想定して設計されています。
+This project is designed for deployment in:
 
-- **社内ネットワーク・プライベート IP 空間**（RFC 1918 アドレス: 10.x.x.x / 172.16-31.x.x / 192.168.x.x）
-- **インターネットから隔離されたクローズドネットワーク**
+- **Corporate networks / private IP space** (RFC 1918: 10.x.x.x / 172.16–31.x.x / 192.168.x.x)
+- **Closed networks isolated from the internet**
 
-## 貢献
+Because HackBento intentionally handles vulnerable Docker images, exposing it to a public network risks unauthorized access by third parties.
 
-バグや不具合を発見した場合は、[Issue](../../issues) にてご報告いただけると幸いです。
+## Contributing
 
-## 免責事項
+If you find a bug or issue, please report it via [Issues](../../issues).
 
-本ソフトウェアの使用、または使用不能から生じるいかなる損害（データの損失、システムの障害、セキュリティインシデント等を含む）についても、作者は一切の責任を負いません。
+## Disclaimer
 
-本ソフトウェアを使用する場合は、利用者自身の責任において適切な環境・権限のもとで行ってください。
+The authors and contributors are not liable for any damages arising from the use or inability to use this software, including but not limited to data loss, system failures, or security incidents.
 
-## ライセンス
+Use this software at your own risk, in an appropriate environment with proper authorization.
+
+## License
 
 [GNU General Public License v3.0](LICENSE)
 
