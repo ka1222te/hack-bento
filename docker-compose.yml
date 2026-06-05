@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]
-      interval: 30s
+      interval: 120s
       timeout: 10s
       retries: 3
       start_period: 15s
@@ -29,4 +29,3 @@ networks:
       config:
         - subnet: 192.168.176.0/20
           gateway: 192.168.180.1
-          ip_range: 192.168.181.192/27

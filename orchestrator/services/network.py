@@ -69,8 +69,31 @@ async def _run(cmd: list[str], check: bool = True) -> tuple[int, str]:
     return proc.returncode, stderr.decode().strip()
 
 
+async def _get_macvlan_subnet() -> Optional[ipaddress.IPv4Network]:
+    """macvlan ネットワークの subnet を Docker API から取得する。"""
+    import json
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "network", "inspect", settings.MACVLAN_NETWORK,
+        "--format", "{{json .IPAM}}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    try:
+        ipam = json.loads(stdout.decode())
+        for cfg in ipam.get("Config", []):
+            subnet = cfg.get("Subnet")
+            if subnet:
+                return ipaddress.IPv4Network(subnet, strict=False)
+    except Exception:
+        pass
+    return None
+
+
 async def ensure_macvlan_network() -> None:
-    """hackbento-vm macvlan ネットワークが存在することを確認する。"""
+    """hackbento-vm macvlan ネットワークの存在確認と IP プールの妥当性検証を行う。"""
     proc = await asyncio.create_subprocess_exec(
         "docker", "network", "inspect", settings.MACVLAN_NETWORK,
         stdout=asyncio.subprocess.DEVNULL,
@@ -82,6 +105,21 @@ async def ensure_macvlan_network() -> None:
             f"macvlan ネットワーク '{settings.MACVLAN_NETWORK}' が見つかりません。"
             " docker compose up で起動してください。"
         )
+
+    # IP プールが macvlan の subnet 内に収まっているか検証
+    subnet = await _get_macvlan_subnet()
+    if subnet is None:
+        logger.warning("macvlan の subnet を取得できませんでした。IP プールの検証をスキップします。")
+        return
+
+    pool = _ip_pool()
+    invalid = [ip for ip in pool if ipaddress.IPv4Address(ip) not in subnet]
+    if invalid:
+        raise RuntimeError(
+            f"IP_POOL の一部が macvlan subnet ({subnet}) の範囲外です: {invalid[:3]}{'...' if len(invalid) > 3 else ''}。"
+            " .env の IP_POOL_START / IP_POOL_END を subnet 内のアドレスに修正してください。"
+        )
+    logger.info(f"IP pool validated: {pool[0]} - {pool[-1]} ({len(pool)} addresses) within {subnet}")
 
 
 async def detach_container_network(container_id: str) -> None:

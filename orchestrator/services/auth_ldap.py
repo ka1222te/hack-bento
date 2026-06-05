@@ -14,10 +14,10 @@ def _make_client():
     return LDAPClient(
         ldap_uri=settings.LDAP_URI,
         top_domain=settings.LDAP_TOP_DOMAIN,
-        mail_domain=settings.LDAP_MAIL_DOMAIN,
+        mail_domain="ldap",  # メールは username@ldap で固定管理
         ou_user=settings.LDAP_OU_USER,
         ou_group=settings.LDAP_OU_GROUP,
-        ssh_attr_name=settings.LDAP_SSH_ATTR_NAME or None,
+        ssh_attr_name=None,
     )
 
 

@@ -18,6 +18,7 @@ data/
 
 # env
 .env
+tmp/
 
 # design
 CLAUDE.md

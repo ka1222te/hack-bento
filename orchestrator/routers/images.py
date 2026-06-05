@@ -12,6 +12,7 @@ from database import get_db
 from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
 from deps import get_current_user, require_admin
 from services.smolvm import docker_load
+from config import settings
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 
@@ -203,13 +204,21 @@ async def upload_image(
     description: Optional[str] = Form(None),
     difficulty: Difficulty = Form(Difficulty.none),
     category: Optional[str] = Form(None),
-    timeout_minutes: int = Form(60),
-    cpu_limit: int = Form(1),
-    memory_limit_mb: int = Form(1024),
+    timeout_minutes: Optional[int] = Form(None),
+    cpu_limit: Optional[int] = Form(None),
+    memory_limit_mb: Optional[int] = Form(None),
     visibility: Visibility = Form(Visibility.protected),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # .env のデフォルト値を適用
+    if timeout_minutes is None:
+        timeout_minutes = settings.DEFAULT_TIMEOUT_MINUTES
+    if cpu_limit is None:
+        cpu_limit = settings.VM_CPU_LIMIT
+    if memory_limit_mb is None:
+        memory_limit_mb = settings.VM_MEMORY_LIMIT_MB
+
     # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
     has_file = bool(file and file.filename and file.size and file.size > 0)
     has_url  = bool(image_url and image_url.strip())

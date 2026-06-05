@@ -27,12 +27,9 @@ class Settings(BaseSettings):
     LDAP_ENABLED: bool = False
     LDAP_URI: str = "ldap://ldap.example.com:389"
     LDAP_TOP_DOMAIN: str = "dc=example,dc=com"
-    LDAP_BIND_PASSWORD: str = ""
     LDAP_USER_FILTER: str = "(uid={username})"
-    LDAP_MAIL_DOMAIN: str = "example.com"
     LDAP_OU_USER: str = "people"
     LDAP_OU_GROUP: str = "groups"
-    LDAP_SSH_ATTR_NAME: str = ""
 
     GOOGLE_OAUTH_ENABLED: bool = False
     GOOGLE_CLIENT_ID: str = ""
