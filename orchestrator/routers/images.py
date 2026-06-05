@@ -228,8 +228,21 @@ async def upload_image(
     if has_file and not _allowed_image(file.filename or ""):
         raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
 
+    image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
+    if has_file and file.size and file.size > image_max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+        )
+
+    readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
     if readme and readme.filename and not _allowed_readme(readme.filename):
         raise HTTPException(status_code=400, detail="README は .md または .txt のみ対応")
+    if readme and readme.size and readme.size > readme_max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+        )
 
     # slug の重複チェック（同オーナー内）
     existing = await db.execute(
@@ -245,9 +258,20 @@ async def upload_image(
         ext = next(s for s in ALLOWED_SUFFIXES if (file.filename or "").endswith(s))
         save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{ext}")
         try:
+            written = 0
             with open(save_path, "wb") as f:
                 while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > image_max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                        )
                     f.write(chunk)
+        except HTTPException:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"ファイル保存に失敗しました: {e}")
         try:
@@ -407,16 +431,33 @@ async def update_image(
         if has_new_file:
             if not _allowed_image(file.filename or ""):
                 raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
+            image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
+            if file.size and file.size > image_max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                )
             os.makedirs(UPLOAD_DIR, exist_ok=True)
             ext = next(s for s in ALLOWED_SUFFIXES if (file.filename or "").endswith(s))
             save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{ext}")
             try:
+                written = 0
                 with open(save_path, "wb") as f:
                     while chunk := await file.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > image_max_bytes:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                            )
                         f.write(chunk)
                 new_oci_ref = await docker_load(save_path)
                 image.archive_path = save_path
                 image.oci_ref = new_oci_ref
+            except HTTPException:
+                if os.path.exists(save_path):
+                    os.remove(save_path)
+                raise
             except Exception as e:
                 if os.path.exists(save_path):
                     os.remove(save_path)
@@ -450,6 +491,12 @@ async def update_image(
     if has_new_readme_file:
         if not _allowed_readme(readme.filename or ""):
             raise HTTPException(status_code=400, detail="README は .md または .txt のみ対応")
+        readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
+        if readme.size and readme.size > readme_max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+            )
         os.makedirs(README_DIR, exist_ok=True)
         readme_ext = ".md" if (readme.filename or "").lower().endswith(".md") else ".txt"
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}{readme_ext}")

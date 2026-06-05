@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     VM_MEMORY_LIMIT_MB: int = 1024
     VM_DISK_LIMIT_GB: int = 10
     VM_PIDS_LIMIT: int = 256
+    UPLOAD_IMAGE_MAX_MB: int = 6144
+    UPLOAD_README_MAX_MB: int = 10
 
     # 認証
     LDAP_ENABLED: bool = False
