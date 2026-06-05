@@ -222,6 +222,15 @@
         </div>
 
       </form>
+
+      <!-- 危険操作ゾーン（オーナー・管理者のみ表示） -->
+      <div id="danger-zone" class="hidden" style="margin-top:2rem;padding:1.25rem 1.5rem;border:1px solid var(--danger,#e53e3e);border-radius:.75rem;">
+        <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--danger,#e53e3e);">Danger Zone</h3>
+        <p style="margin:0 0 1rem;font-size:.875rem;color:var(--text2);">このプロジェクトを削除すると、起動中の全環境が停止され、復元できません。</p>
+        <button type="button" class="btn btn-danger" id="delete-btn" onclick="deleteProject()">
+          プロジェクトを削除
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -248,9 +257,9 @@ const API = {
 let imageData = null;
 
 async function init() {
-  const [imgRes, editRes] = await Promise.all([
+  const [imgRes, meRes] = await Promise.all([
     API.get('/api/images/'),
-    API.get('/api/images/0/can-edit'),  // dummy; 下で個別取得
+    API.get('/api/auth/me'),
   ]);
   const images = imgRes.ok ? await imgRes.json() : [];
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
@@ -260,6 +269,12 @@ async function init() {
   const ceRes = await API.get(`/api/images/${imageData.id}/can-edit`);
   const ce = ceRes.ok ? await ceRes.json() : { can_edit: false };
   if (!ce.can_edit) { alert('編集権限がありません'); window.location.href = `/${OWNER}/${SLUG}`; return; }
+
+  // オーナーまたは管理者のみ Danger Zone を表示
+  const me = meRes.ok ? await meRes.json() : null;
+  if (me && (me.role === 'admin' || me.username === OWNER)) {
+    document.getElementById('danger-zone').classList.remove('hidden');
+  }
 
   // フォームに現在値をセット
   document.getElementById('proj-name').value        = imageData.name || '';
@@ -505,6 +520,40 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
     xhr.send(fd);
   }).catch(() => {});
 });
+
+async function deleteProject() {
+  const ok = confirm(
+    `⚠ プロジェクト "${OWNER}/${SLUG}" を削除します。\n\n` +
+    '起動中の全環境が停止され、この操作は取り消せません。\n\n' +
+    '本当に削除しますか？'
+  );
+  if (!ok) return;
+
+  const btn = document.getElementById('delete-btn');
+  btn.disabled = true;
+  btn.textContent = '削除中...';
+
+  let res;
+  try {
+    res = await API.del(`/api/images/${imageData.id}`);
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+    btn.disabled = false;
+    btn.textContent = 'プロジェクトを削除';
+    return;
+  }
+
+  if (res.status === 204) {
+    showToast('プロジェクトを削除しました', 'success');
+    setTimeout(() => { window.location.href = '/'; }, 1000);
+  } else {
+    let msg = 'エラーが発生しました';
+    try { const d = await res.json(); msg = d.detail || msg; } catch {}
+    showToast(msg, 'error');
+    btn.disabled = false;
+    btn.textContent = 'プロジェクトを削除';
+  }
+}
 
 init();
 </script>
