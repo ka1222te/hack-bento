@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -10,6 +11,8 @@ from database import get_db
 from models import User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator
 from reserved import is_reserved
 from deps import require_admin
+
+_VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 from services.auth_local import hash_password
 from services.watchdog import destroy_env
 
@@ -68,6 +71,8 @@ async def create_user(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    if not _VALID_USERNAME.match(body.username):
+        raise HTTPException(status_code=400, detail="ユーザ名は英数字・ハイフン・アンダースコアのみ使用可（1〜64文字）")
     if is_reserved(body.username):
         raise HTTPException(status_code=400, detail=f"'{body.username}' は予約語のため使用できません")
     existing = await db.execute(select(User).where(User.username == body.username))

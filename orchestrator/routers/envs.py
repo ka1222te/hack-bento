@@ -8,9 +8,9 @@ from typing import Optional
 
 from database import get_db
 from models import Environment, EnvStatus, Image, User, UserRole
-from deps import get_current_user
+from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
-from services.network import allocate_ip, release_ip
+from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env
 from config import settings
 
@@ -76,34 +76,9 @@ async def list_my_envs(
 @router.post("/{image_id}/start", response_model=EnvResponse, status_code=status.HTTP_201_CREATED)
 async def start_env(
     image_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    # adminはユーザ数上限を無視
-    if user.role != UserRole.admin:
-        user_count_result = await db.execute(
-            select(func.count()).where(
-                Environment.user_id == user.id,
-                Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
-            )
-        )
-        if user_count_result.scalar() >= settings.MAX_ENVS_PER_USER:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"同時起動数の上限（{settings.MAX_ENVS_PER_USER}つ）に達しています",
-            )
-
-        total_count_result = await db.execute(
-            select(func.count()).where(
-                Environment.status.in_([EnvStatus.starting, EnvStatus.running])
-            )
-        )
-        if total_count_result.scalar() >= settings.MAX_ENVS_TOTAL:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="サーバが混雑しています。しばらくお待ちください",
-            )
-
     img_result = await db.execute(
         select(Image).where(Image.id == image_id, Image.is_active == True)
     )
@@ -111,30 +86,63 @@ async def start_env(
     if not image:
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
 
-    ip = await allocate_ip(db)
-    if not ip:
-        raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
+    from routers.images import _can_see
+    if not await _can_see(image, user, db):
+        raise HTTPException(status_code=404, detail="イメージが見つかりません")
 
     timeout = image.timeout_minutes or settings.DEFAULT_TIMEOUT_MINUTES
-    env = Environment(
-        user_id=user.id,
-        image_id=image.id,
-        ip_address=ip,
-        status=EnvStatus.starting,
-        started_at=datetime.utcnow(),
-        expires_at=datetime.utcnow() + timedelta(minutes=timeout),
-    )
-    db.add(env)
-    await db.flush()
+    env: Environment | None = None
+
+    async def _reserve(ip: str) -> None:
+        """lock 保持中に上限チェックと Environment の仮記録を行う。"""
+        nonlocal env
+        # admin は上限チェックを免除
+        if user.role != UserRole.admin:
+            user_count = await db.execute(
+                select(func.count()).where(
+                    Environment.user_id == user.id,
+                    Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+                )
+            )
+            if user_count.scalar() >= settings.MAX_ENVS_PER_USER:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"同時起動数の上限（{settings.MAX_ENVS_PER_USER}つ）に達しています",
+                )
+            total_count = await db.execute(
+                select(func.count()).where(
+                    Environment.status.in_([EnvStatus.starting, EnvStatus.running])
+                )
+            )
+            if total_count.scalar() >= settings.MAX_ENVS_TOTAL:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="サーバが混雑しています。しばらくお待ちください",
+                )
+        now = datetime.utcnow()
+        env = Environment(
+            user_id=user.id,
+            image_id=image.id,
+            ip_address=ip,
+            status=EnvStatus.starting,
+            started_at=now,
+            expires_at=now + timedelta(minutes=timeout),
+        )
+        db.add(env)
+        await db.flush()
+
+    ip = await allocate_ip(db, _reserve)
+    if not ip or env is None:
+        raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
 
     try:
-        result = await start_vm(
+        vm_result = await start_vm(
             oci_ref=image.oci_ref,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
         )
-        env.vm_id = result.vm_id
+        env.vm_id = vm_result.vm_id
         env.status = EnvStatus.running
     except Exception as e:
         env.status = EnvStatus.error
@@ -154,7 +162,7 @@ async def start_env(
 @router.post("/{env_id}/extend")
 async def extend_env(
     env_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -182,7 +190,7 @@ async def extend_env(
 @router.post("/{env_id}/stop")
 async def stop_env(
     env_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(

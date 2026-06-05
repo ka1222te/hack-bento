@@ -1,5 +1,6 @@
 import secrets
 import httpx
+from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,7 @@ def _issue_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         "access_token", token,
         httponly=True, samesite="lax",
+        secure=(settings.SCHEME == "https"),
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
@@ -119,7 +121,7 @@ async def oauth_google_login():
         "scope": "openid email profile",
         "state": state,
     }
-    url = GOOGLE_AUTH_URL + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    url = GOOGLE_AUTH_URL + "?" + urlencode(params)
     resp = RedirectResponse(url=url, status_code=302)
     resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=300)
     return resp
@@ -179,6 +181,7 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
     resp.set_cookie(
         "access_token", token,
         httponly=True, samesite="lax",
+        secure=(settings.SCHEME == "https"),
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     resp.delete_cookie("oauth_state")

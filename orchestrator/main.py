@@ -62,7 +62,7 @@ app = FastAPI(title=settings.APP_TITLE, lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SECRET_KEY,
-    https_only=False,
+    https_only=(settings.SCHEME == "https"),
     same_site="lax",
 )
 
@@ -163,6 +163,7 @@ async def _can_edit_project(owner: str, slug: str, user: Optional[User]) -> bool
             select(ImageCollaborator).where(
                 ImageCollaborator.image_id == image.id,
                 ImageCollaborator.user_id == user.id,
+                ImageCollaborator.role == "read_write",
             )
         )
         return collab.scalar_one_or_none() is not None

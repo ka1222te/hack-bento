@@ -41,7 +41,13 @@ async def _get_docker_used_ips() -> set[str]:
         return set()
 
 
-async def allocate_ip(db: AsyncSession) -> Optional[str]:
+async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
+    """IP を確保し、lock 保持中に flush_record() を呼んで DB に仮記録する。
+
+    flush_record は async callable で、割り当てた IP を受け取り
+    Environment レコードを db に add して flush する責務を持つ。
+    これにより lock 解放前に DB が更新されるため TOCTOU を防ぐ。
+    """
     async with _lock:
         result = await db.execute(
             select(Environment.ip_address).where(
@@ -53,6 +59,7 @@ async def allocate_ip(db: AsyncSession) -> Optional[str]:
         used = db_used | docker_used
         for ip in _ip_pool():
             if ip not in used:
+                await flush_record(ip)
                 return ip
         return None
 

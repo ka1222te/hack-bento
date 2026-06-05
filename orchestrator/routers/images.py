@@ -1,5 +1,6 @@
 import uuid
 import os
+import re
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ from datetime import datetime
 
 from database import get_db
 from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
-from deps import get_current_user, require_admin
+from deps import get_current_user, require_admin, require_username_set
 from services.smolvm import docker_load
 from config import settings
 
@@ -20,6 +21,7 @@ UPLOAD_DIR = "/data/images/uploads"
 README_DIR = "/data/images/readmes"
 ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst")
 ALLOWED_README   = (".md", ".txt")
+_VALID_SLUG      = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 TRUSTED_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
 
 
@@ -29,10 +31,8 @@ class ImageResponse(BaseModel):
     name: str
     slug: str
     description: Optional[str]
-    readme: Optional[str] = None      # README 本文
+    readme: Optional[str] = None
     oci_ref: str
-    archive_path: Optional[str]
-    readme_path: Optional[str] = None
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -146,8 +146,6 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         description=image.description,
         readme=readme,
         oci_ref=image.oci_ref,
-        archive_path=image.archive_path,
-        readme_path=getattr(image, "readme_path", None),
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -160,6 +158,8 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
 
 async def _docker_pull(ref: str) -> tuple[str, str]:
     """docker pull してアーカイブに保存し、(oci_ref, save_path) を返す。"""
+    import logging
+    _log = logging.getLogger(__name__)
     _validate_image_ref(ref)
     # pull
     pull = await asyncio.create_subprocess_exec(
@@ -169,7 +169,8 @@ async def _docker_pull(ref: str) -> tuple[str, str]:
     )
     _, stderr = await asyncio.wait_for(pull.communicate(), timeout=300)
     if pull.returncode != 0:
-        raise RuntimeError(f"docker pull failed: {stderr.decode().strip()}")
+        _log.error(f"docker pull failed: {stderr.decode().strip()}")
+        raise RuntimeError("docker pull に失敗しました")
 
     # save（ファイルと同じ保存先に tar として保存）
     os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -183,7 +184,8 @@ async def _docker_pull(ref: str) -> tuple[str, str]:
     if save.returncode != 0:
         if os.path.exists(save_path):
             os.remove(save_path)
-        raise RuntimeError(f"docker save failed: {stderr.decode().strip()}")
+        _log.error(f"docker save failed: {stderr.decode().strip()}")
+        raise RuntimeError("docker save に失敗しました")
 
     return ref, save_path
 
@@ -245,16 +247,23 @@ async def upload_image(
     cpu_limit: Optional[int] = Form(None),
     memory_limit_mb: Optional[int] = Form(None),
     visibility: Visibility = Form(Visibility.protected),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    # .env のデフォルト値を適用
+    # .env のデフォルト値を適用し、システム上限を超えないようクランプ
     if timeout_minutes is None:
         timeout_minutes = settings.DEFAULT_TIMEOUT_MINUTES
     if cpu_limit is None:
         cpu_limit = settings.VM_CPU_LIMIT
     if memory_limit_mb is None:
         memory_limit_mb = settings.VM_MEMORY_LIMIT_MB
+
+    if cpu_limit < 1 or cpu_limit > settings.VM_CPU_LIMIT:
+        raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{settings.VM_CPU_LIMIT} の範囲で指定してください")
+    if memory_limit_mb < 128 or memory_limit_mb > settings.VM_MEMORY_LIMIT_MB:
+        raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{settings.VM_MEMORY_LIMIT_MB} の範囲で指定してください")
+    if timeout_minutes < 1 or timeout_minutes > 1440:
+        raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
 
     # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
     has_file = bool(file and file.filename and file.size and file.size > 0)
@@ -280,6 +289,10 @@ async def upload_image(
             status_code=413,
             detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
         )
+
+    # slug バリデーション
+    if not _VALID_SLUG.match(slug):
+        raise HTTPException(status_code=400, detail="slug は英数字・ハイフン・アンダースコアのみ使用可（1〜128文字）")
 
     # slug の重複チェック（同オーナー内）
     existing = await db.execute(
@@ -350,6 +363,11 @@ async def upload_image(
         except Exception:
             readme_path = None
     elif readme_text and readme_text.strip():
+        if len(readme_text.encode()) > readme_max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"README テキストが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+            )
         os.makedirs(README_DIR, exist_ok=True)
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}.md")
         try:
@@ -433,7 +451,7 @@ async def update_image(
     image_url: Optional[str] = Form(None),
     readme: Optional[UploadFile] = File(None),
     readme_text: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     """プロジェクトの設定を更新する。イメージを変更する場合は起動中VMを先に停止する。"""
@@ -442,13 +460,14 @@ async def update_image(
     if not image:
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
 
-    # 権限チェック: オーナー・管理者・コラボレーター(write)
+    # 権限チェック: オーナー・管理者・read_write コラボレーターのみ編集可
     is_owner = (current_user.role == UserRole.admin or image.owner_id == current_user.id)
     if not is_owner:
         collab = await db.execute(
             select(ImageCollaborator).where(
                 ImageCollaborator.image_id == image_id,
                 ImageCollaborator.user_id == current_user.id,
+                ImageCollaborator.role == CollaboratorRole.read_write,
             )
         )
         if not collab.scalar_one_or_none():
@@ -533,6 +552,8 @@ async def update_image(
     if category is not None:
         image.category = category or None
     if timeout_minutes is not None:
+        if timeout_minutes < 1 or timeout_minutes > 1440:
+            raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
         image.timeout_minutes = timeout_minutes
     if visibility is not None:
         image.visibility = visibility
@@ -571,6 +592,12 @@ async def update_image(
         except Exception:
             pass
     elif has_new_readme_text:
+        _readme_max = settings.UPLOAD_README_MAX_MB * 1024 * 1024
+        if len(readme_text.encode()) > _readme_max:
+            raise HTTPException(
+                status_code=413,
+                detail=f"README テキストが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
+            )
         os.makedirs(README_DIR, exist_ok=True)
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}.md")
         try:

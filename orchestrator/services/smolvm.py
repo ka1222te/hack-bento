@@ -23,13 +23,15 @@ async def docker_load(archive_path: str) -> str:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
         if proc.returncode != 0:
-            raise RuntimeError(stderr.decode().strip())
+            logger.error(f"docker load failed: {stderr.decode().strip()}")
+            raise RuntimeError("docker load に失敗しました")
         for line in stdout.decode().splitlines():
             if line.startswith("Loaded image:"):
                 return line.split("Loaded image:", 1)[1].strip()
             if line.startswith("Loaded image ID:"):
                 return line.split("Loaded image ID:", 1)[1].strip()
-        raise RuntimeError(f"docker load の出力からイメージ名を取得できませんでした: {stdout.decode()}")
+        logger.error(f"docker load: unexpected output: {stdout.decode()!r}")
+        raise RuntimeError("docker load の出力からイメージ名を取得できませんでした")
     except FileNotFoundError:
         raise RuntimeError("docker コマンドが見つかりません。")
 
@@ -63,7 +65,8 @@ async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMSt
     )
     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError(f"docker run failed: {stderr.decode().strip()}")
+        logger.error(f"docker run failed: {stderr.decode().strip()}")
+        raise RuntimeError("コンテナの起動に失敗しました")
 
     container_id = stdout.decode().strip()
     logger.info(f"Container started: {container_id[:12]} image={oci_ref} ip={ip}")

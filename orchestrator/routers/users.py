@@ -7,7 +7,7 @@ from datetime import datetime
 
 from database import get_db
 from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility, AuthProvider
-from deps import get_current_user
+from deps import get_current_user, require_username_set
 from services.jwt_utils import create_access_token
 from services.auth_local import hash_password
 from config import settings
@@ -44,10 +44,8 @@ async def setup_username(
     db: AsyncSession = Depends(get_db),
 ):
     """初回ログイン時のユーザ名設定。一意チェックを行い確定する。"""
-    if not user.needs_username_setup and user.username == body.username:
-        # 既に設定済みで同じ名前なら OK
-        token = create_access_token(user.id, user.username, user.role.value, False)
-        return UsernameSetupResponse(access_token=token, username=user.username, role=user.role.value)
+    if not user.needs_username_setup:
+        raise HTTPException(status_code=403, detail="ユーザ名は既に設定済みです")
 
     # 他ユーザとの重複チェック
     existing = await db.execute(
@@ -89,8 +87,8 @@ async def search_users(
 
 
 @router.get("/check-username")
-async def check_username(username: str, db: AsyncSession = Depends(get_db)):
-    """ユーザ名の使用可否を確認する（認証不要）。自分自身は除外。"""
+async def check_username(username: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """ユーザ名の使用可否を確認する。自分自身は除外。"""
     if not _VALID_USERNAME.match(username):
         return {"available": False, "reason": "英数字・ハイフン・アンダースコアのみ使用可"}
     if is_reserved(username):
@@ -131,7 +129,7 @@ class PasswordChangeRequest(BaseModel):
 @router.post("/me/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     body: PasswordChangeRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     if current_user.auth_provider != AuthProvider.local:
@@ -173,7 +171,7 @@ class CollaboratorResponse(BaseModel):
 async def list_collaborators(
     owner: str,
     slug: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     image = await _get_image_as_owner_or_admin(owner, slug, current_user, db)
@@ -194,7 +192,7 @@ async def add_collaborator(
     owner: str,
     slug: str,
     body: CollaboratorAdd,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     image = await _get_image_as_owner_or_admin(owner, slug, current_user, db)
@@ -230,7 +228,7 @@ async def remove_collaborator(
     owner: str,
     slug: str,
     username: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     image = await _get_image_as_owner_or_admin(owner, slug, current_user, db)
@@ -264,7 +262,7 @@ async def update_visibility(
     owner: str,
     slug: str,
     body: VisibilityUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     image = await _get_image_as_owner_or_admin(owner, slug, current_user, db)

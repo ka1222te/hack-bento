@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     LDAP_ENABLED: bool = False
     LDAP_URI: str = "ldap://ldap.example.com:389"
     LDAP_TOP_DOMAIN: str = "dc=example,dc=com"
+
     LDAP_USER_FILTER: str = "(uid={username})"
     LDAP_OU_USER: str = "people"
     LDAP_OU_GROUP: str = "groups"

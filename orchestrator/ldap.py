@@ -1,4 +1,5 @@
 from ldap3 import Server,Connection,SASL,DIGEST_MD5,Tls,ALL,SUBTREE,MODIFY_ADD,MODIFY_REPLACE # LDAP認証に関するモジュール
+from ldap3.utils.dn import escape_rdn
 import ssl # SSLに関するモジュール
 import os,sys # osに関するモジュール
 import base64 # base64に関するモジュール
@@ -34,10 +35,12 @@ class LDAPClient():
 
     def bind(self,bind_name,bind_password,is_admin=False): # LDAPバインド
         try:
-            tls_configuration = Tls(validate=ssl.CERT_NONE) # TLS設定(サーバ証明書検証無し暗号化通信)
-            server = Server(self.ldap_uri,use_ssl=True,tls=tls_configuration,get_info=ALL) # 接続先LDAPサーバ
-            if is_admin: bind_dn = f"cn={bind_name},{self.top_domain}" # 識別子
-            else: bind_dn = f"uid={bind_name},ou={self.ou_user},{self.top_domain}" # 識別子
+            use_ssl = self.ldap_uri.lower().startswith("ldaps://") # ldaps:// のときのみ TLS
+            tls_configuration = Tls(validate=ssl.CERT_NONE) if use_ssl else None # TLS設定
+            server = Server(self.ldap_uri,use_ssl=use_ssl,tls=tls_configuration,get_info=ALL) # 接続先LDAPサーバ
+            safe_name = escape_rdn(bind_name) # DN インジェクション対策
+            if is_admin: bind_dn = f"cn={safe_name},{self.top_domain}" # 識別子
+            else: bind_dn = f"uid={safe_name},ou={self.ou_user},{self.top_domain}" # 識別子
 
             #conn = Connection(server,authentication=SASL,sasl_mechanism='SCRAM-SHA-1',sasl_credentials=(bind_name,"a3.yamanashi.ac.jp",bind_password)) # LDAP接続
             if bind_name is None and bind_password is None and not is_admin: # anonymousで接続時
