@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 from pydantic import BaseModel, field_validator
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility, AuthProvider
 from deps import get_current_user, require_username_set
@@ -54,13 +55,17 @@ async def setup_username(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="このユーザ名は既に使用されています")
 
-    await db.execute(
-        update(User).where(User.id == user.id).values(
-            username=body.username,
-            needs_username_setup=False,
+    try:
+        await db.execute(
+            update(User).where(User.id == user.id).values(
+                username=body.username,
+                needs_username_setup=False,
+            )
         )
-    )
-    await db.commit()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="このユーザ名は既に使用されています")
 
     token = create_access_token(user.id, body.username, user.role.value, False)
     return UsernameSetupResponse(access_token=token, username=body.username, role=user.role.value)

@@ -80,7 +80,7 @@ async def create_user(
         raise HTTPException(status_code=409, detail="このユーザ名は既に使用されています")
     user = User(
         username=body.username,
-        email=body.email,
+        email=body.email if body.email else f"{body.username}@local",
         hashed_password=hash_password(body.password),
         role=body.role,
         auth_provider=AuthProvider.local,
@@ -148,10 +148,30 @@ async def delete_user(
         await destroy_env(env)
 
     # ユーザが所有するイメージのコラボレーター・環境・イメージ本体を削除
+    import os as _os
     img_result = await db.execute(select(Image).where(Image.owner_id == user_id))
     for img in img_result.scalars().all():
         await db.execute(delete(ImageCollaborator).where(ImageCollaborator.image_id == img.id))
+        # 他ユーザが起動中のコンテナも含めて停止してからレコードを削除
+        running_result = await db.execute(
+            select(Environment).where(
+                Environment.image_id == img.id,
+                Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+            )
+        )
+        for env in running_result.scalars().all():
+            try:
+                await destroy_env(env)
+            except Exception:
+                pass
         await db.execute(delete(Environment).where(Environment.image_id == img.id))
+        # アーカイブ・READMEの実ファイルを削除
+        for path in (img.archive_path, getattr(img, "readme_path", None)):
+            if path:
+                try:
+                    _os.remove(path)
+                except OSError:
+                    pass
         await db.delete(img)
 
     # コラボレーター参加分を削除

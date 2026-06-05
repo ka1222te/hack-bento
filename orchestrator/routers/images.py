@@ -268,6 +268,12 @@ async def upload_image(
         raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{settings.VM_MEMORY_LIMIT_MB} の範囲で指定してください")
     if timeout_minutes < 1 or timeout_minutes > 1440:
         raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
+    if len(name) > 128:
+        raise HTTPException(status_code=400, detail="name は 128 文字以内で指定してください")
+    if description and len(description) > 512:
+        raise HTTPException(status_code=400, detail="description は 512 文字以内で指定してください")
+    if category and len(category) > 64:
+        raise HTTPException(status_code=400, detail="category は 64 文字以内で指定してください")
 
     # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
     has_file = bool(file and file.filename and file.size and file.size > 0)
@@ -288,9 +294,9 @@ async def upload_image(
     if not _VALID_SLUG.match(slug):
         raise HTTPException(status_code=400, detail="slug は英数字・ハイフン・アンダースコアのみ使用可（1〜128文字）")
 
-    # slug の重複チェック（同オーナー内）
+    # slug の重複チェック（同オーナー内・アクティブなイメージのみ）
     existing = await db.execute(
-        select(Image).where(Image.owner_id == current_user.id, Image.slug == slug)
+        select(Image).where(Image.owner_id == current_user.id, Image.slug == slug, Image.is_active == True)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="このslugは既に使用されています")
@@ -316,8 +322,10 @@ async def upload_image(
             if os.path.exists(save_path):
                 os.remove(save_path)
             raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"ファイル保存に失敗しました: {e}")
+        except Exception:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            raise HTTPException(status_code=500, detail="ファイル保存に失敗しました")
         try:
             oci_ref = await docker_load(save_path)
         except Exception as e:
@@ -398,16 +406,16 @@ async def reload_image(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Image).where(Image.id == image_id))
+    result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))
     image = result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
     if not image.archive_path or not os.path.exists(image.archive_path):
-        raise HTTPException(status_code=400, detail=f"アーカイブが見つかりません: {image.archive_path}")
+        raise HTTPException(status_code=400, detail="アーカイブが見つかりません")
     try:
         oci_ref = await docker_load(image.archive_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"docker load に失敗しました: {e}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="docker load に失敗しました")
     image.oci_ref = oci_ref
     await db.commit()
     await db.refresh(image)
@@ -421,7 +429,7 @@ async def update_visibility(
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Image).where(Image.id == image_id))
+    result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))
     image = result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
@@ -522,10 +530,10 @@ async def update_image(
                 if os.path.exists(save_path):
                     os.remove(save_path)
                 raise
-            except Exception as e:
+            except Exception:
                 if os.path.exists(save_path):
                     os.remove(save_path)
-                raise HTTPException(status_code=500, detail=f"イメージ更新に失敗しました: {e}")
+                raise HTTPException(status_code=500, detail="イメージ更新に失敗しました")
         else:
             ref = image_url.strip()
             try:
@@ -545,18 +553,24 @@ async def update_image(
 
     # メタデータ更新
     if name is not None:
+        if len(name) > 128:
+            raise HTTPException(status_code=400, detail="name は 128 文字以内で指定してください")
         image.name = name
     if description is not None:
+        if len(description) > 512:
+            raise HTTPException(status_code=400, detail="description は 512 文字以内で指定してください")
         image.description = description
     if difficulty is not None:
         image.difficulty = difficulty
     if category is not None:
+        if category and len(category) > 64:
+            raise HTTPException(status_code=400, detail="category は 64 文字以内で指定してください")
         image.category = category or None
     if timeout_minutes is not None:
         if timeout_minutes < 1 or timeout_minutes > 1440:
             raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
         image.timeout_minutes = timeout_minutes
-    if visibility is not None:
+    if visibility is not None and is_owner:
         image.visibility = visibility
 
     # README 更新
@@ -637,11 +651,27 @@ async def delete_image(
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Image).where(Image.id == image_id))
+    result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))
     image = result.scalar_one_or_none()
     if not image:
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
     if current_user.role != UserRole.admin and image.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="権限がありません")
+
+    # 起動中の環境を停止してからイメージを論理削除する
+    from models import Environment, EnvStatus
+    from services.watchdog import destroy_env
+    env_result = await db.execute(
+        select(Environment).where(
+            Environment.image_id == image_id,
+            Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+        )
+    )
+    for env in env_result.scalars().all():
+        try:
+            await destroy_env(env)
+        except Exception:
+            pass
+
     image.is_active = False
     await db.commit()

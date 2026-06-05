@@ -26,7 +26,11 @@ async def _get_docker_used_ips() -> set[str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    stdout, _ = await proc.communicate()
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return set()
     if proc.returncode != 0:
         return set()
     try:
@@ -92,7 +96,11 @@ async def _get_macvlan_subnet() -> Optional[ipaddress.IPv4Network]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    stdout, _ = await proc.communicate()
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return None
     if proc.returncode != 0:
         return None
     try:

@@ -167,6 +167,8 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
     email = userinfo.get("email")
     if not email:
         raise HTTPException(status_code=400, detail="メールアドレスを取得できませんでした")
+    if not userinfo.get("email_verified", False):
+        raise HTTPException(status_code=400, detail="メールアドレスが確認されていません")
 
     user = await auth_oauth.get_or_create_oauth_user(db, email, userinfo.get("name", ""))
     if not user:
