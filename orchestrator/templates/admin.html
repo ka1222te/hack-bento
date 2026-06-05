@@ -59,6 +59,7 @@
   <div class="modal-box">
     <h3 class="modal-title">ローカルユーザ追加</h3>
     <form id="form-user">
+      <div id="form-user-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
       <div class="form-group"><label>ユーザ名</label><input name="username" required /></div>
       <div class="form-group"><label>パスワード</label><input name="password" type="password" required /></div>
       <div class="form-group"><label>ロール</label>
@@ -299,13 +300,24 @@ function showCreateUserModal() { document.getElementById('modal-user').classList
 
 document.getElementById('form-user').addEventListener('submit', async e => {
   e.preventDefault();
+  const errBox = document.getElementById('form-user-error');
+  errBox.classList.add('hidden');
+
   const fd = new FormData(e.target);
   const data = Object.fromEntries(fd);
-  // メールはユーザ名@local で自動生成
   data.email = `${data.username}@local`;
+
   const res = await API.post('/api/admin/users', data);
-  if (res.ok) { showToast('ユーザを作成しました', 'success'); closeModal('modal-user'); e.target.reset(); loadUsers(); }
-  else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+  if (res.ok) {
+    showToast('ユーザを作成しました', 'success');
+    closeModal('modal-user');
+    e.target.reset();
+    loadUsers();
+  } else {
+    const d = await res.json();
+    errBox.textContent = d.detail || 'エラーが発生しました';
+    errBox.classList.remove('hidden');
+  }
 });
 
 // ---- Images ----
@@ -338,6 +350,9 @@ async function deleteImage(imageId) {
 
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden');
+  // ユーザ追加モーダルのエラーをリセット
+  const errBox = document.getElementById('form-user-error');
+  if (errBox) errBox.classList.add('hidden');
 }
 
 function showToast(msg, type='info') {
