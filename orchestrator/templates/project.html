@@ -89,14 +89,18 @@ const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 
 const API = {
   token: () => localStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  headers: () => {
+    const h = { 'Content-Type': 'application/json' };
+    if (API.token()) h['Authorization'] = `Bearer ${API.token()}`;
+    return h;
+  },
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
 };
 
-if (!API.token()) { window.location.href = '/login'; }
+const isLoggedIn = !!API.token();
 initNavbar();
 
 const myUsername = localStorage.getItem('hb_username') || '';
@@ -108,16 +112,32 @@ let imageData = null;
 let myEnvs    = [];
 
 async function init() {
-  const [imgRes, envRes] = await Promise.all([
-    API.get('/api/images/'),
-    API.get('/api/envs/'),
-  ]);
+  const imgRes = await API.get('/api/images/');
   const images = imgRes.ok ? await imgRes.json() : [];
-  myEnvs = envRes.ok ? await envRes.json() : [];
+
+  // 未ログインの場合は envs を取得しない
+  if (isLoggedIn) {
+    const envRes = await API.get('/api/envs/');
+    myEnvs = envRes.ok ? await envRes.json() : [];
+  }
 
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
   if (!imageData) {
+    // 未ログインで非公開プロジェクトにアクセスした場合はログインへ誘導
+    if (!isLoggedIn) { window.location.href = '/login'; return; }
     document.getElementById('project-header').innerHTML = '<p class="empty-msg">プロジェクトが見つかりません</p>';
+    return;
+  }
+
+  // 未ログインかつ public 以外は404表示
+  if (!isLoggedIn && imageData.visibility !== 'public') {
+    document.getElementById('app').innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:1rem;color:var(--text2)">
+        <div style="font-size:4rem;font-weight:700;color:var(--text3)">404</div>
+        <div style="font-size:1.1rem">プロジェクトが見つかりません</div>
+        <a href="/" class="btn btn-outline" style="margin-top:.5rem">ホームへ戻る</a>
+      </div>`;
+    document.title = '404 — HackBento';
     return;
   }
 
@@ -125,15 +145,17 @@ async function init() {
   document.getElementById('owner-link').textContent = OWNER;
   document.getElementById('owner-link').href = `/user/${OWNER}`;
 
-  // 編集権限確認
-  const ceRes = await API.get(`/api/images/${imageData.id}/can-edit`);
-  if (ceRes.ok) {
-    const ce = await ceRes.json();
-    _canEdit = ce.can_edit;
-    if (_canEdit) {
-      const eb = document.getElementById('edit-btn');
-      eb.href = `/${OWNER}/${SLUG}/edit`;
-      eb.classList.remove('hidden');
+  // 編集権限確認（ログイン済みのみ）
+  if (isLoggedIn) {
+    const ceRes = await API.get(`/api/images/${imageData.id}/can-edit`);
+    if (ceRes.ok) {
+      const ce = await ceRes.json();
+      _canEdit = ce.can_edit;
+      if (_canEdit) {
+        const eb = document.getElementById('edit-btn');
+        eb.href = `/${OWNER}/${SLUG}/edit`;
+        eb.classList.remove('hidden');
+      }
     }
   }
   document.getElementById('project-slug-title').textContent = SLUG;
@@ -164,15 +186,17 @@ async function init() {
   // README 取得
   loadReadme();
 
-  // コラボレーターパネル: 編集権限があれば表示
-  const ceRes2 = await API.get(`/api/images/${imageData.id}/can-edit`);
-  if (ceRes2.ok) {
-    const ce2 = await ceRes2.json();
-    if (ce2.can_edit) {
-      document.getElementById('collab-card').classList.remove('hidden');
+  // コラボレーターパネル: ログイン済み・編集権限があれば表示
+  if (isLoggedIn) {
+    const ceRes2 = await API.get(`/api/images/${imageData.id}/can-edit`);
+    if (ceRes2.ok) {
+      const ce2 = await ceRes2.json();
+      if (ce2.can_edit) {
+        document.getElementById('collab-card').classList.remove('hidden');
+        loadCollaborators();
+      }
     }
   }
-  loadCollaborators();
 }
 
 // ---- 起動パネル ----
@@ -181,9 +205,25 @@ let _canEdit = false;
 const _editSvg = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg>`;
 
 function renderLaunchPanel() {
+  const panel = document.getElementById('project-launch-panel');
+
+  // 未ログインの場合は起動不可・ログイン誘導を表示
+  if (!isLoggedIn) {
+    panel.innerHTML = `
+      <div class="launch-panel launch-panel-idle">
+        <div class="launch-panel-info">
+          <span class="launch-status-dot idle"></span>
+          <div><div class="launch-panel-label">起動するにはログインが必要です</div></div>
+        </div>
+        <div class="launch-panel-actions">
+          <a href="/login" class="btn btn-launch btn-launch-lg">&#x1F511; ログインして起動</a>
+        </div>
+      </div>`;
+    return;
+  }
+
   const running = myEnvs.find(e => e.image_id === imageData.id);
   const atLimit = myEnvs.length >= MAX_ENVS;
-  const panel   = document.getElementById('project-launch-panel');
 
   if (running) {
     panel.innerHTML = `
