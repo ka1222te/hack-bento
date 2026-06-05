@@ -50,6 +50,8 @@ def _allowed_image(filename: str) -> bool:
 def _allowed_readme(filename: str) -> bool:
     return any(filename.lower().endswith(s) for s in ALLOWED_README)
 
+_VALID_IMAGE_REF = re.compile(r'^[a-zA-Z0-9._:/@-]+$')
+
 def _validate_image_ref(ref: str) -> None:
     """Docker image reference のレジストリホストが許可リストに含まれるか検証する。
 
@@ -57,15 +59,17 @@ def _validate_image_ref(ref: str) -> None:
       [registry-host[:port]/]name[:tag][@digest]
 
     レジストリ未指定（例: ubuntu:22.04）は Docker Hub として扱い許可する。
-    IP アドレスや許可外ホストを含む場合は ValueError を送出する。
+    IP アドレスや許可外ホスト、許可外文字を含む場合は ValueError を送出する。
     """
-    import re
+    if not _VALID_IMAGE_REF.match(ref):
+        raise ValueError("イメージ参照に使用できない文字が含まれています")
+
     # name 部分（タグ・ダイジェストを除いたパス）を取り出す
     name_part = ref.split("@")[0].split(":")[0]
     segments = name_part.split("/")
 
-    # 先頭セグメントにドット・コロン・大文字が含まれる場合はレジストリホストと判定
-    # （Docker の規則: https://docs.docker.com/engine/reference/commandline/pull/）
+    # 先頭セグメントにドット・コロンが含まれるか localhost の場合はレジストリホストと判定
+    # （Docker の規則に準拠: ドットまたはコロンを含む先頭セグメントはホスト名とみなす）
     first = segments[0]
     is_registry = ("." in first or ":" in first or first == "localhost")
 
@@ -275,20 +279,10 @@ async def upload_image(
         raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
 
     image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
-    if has_file and file.size and file.size > image_max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
-        )
-
     readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
+
     if readme and readme.filename and not _allowed_readme(readme.filename):
         raise HTTPException(status_code=400, detail="README は .md または .txt のみ対応")
-    if readme and readme.size and readme.size > readme_max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
-        )
 
     # slug バリデーション
     if not _VALID_SLUG.match(slug):
@@ -424,7 +418,7 @@ async def reload_image(
 async def update_visibility(
     image_id: int,
     visibility: Visibility,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Image).where(Image.id == image_id))
@@ -501,11 +495,6 @@ async def update_image(
             if not _allowed_image(file.filename or ""):
                 raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
             image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
-            if file.size and file.size > image_max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
-                )
             os.makedirs(UPLOAD_DIR, exist_ok=True)
             ext = next(s for s in ALLOWED_SUFFIXES if (file.filename or "").endswith(s))
             save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{ext}")
@@ -521,8 +510,14 @@ async def update_image(
                             )
                         f.write(chunk)
                 new_oci_ref = await docker_load(save_path)
+                old_path = image.archive_path
                 image.archive_path = save_path
                 image.oci_ref = new_oci_ref
+                if old_path and old_path != save_path and os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except OSError:
+                        pass
             except HTTPException:
                 if os.path.exists(save_path):
                     os.remove(save_path)
@@ -535,8 +530,14 @@ async def update_image(
             ref = image_url.strip()
             try:
                 new_oci_ref, save_path = await _docker_pull(ref)
+                old_path = image.archive_path
                 image.oci_ref = new_oci_ref
                 image.archive_path = save_path
+                if old_path and old_path != save_path and os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except OSError:
+                        pass
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except Exception as e:
@@ -565,11 +566,6 @@ async def update_image(
         if not _allowed_readme(readme.filename or ""):
             raise HTTPException(status_code=400, detail="README は .md または .txt のみ対応")
         readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
-        if readme.size and readme.size > readme_max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
-            )
         os.makedirs(README_DIR, exist_ok=True)
         readme_ext = ".md" if (readme.filename or "").lower().endswith(".md") else ".txt"
         readme_path = os.path.join(README_DIR, f"{uuid.uuid4()}{readme_ext}")
@@ -638,7 +634,7 @@ async def can_edit(
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_image(
     image_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Image).where(Image.id == image_id))

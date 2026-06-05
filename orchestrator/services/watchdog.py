@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import select
 from database import AsyncSessionLocal
 from models import Environment, EnvStatus
@@ -8,6 +8,8 @@ from services.smolvm import stop_vm
 from services.network import release_ip
 
 logger = logging.getLogger(__name__)
+
+_STARTING_TIMEOUT_MINUTES = 5
 
 
 async def destroy_env(env: Environment) -> None:
@@ -24,6 +26,8 @@ async def run_watchdog() -> None:
         try:
             async with AsyncSessionLocal() as db:
                 now = datetime.utcnow()
+
+                # 期限切れ running 環境を停止
                 result = await db.execute(
                     select(Environment).where(
                         Environment.status == EnvStatus.running,
@@ -34,7 +38,21 @@ async def run_watchdog() -> None:
                 for env in expired:
                     logger.info(f"Timeout: env_id={env.id} vm_id={env.vm_id}")
                     await destroy_env(env)
-                if expired:
+
+                # starting のまま一定時間経過した環境を停止（起動失敗の取りこぼし対策）
+                stuck_threshold = now - timedelta(minutes=_STARTING_TIMEOUT_MINUTES)
+                stuck_result = await db.execute(
+                    select(Environment).where(
+                        Environment.status == EnvStatus.starting,
+                        Environment.started_at <= stuck_threshold,
+                    )
+                )
+                stuck = stuck_result.scalars().all()
+                for env in stuck:
+                    logger.warning(f"Stuck starting env cleaned up: env_id={env.id} vm_id={env.vm_id}")
+                    await destroy_env(env)
+
+                if expired or stuck:
                     await db.commit()
         except Exception as e:
             logger.error(f"Watchdog error: {e}")

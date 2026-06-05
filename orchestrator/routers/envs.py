@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -13,6 +14,8 @@ from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/envs", tags=["environments"])
 
@@ -145,9 +148,10 @@ async def start_env(
         env.vm_id = vm_result.vm_id
         env.status = EnvStatus.running
     except Exception as e:
-        env.status = EnvStatus.error
+        logger.error(f"start_vm failed env_id={env.id}: {e}")
+        await destroy_env(env)
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"VM起動に失敗しました: {e}")
+        raise HTTPException(status_code=500, detail="VM起動に失敗しました")
 
     await db.commit()
     result = await db.execute(
@@ -178,6 +182,14 @@ async def extend_env(
         raise HTTPException(status_code=404, detail="環境が見つかりません")
     if env.user_id != user.id and user.role != UserRole.admin:
         raise HTTPException(status_code=403, detail="権限がありません")
+
+    from services.network import _ip_pool
+    max_extend = len(_ip_pool())
+    if user.role != UserRole.admin and env.extended_count >= max_extend:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"延長回数の上限（{max_extend}回）に達しています",
+        )
 
     # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）
     extend_minutes = env.image.timeout_minutes if env.image and env.image.timeout_minutes else settings.DEFAULT_TIMEOUT_MINUTES

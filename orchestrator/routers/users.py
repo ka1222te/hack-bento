@@ -73,7 +73,7 @@ async def search_users(
     db: AsyncSession = Depends(get_db),
 ):
     """ユーザ名の前方一致検索（候補サジェスト用）。自分自身は除外。"""
-    if len(q) < 1:
+    if len(q) < 1 or len(q) > 64:
         return []
     from sqlalchemy import func
     result = await db.execute(
@@ -81,6 +81,7 @@ async def search_users(
             User.username.ilike(f"{q}%"),
             User.id != current_user.id,
             User.is_active == True,
+            User.needs_username_setup == False,
         ).limit(8)
     )
     return [row[0] for row in result.fetchall()]

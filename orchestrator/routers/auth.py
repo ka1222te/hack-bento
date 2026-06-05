@@ -123,7 +123,7 @@ async def oauth_google_login():
     }
     url = GOOGLE_AUTH_URL + "?" + urlencode(params)
     resp = RedirectResponse(url=url, status_code=302)
-    resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=300)
+    resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=300, secure=(settings.SCHEME == "https"))
     return resp
 
 

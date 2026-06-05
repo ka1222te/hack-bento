@@ -49,15 +49,22 @@ async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
     これにより lock 解放前に DB が更新されるため TOCTOU を防ぐ。
     """
     async with _lock:
+        pool = _ip_pool()
+        pool_set = set(pool)
+
         result = await db.execute(
             select(Environment.ip_address).where(
                 Environment.status.in_([EnvStatus.starting, EnvStatus.running])
             )
         )
-        db_used = {row[0] for row in result.fetchall() if row[0]}
-        docker_used = await _get_docker_used_ips()
+        # DB に記録されたIPのうちプール内のものだけを使用中とみなす
+        db_used = {row[0] for row in result.fetchall() if row[0] and row[0] in pool_set}
+
+        # macvlan 上の実使用IPもプール内のものだけを考慮する
+        docker_used = {ip for ip in await _get_docker_used_ips() if ip in pool_set}
+
         used = db_used | docker_used
-        for ip in _ip_pool():
+        for ip in pool:
             if ip not in used:
                 await flush_record(ip)
                 return ip

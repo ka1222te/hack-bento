@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     DEFAULT_TIMEOUT_MINUTES: int = 60
     MAX_ENVS_PER_USER: int = 2
     MAX_ENVS_TOTAL: int = 20
+
     TIMEOUT_WARNING_MINUTES: int = 10
     VM_CPU_LIMIT: int = 1
     VM_MEMORY_LIMIT_MB: int = 1024

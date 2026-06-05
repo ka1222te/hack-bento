@@ -114,6 +114,8 @@ async def update_user(
     if body.is_active is not None:
         user.is_active = body.is_active
     if body.password:
+        if user.auth_provider != AuthProvider.local:
+            raise HTTPException(status_code=400, detail="パスワード変更はローカルユーザのみ可能です")
         user.hashed_password = hash_password(body.password)
     await db.commit()
     await db.refresh(user)
