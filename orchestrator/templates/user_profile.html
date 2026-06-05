@@ -106,8 +106,8 @@ async function init() {
         <div class="profile-project-action">
           ${running
             ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
-            : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
-                 onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
+            : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''} js-start-env"
+                 data-iid="${img.id}" ${disabled ? 'disabled' : ''}>
                  &#x25B6; 起動
                </button>`
           }
@@ -116,8 +116,15 @@ async function init() {
   }).join('');
 }
 
-async function startEnv(imageId) {
-  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (btn && btn.classList.contains('js-start-env')) {
+    startEnv(Number(btn.dataset.iid), btn);
+  }
+});
+
+async function startEnv(imageId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
   const res = await API.post(`/api/envs/${imageId}/start`);
   if (res.ok) { showToast('環境を起動しました', 'success'); setTimeout(() => window.location.href = '/', 800); }
   else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); btn.disabled = false; btn.textContent = '▶ 起動'; }

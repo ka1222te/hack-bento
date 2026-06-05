@@ -15,7 +15,7 @@
 
     <!-- Running Envs -->
     <div id="tab-envs" class="tab-panel active">
-      <h2 class="panel-title">起動中の環境 <button class="btn btn-sm btn-outline" onclick="loadAdminEnvs()">更新</button></h2>
+      <h2 class="panel-title">起動中の環境 <button class="btn btn-sm btn-outline" id="btn-refresh-envs">更新</button></h2>
       <div class="table-wrap">
         <table class="data-table" id="envs-table">
           <thead><tr><th>ID</th><th>起動ユーザ</th><th>イメージ</th><th>IP</th><th>ステータス</th><th>開始</th><th>期限</th><th>操作</th></tr></thead>
@@ -28,7 +28,7 @@
     <div id="tab-users" class="tab-panel hidden">
       <div class="panel-header">
         <h2 class="panel-title">ユーザ管理</h2>
-        <button class="btn btn-sm btn-primary" onclick="showCreateUserModal()">+ ローカルユーザ追加</button>
+        <button class="btn btn-sm btn-primary" id="btn-create-user">+ ローカルユーザ追加</button>
       </div>
       <div class="table-wrap">
         <table class="data-table" id="users-table">
@@ -161,11 +161,15 @@ async function forceStop(envId) {
 
 // ---- Users ----
 async function loadUsers() {
-  const res = await API.get('/api/admin/users');
-  if (!res.ok) return;
-  const users = await res.json();
+  const [usersRes, meRes] = await Promise.all([
+    API.get('/api/admin/users'),
+    API.get('/api/auth/me'),
+  ]);
+  if (!usersRes.ok) return;
+  const users = await usersRes.json();
+  const me = meRes.ok ? await meRes.json() : {};
+  const myUsername = me.username || '';
   const tbody = document.getElementById('users-tbody');
-  const myUsername = localStorage.getItem('hb_username') || '';
   tbody.innerHTML = users.map(u => {
     const isSelf = u.username === myUsername;
     const isLocal = u.auth_provider === 'local';
@@ -262,6 +266,10 @@ function _closeDropdown() {
 }
 
 document.addEventListener('click', _closeDropdown);
+
+// 静的ボタンのイベント登録
+document.getElementById('btn-refresh-envs').addEventListener('click', loadAdminEnvs);
+document.getElementById('btn-create-user').addEventListener('click', showCreateUserModal);
 
 // テーブルへのイベント委譲（onclick属性の代替）
 document.addEventListener('click', e => {

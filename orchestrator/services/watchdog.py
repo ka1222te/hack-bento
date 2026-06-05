@@ -37,7 +37,12 @@ async def run_watchdog() -> None:
                 expired = result.scalars().all()
                 for env in expired:
                     logger.info(f"Timeout: env_id={env.id} vm_id={env.vm_id}")
-                    await destroy_env(env)
+                    try:
+                        await destroy_env(env)
+                        await db.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to destroy env_id={env.id}: {e}")
+                        await db.rollback()
 
                 # starting のまま一定時間経過した環境を停止（起動失敗の取りこぼし対策）
                 stuck_threshold = now - timedelta(minutes=_STARTING_TIMEOUT_MINUTES)
@@ -50,10 +55,12 @@ async def run_watchdog() -> None:
                 stuck = stuck_result.scalars().all()
                 for env in stuck:
                     logger.warning(f"Stuck starting env cleaned up: env_id={env.id} vm_id={env.vm_id}")
-                    await destroy_env(env)
-
-                if expired or stuck:
-                    await db.commit()
+                    try:
+                        await destroy_env(env)
+                        await db.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to cleanup stuck env_id={env.id}: {e}")
+                        await db.rollback()
         except Exception as e:
             logger.error(f"Watchdog error: {e}")
         await asyncio.sleep(30)

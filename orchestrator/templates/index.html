@@ -81,7 +81,7 @@ function renderMyEnvs() {
       <div class="env-ip">
         <span class="label">IP</span>
         <code class="ip-code">${escHtml(env.ip_address || '取得中...')}</code>
-        ${env.ip_address ? `<button class="copy-btn" onclick="copyToClipboard('${escHtml(env.ip_address)}', this)" title="IPアドレスをコピー">&#x1F4CB;</button>` : ''}
+        ${env.ip_address ? `<button class="copy-btn js-copy-ip" data-ip="${escHtml(env.ip_address)}" title="IPアドレスをコピー">&#x1F4CB;</button>` : ''}
       </div>
       <div class="env-timer" id="timer-${env.id}">
         <span>残り</span>
@@ -90,8 +90,8 @@ function renderMyEnvs() {
       </div>
       <div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>
       <div class="env-actions">
-        <button class="btn btn-sm btn-extend" onclick="extendEnv(${env.id}, ${env.timeout_minutes})">&#x23F1; 延長 (+${env.timeout_minutes}分)</button>
-        <button class="btn btn-sm btn-danger"  onclick="stopEnv(${env.id})">&#x23F9; 停止</button>
+        <button class="btn btn-sm btn-extend js-extend-env" data-eid="${env.id}" data-timeout="${env.timeout_minutes}">&#x23F1; 延長 (+${env.timeout_minutes}分)</button>
+        <button class="btn btn-sm btn-danger js-stop-env" data-eid="${env.id}">&#x23F9; 停止</button>
       </div>
     </div>
   `).join('');
@@ -155,8 +155,20 @@ function startCountdown(envId, seconds, timeoutSec) {
   timers[envId] = setInterval(update, 1000);
 }
 
-async function extendEnv(envId, timeoutMin) {
-  const btn = event.target; btn.disabled = true; btn.textContent = '延長中...';
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.classList.contains('js-copy-ip')) {
+    copyToClipboard(btn.dataset.ip, btn);
+  } else if (btn.classList.contains('js-extend-env')) {
+    extendEnv(Number(btn.dataset.eid), Number(btn.dataset.timeout), btn);
+  } else if (btn.classList.contains('js-stop-env')) {
+    stopEnv(Number(btn.dataset.eid));
+  }
+});
+
+async function extendEnv(envId, timeoutMin, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '延長中...'; }
   const res = await API.post(`/api/envs/${envId}/extend`);
   if (res.ok) {
     showToast(`${timeoutMin}分延長しました`, 'success');
