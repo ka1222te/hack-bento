@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     TIMEOUT_WARNING_MINUTES: int = 10
     VM_CPU_LIMIT: int = 1
     VM_MEMORY_LIMIT_MB: int = 1024
+    VM_DISK_LIMIT_GB: int = 10
+    VM_PIDS_LIMIT: int = 256
 
     # 認証
     LDAP_ENABLED: bool = False

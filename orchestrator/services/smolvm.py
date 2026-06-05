@@ -48,6 +48,11 @@ async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMSt
         "--ip", ip,
         "--cpus", str(cpu),
         "--memory", f"{memory_mb}m",
+        "--memory-swap", f"{memory_mb}m",          # swap を CPU 制限内に封じる
+        "--storage-opt", f"size={settings.VM_DISK_LIMIT_GB}g",  # rootfs ディスク上限
+        "--pids-limit", str(settings.VM_PIDS_LIMIT),            # fork bomb 対策
+        "--ulimit", f"nofile=1024:1024",                        # FD 枯渇攻撃防止
+        "--ulimit", f"nproc={settings.VM_PIDS_LIMIT}:{settings.VM_PIDS_LIMIT}",
         "--restart", "no",
         oci_ref,
     ]

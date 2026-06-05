@@ -203,6 +203,7 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 - Default 60-minute timeout; extendable with the "+60 min" button
 - Warning displayed when 10 minutes remain
 - Maximum 2 environments per user, 20 system-wide (configurable)
+- Each container is subject to disk quotas, process count limits, and swap disabled to reduce host impact from malicious images
 
 ### Admin Panel (`/admin`)
 
@@ -227,6 +228,8 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 | `MAX_ENVS_TOTAL` | `20` | Max simultaneous environments system-wide |
 | `VM_CPU_LIMIT` | `1` | CPU limit per environment (cores) |
 | `VM_MEMORY_LIMIT_MB` | `1024` | Memory limit per environment (MB) |
+| `VM_DISK_LIMIT_GB` | `10` | Disk limit per environment (GB) |
+| `VM_PIDS_LIMIT` | `256` | Max process count per environment (fork bomb protection) |
 | `VM_BACKEND` | `docker` | `docker` or `firecracker` |
 | `MACVLAN_NETWORK` | `hackbento-vm` | macvlan network name |
 | `IP_POOL_START` | `192.168.181.200` | IP pool start address (must be within subnet) |
