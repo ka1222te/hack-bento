@@ -36,6 +36,8 @@ def _check_reachable_sync() -> bool:
 
 
 def _authenticate_sync(username: str, password: str) -> bool:
+    if not password:
+        return False
     try:
         client = _make_client()
         return client.authenticate(username, password)
