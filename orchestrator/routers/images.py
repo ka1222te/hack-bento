@@ -23,6 +23,11 @@ ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst")
 ALLOWED_README   = (".md", ".txt")
 _VALID_SLUG      = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 TRUSTED_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
+ALLOWED_CATEGORIES = frozenset({
+    "Web", "Pwn", "Crypto", "Reversing", "Forensics", "OSINT", "Misc",
+    "CVE", "Privilege Escalation", "RCE", "LFI/RFI", "SQL Injection", "XSS", "SSRF",
+    "Sandbox Test", "Network Test", "Docker Test",
+})
 
 
 class ImageResponse(BaseModel):
@@ -272,8 +277,8 @@ async def upload_image(
         raise HTTPException(status_code=400, detail="name は 128 文字以内で指定してください")
     if description and len(description) > 512:
         raise HTTPException(status_code=400, detail="description は 512 文字以内で指定してください")
-    if category and len(category) > 64:
-        raise HTTPException(status_code=400, detail="category は 64 文字以内で指定してください")
+    if category and category not in ALLOWED_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"無効なカテゴリです: {category}")
 
     # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
     has_file = bool(file and file.filename and file.size and file.size > 0)
@@ -563,8 +568,8 @@ async def update_image(
     if difficulty is not None:
         image.difficulty = difficulty
     if category is not None:
-        if category and len(category) > 64:
-            raise HTTPException(status_code=400, detail="category は 64 文字以内で指定してください")
+        if category and category not in ALLOWED_CATEGORIES:
+            raise HTTPException(status_code=400, detail=f"無効なカテゴリです: {category}")
         image.category = category or None
     if timeout_minutes is not None:
         if timeout_minutes < 1 or timeout_minutes > 1440:

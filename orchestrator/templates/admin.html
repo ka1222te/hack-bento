@@ -174,13 +174,17 @@ async function loadUsers() {
     const actionBtns = isSelf
       ? '<span class="cat-badge">変更不可</span>'
       : `
-        <button class="btn btn-xs btn-outline" onclick="toggleUser(${u.id}, ${u.is_active})">
+        <button class="btn btn-xs btn-outline js-toggle-user"
+          data-uid="${u.id}" data-active="${u.is_active}">
           ${u.is_active ? '無効化' : '有効化'}
         </button>
-        <button class="btn btn-xs btn-outline" onclick="toggleRole(${u.id}, '${u.role}')">
+        <button class="btn btn-xs btn-outline js-toggle-role"
+          data-uid="${u.id}" data-role="${escHtml(u.role)}">
           ${u.role === 'admin' ? '一般ユーザに降格' : '管理者に昇格'}
         </button>
-        <button class="btn btn-xs btn-outline" onclick="toggleDropdown(event, ${u.id}, ${isLocal}, '${escHtml(u.username)}', '${u.role}')">&#8942;</button>
+        <button class="btn btn-xs btn-outline js-open-dd"
+          data-uid="${u.id}" data-local="${isLocal}"
+          data-username="${escHtml(u.username)}" data-role="${escHtml(u.role)}">&#8942;</button>
       `;
 
     return `
@@ -236,9 +240,10 @@ function toggleDropdown(e, userId, isLocal, username, role) {
 
   _dd.dataset.userId = userId;
   _dd.dataset.role = role;
+  _dd.dataset.username = username;
   _dd.innerHTML = [
-    isLocal ? `<button onclick="showPwOverlay(${userId}, '${username}'); _closeDropdown()">設定変更</button>` : '',
-    `<button class="danger" onclick="deleteUser(${userId}, '${username}', _dd.dataset.role); _closeDropdown()">ユーザ削除</button>`,
+    isLocal ? `<button class="js-dd-settings">設定変更</button>` : '',
+    `<button class="danger js-dd-delete">ユーザ削除</button>`,
   ].join('');
 
   // ボタン直下に表示、画面右端を超えないよう調整
@@ -257,6 +262,28 @@ function _closeDropdown() {
 }
 
 document.addEventListener('click', _closeDropdown);
+
+// テーブルへのイベント委譲（onclick属性の代替）
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+
+  if (btn.classList.contains('js-toggle-user')) {
+    e.stopPropagation();
+    toggleUser(Number(btn.dataset.uid), btn.dataset.active === 'true');
+  } else if (btn.classList.contains('js-toggle-role')) {
+    e.stopPropagation();
+    toggleRole(Number(btn.dataset.uid), btn.dataset.role);
+  } else if (btn.classList.contains('js-open-dd')) {
+    toggleDropdown(e, Number(btn.dataset.uid), btn.dataset.local === 'true', btn.dataset.username, btn.dataset.role);
+  } else if (btn.classList.contains('js-dd-settings')) {
+    showPwOverlay(Number(_dd.dataset.userId), _dd.dataset.username);
+    _closeDropdown();
+  } else if (btn.classList.contains('js-dd-delete')) {
+    deleteUser(Number(_dd.dataset.userId), _dd.dataset.username, _dd.dataset.role);
+    _closeDropdown();
+  }
+});
 
 // パスワード変更オーバーレイ
 let _pwTargetId = null;

@@ -258,6 +258,11 @@ async def user_profile_page(username: str, request: Request):
     user = await _get_request_user(request)
     if not user:
         return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.username == username, User.is_active == True))
+        target = result.scalar_one_or_none()
+    if not target:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("user_profile.html", {"request": request, "username": username, "settings": settings})
 
 

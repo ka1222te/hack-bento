@@ -10,10 +10,10 @@
     <p style="color:var(--text2);margin-bottom:1rem">
       このページは存在しないか、閲覧する権限がありません。
     </p>
-    <p style="color:var(--text3);font-size:.9rem;margin-bottom:2rem">
+    <p id="redirect-countdown-msg" style="color:var(--text3);font-size:.9rem;margin-bottom:2rem">
       <span id="redirect-countdown">10</span> 秒後にログインページへリダイレクトします
     </p>
-    <a href="/login" class="btn btn-primary">ログイン画面に進む</a>
+    <a id="login-btn" href="/login" class="btn btn-primary">ログイン画面に進む</a>
   </div>
 </div>
 <div id="toast-container"></div>
@@ -22,12 +22,17 @@
 {% block scripts %}
 <script>
 initNavbar();
-let _count = 10;
-const _el = document.getElementById('redirect-countdown');
-const _iv = setInterval(() => {
-  _count--;
-  if (_el) _el.textContent = _count;
-  if (_count <= 0) { clearInterval(_iv); window.location.href = '/login'; }
-}, 1000);
+if (!sessionStorage.getItem('hb_token')) {
+  let _count = 10;
+  const _el = document.getElementById('redirect-countdown');
+  const _iv = setInterval(() => {
+    _count--;
+    if (_el) _el.textContent = _count;
+    if (_count <= 0) { clearInterval(_iv); window.location.href = '/login'; }
+  }, 1000);
+} else {
+  document.getElementById('redirect-countdown-msg').style.display = 'none';
+  document.getElementById('login-btn').style.display = 'none';
+}
 </script>
 {% endblock %}
