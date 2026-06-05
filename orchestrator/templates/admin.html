@@ -100,7 +100,7 @@
 {% block scripts %}
 <script>
 const API = {
-  token: () => localStorage.getItem('hb_token'),
+  token: () => sessionStorage.getItem('hb_token'),
   headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },

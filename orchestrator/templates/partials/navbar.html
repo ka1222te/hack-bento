@@ -122,7 +122,11 @@ function initNavbar() {
   const udLogout = document.getElementById('ud-logout');
   if (udLogout) udLogout.addEventListener('click', async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
-    localStorage.clear(); window.location.href = '/login';
+    sessionStorage.removeItem('hb_token');
+    localStorage.removeItem('hb_username');
+    localStorage.removeItem('hb_role');
+    localStorage.removeItem('hb_needs_setup');
+    window.location.href = '/login';
   });
 
   _setDrawerActive();
@@ -130,7 +134,7 @@ function initNavbar() {
 }
 
 async function _loadMyProjects() {
-  const token = localStorage.getItem('hb_token');
+  const token = sessionStorage.getItem('hb_token');
   if (!token) return;
   const el = document.getElementById('drawer-my-projects');
   try {

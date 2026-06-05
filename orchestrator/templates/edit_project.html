@@ -241,7 +241,7 @@
 <script>
 const OWNER = {{ owner | tojson }};
 const SLUG  = {{ slug  | tojson }};
-const token = localStorage.getItem('hb_token');
+const token = sessionStorage.getItem('hb_token');
 if (!token) { window.location.href = '/login'; }
 
 initNavbar();

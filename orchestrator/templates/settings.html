@@ -48,7 +48,7 @@
 {% block scripts %}
 <script>
 (async () => {
-  const token = localStorage.getItem('hb_token');
+  const token = sessionStorage.getItem('hb_token');
   if (!token) { window.location.href = '/login'; return; }
 
   initNavbar();

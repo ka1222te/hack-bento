@@ -36,7 +36,7 @@
 {% block scripts %}
 <script>
 // Cookie経由でもトークンを取得できる（OAuthコールバック後はCookieのみセットされる）
-let token = localStorage.getItem('hb_token');
+let token = sessionStorage.getItem('hb_token');
 
 (async () => {
   // /api/auth/me はCookie・Bearerどちらも受け付けるため、まず認証確認
@@ -59,7 +59,7 @@ let token = localStorage.getItem('hb_token');
   // access_tokenをlocalStorageに同期
   if (me.access_token) {
     token = me.access_token;
-    localStorage.setItem('hb_token', token);
+    sessionStorage.setItem('hb_token', token);
     localStorage.setItem('hb_username', me.username);
     localStorage.setItem('hb_role', me.role);
   }
@@ -126,7 +126,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
 
   if (res.ok) {
     const data = await res.json();
-    localStorage.setItem('hb_token', data.access_token);
+    sessionStorage.setItem('hb_token', data.access_token);
     localStorage.setItem('hb_username', data.username);
     localStorage.setItem('hb_role', data.role || localStorage.getItem('hb_role') || 'user');
     localStorage.setItem('hb_needs_setup', 'false');

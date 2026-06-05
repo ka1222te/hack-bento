@@ -88,7 +88,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
   if (res.ok) {
     const data = await res.json();
-    localStorage.setItem('hb_token', data.access_token);
+    sessionStorage.setItem('hb_token', data.access_token);
     localStorage.setItem('hb_username', data.username);
     localStorage.setItem('hb_role', data.role);
     localStorage.setItem('hb_needs_setup', data.needs_username_setup ? 'true' : 'false');

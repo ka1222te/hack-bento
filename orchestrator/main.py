@@ -56,7 +56,7 @@ async def _seed_admin():
             )
             db.add(user)
             await db.commit()
-            logging.getLogger(__name__).info("Default admin user created (admin/admin)")
+            logging.getLogger(__name__).warning("Default admin user created. Please change the password immediately after first login.")
 
 
 app = FastAPI(title=settings.APP_TITLE, lifespan=lifespan)
@@ -82,6 +82,11 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
 
 app.include_router(auth.router)
 app.include_router(envs.router)
@@ -185,6 +190,9 @@ async def _can_edit_project(owner: str, slug: str, user: Optional[User]) -> bool
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    user = await _get_request_user(request)
+    if not user:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("index.html", {"request": request, "settings": settings})
 
 
@@ -215,26 +223,41 @@ async def setup_username_page(request: Request):
 
 @app.get("/explore", response_class=HTMLResponse)
 async def explore_page(request: Request):
+    user = await _get_request_user(request)
+    if not user:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("explore.html", {"request": request, "settings": settings})
 
 
 @app.get("/new", response_class=HTMLResponse)
 async def new_project_page(request: Request):
+    user = await _get_request_user(request)
+    if not user or user.needs_username_setup:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
+    user = await _get_request_user(request)
+    if not user:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("settings.html", {"request": request, "settings": settings})
 
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
+    user = await _get_request_user(request)
+    if not user or user.role != UserRole.admin:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("admin.html", {"request": request, "settings": settings})
 
 
 @app.get("/user/{username}", response_class=HTMLResponse)
 async def user_profile_page(username: str, request: Request):
+    user = await _get_request_user(request)
+    if not user:
+        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse("user_profile.html", {"request": request, "username": username, "settings": settings})
 
 

@@ -94,7 +94,7 @@ const SLUG     = {{ slug  | tojson }};
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 
 const API = {
-  token: () => localStorage.getItem('hb_token'),
+  token: () => sessionStorage.getItem('hb_token'),
   headers: () => {
     const h = { 'Content-Type': 'application/json' };
     if (API.token()) h['Authorization'] = `Bearer ${API.token()}`;

@@ -24,7 +24,7 @@
 {% block scripts %}
 <script>
 const API = {
-  token: () => localStorage.getItem('hb_token'),
+  token: () => sessionStorage.getItem('hb_token'),
   headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
@@ -38,7 +38,7 @@ const API = {
     const me = await res.json();
     if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
     // CookieのJWTをlocalStorageに同期してAPI呼び出しを統一する
-    localStorage.setItem('hb_token', me.access_token);
+    sessionStorage.setItem('hb_token', me.access_token);
     localStorage.setItem('hb_username', me.username);
     localStorage.setItem('hb_role', me.role);
     localStorage.setItem('hb_needs_setup', 'false');

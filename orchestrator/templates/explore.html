@@ -97,14 +97,20 @@
 
 {% block scripts %}
 <script>
+const isLoggedIn = !!sessionStorage.getItem('hb_token');
+
 const API = {
-  token: () => localStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  token: () => sessionStorage.getItem('hb_token'),
+  headers: () => {
+    const h = { 'Content-Type': 'application/json' };
+    if (API.token()) h['Authorization'] = `Bearer ${API.token()}`;
+    return h;
+  },
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
 };
 
-if (!API.token()) { window.location.href = '/login'; }
+if (!isLoggedIn) { window.location.href = '/login'; }
 if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
 
 initNavbar();
@@ -113,12 +119,11 @@ const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 let allImages = [], myEnvs = [];
 
 async function init() {
-  const [imgRes, envRes] = await Promise.all([
-    API.get('/api/images/'),
-    API.get('/api/envs/'),
-  ]);
+  const requests = [fetch('/api/images/', { headers: { 'Content-Type': 'application/json' } })];
+  if (isLoggedIn) requests.push(API.get('/api/envs/'));
+  const [imgRes, envRes] = await Promise.all(requests);
   if (imgRes.ok) allImages = await imgRes.json();
-  if (envRes.ok) myEnvs = await envRes.json();
+  if (envRes && envRes.ok) myEnvs = await envRes.json();
 
   ['diff-select', 'cat-select', 'vis-select'].forEach(id =>
     document.getElementById(id).addEventListener('change', renderImages)
@@ -174,12 +179,14 @@ function renderImages() {
           </div>
         </div>
         <div class="project-row-action">
-          ${running
-            ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
-            : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
-                 onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
-                 &#x25B6; 起動
-               </button>`
+          ${!isLoggedIn
+            ? `<a href="/login" class="btn btn-sm btn-launch">&#x1F511; ログイン</a>`
+            : running
+              ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
+              : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
+                   onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
+                   &#x25B6; 起動
+                 </button>`
           }
         </div>
       </div>`;
