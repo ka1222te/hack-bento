@@ -17,6 +17,11 @@
         </div>
 
         <div class="sidebar-section">
+          <label class="sidebar-label">User</label>
+          <input type="text" id="user-input" class="sf-select" placeholder="ユーザ名を検索..." />
+        </div>
+
+        <div class="sidebar-section">
           <label class="sidebar-label">Difficulty</label>
           <select id="diff-select" class="sf-select">
             <option value="">すべて</option>
@@ -123,12 +128,14 @@ async function init() {
 
 function renderImages() {
   const q    = document.getElementById('search-input').value.toLowerCase();
+  const user = document.getElementById('user-input').value.toLowerCase();
   const diff = document.getElementById('diff-select').value;
   const cat  = document.getElementById('cat-select').value;
   const vis  = document.getElementById('vis-select').value;
 
   const filtered = allImages.filter(img =>
     (!q    || img.name.toLowerCase().includes(q) || (img.description||'').toLowerCase().includes(q) || (img.category||'').toLowerCase().includes(q)) &&
+    (!user || (img.owner_username||'').toLowerCase().includes(user)) &&
     (!diff || img.difficulty === diff) &&
     (!cat  || img.category === cat) &&
     (!vis  || img.visibility === vis)
@@ -187,6 +194,7 @@ async function startEnv(imageId) {
 }
 
 document.getElementById('search-input').addEventListener('input', renderImages);
+document.getElementById('user-input').addEventListener('input', renderImages);
 init();
 </script>
 {% endblock %}
