@@ -147,7 +147,7 @@ async function loadAdminEnvs() {
       <td><span class="status-badge ${e.status}">${e.status}</span></td>
       <td>${fmt(e.started_at)}</td>
       <td>${fmt(e.expires_at)}</td>
-      <td><button class="btn btn-xs btn-danger" onclick="forceStop(${e.id})">強制停止</button></td>
+      <td><button class="btn btn-xs btn-danger js-force-stop" data-eid="${e.id}">強制停止</button></td>
     </tr>
   `).join('') || '<tr><td colspan="8" class="empty-cell">起動中の環境はありません</td></tr>';
 }
@@ -284,6 +284,8 @@ document.addEventListener('click', e => {
     _closeDropdown();
   } else if (btn.classList.contains('js-delete-image')) {
     deleteImage(Number(btn.dataset.iid));
+  } else if (btn.classList.contains('js-force-stop')) {
+    forceStop(Number(btn.dataset.eid));
   }
 });
 
