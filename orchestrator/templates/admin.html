@@ -231,9 +231,8 @@ async function deleteUser(userId, username, role) {
 const _dd = document.getElementById('user-action-dropdown');
 let _ddOpen = false;
 
-function toggleDropdown(e, userId, isLocal, username, role) {
+function toggleDropdown(e, btn, userId, isLocal, username, role) {
   e.stopPropagation();
-  const btn = e.currentTarget;
   const rect = btn.getBoundingClientRect();
 
   if (_ddOpen && _dd.dataset.userId === String(userId)) {
@@ -254,7 +253,7 @@ function toggleDropdown(e, userId, isLocal, username, role) {
   const ddWidth = 130;
   let left = rect.right - ddWidth;
   if (left < 4) left = 4;
-  _dd.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  _dd.style.top  = (rect.bottom + 4) + 'px';
   _dd.style.left = left + 'px';
   _dd.classList.remove('hidden');
   _ddOpen = true;
@@ -289,7 +288,7 @@ document.addEventListener('click', e => {
     e.stopPropagation();
     toggleRole(Number(btn.dataset.uid), btn.dataset.role);
   } else if (btn.classList.contains('js-open-dd')) {
-    toggleDropdown(e, Number(btn.dataset.uid), btn.dataset.local === 'true', btn.dataset.username, btn.dataset.role);
+    toggleDropdown(e, btn, Number(btn.dataset.uid), btn.dataset.local === 'true', btn.dataset.username, btn.dataset.role);
   } else if (btn.classList.contains('js-dd-settings')) {
     showPwOverlay(Number(_dd.dataset.userId), _dd.dataset.username);
     _closeDropdown();
@@ -415,7 +414,7 @@ loadAdminEnvs();
 
 <style>
 .user-action-dropdown {
-  position: absolute;
+  position: fixed;
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: 6px;
