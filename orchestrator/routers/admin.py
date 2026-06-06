@@ -148,7 +148,6 @@ async def delete_user(
         await destroy_env(env)
 
     # ユーザが所有するイメージのコラボレーター・環境・イメージ本体を削除
-    import os as _os
     img_result = await db.execute(select(Image).where(Image.owner_id == user_id))
     for img in img_result.scalars().all():
         await db.execute(delete(ImageCollaborator).where(ImageCollaborator.image_id == img.id))
@@ -165,13 +164,10 @@ async def delete_user(
             except Exception:
                 pass
         await db.execute(delete(Environment).where(Environment.image_id == img.id))
-        # アーカイブ・READMEの実ファイルを削除
-        for path in (img.archive_path, getattr(img, "readme_path", None)):
-            if path:
-                try:
-                    _os.remove(path)
-                except OSError:
-                    pass
+        # アーカイブ・READMEの実ファイルを削除（パストラバーサル対策付き）
+        from routers.images import _safe_remove
+        _safe_remove(img.archive_path)
+        _safe_remove(getattr(img, "readme_path", None))
         await db.delete(img)
 
     # コラボレーター参加分を削除

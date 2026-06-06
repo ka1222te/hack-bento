@@ -46,22 +46,13 @@ let token = sessionStorage.getItem('hb_token');
   if (!meRes.ok) { window.location.href = '/login'; return; }
   const me = await meRes.json();
 
-  // OAuthユーザなどlocalStorageが未設定の場合はCookieトークンをlocalStorageに同期
-  if (!token) {
-    // トークン自体はCookieにありJSからは読めないが、meのデータでlocalStorageを更新
-    localStorage.setItem('hb_username', me.username);
-    localStorage.setItem('hb_role', me.role);
-  }
-
   // ユーザ名設定不要なら / へ
   if (!me.needs_username_setup) { window.location.href = '/'; return; }
 
-  // access_tokenをlocalStorageに同期
-  if (me.access_token) {
+  // OAuthユーザ: CookieのJWTをsessionStorageに同期
+  if (!token && me.access_token) {
     token = me.access_token;
     sessionStorage.setItem('hb_token', token);
-    localStorage.setItem('hb_username', me.username);
-    localStorage.setItem('hb_role', me.role);
   }
 
   const input = document.getElementById('username');
@@ -127,9 +118,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   if (res.ok) {
     const data = await res.json();
     sessionStorage.setItem('hb_token', data.access_token);
-    localStorage.setItem('hb_username', data.username);
-    localStorage.setItem('hb_role', data.role || localStorage.getItem('hb_role') || 'user');
-    localStorage.setItem('hb_needs_setup', 'false');
+    sessionStorage.removeItem('hb_needs_setup');
     window.location.href = '/';
   } else {
     const data = await res.json();

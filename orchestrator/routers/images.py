@@ -21,6 +21,23 @@ UPLOAD_DIR = "/data/images/uploads"
 README_DIR = "/data/images/readmes"
 ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst")
 ALLOWED_README   = (".md", ".txt")
+_ALLOWED_DIRS    = (UPLOAD_DIR, README_DIR)
+
+
+def _safe_remove(path: Optional[str]) -> None:
+    """許可ディレクトリ配下のファイルのみ削除する。パストラバーサル対策。"""
+    if not path:
+        return
+    real = os.path.realpath(path)
+    if not any(real.startswith(os.path.realpath(d) + os.sep) or real == os.path.realpath(d)
+               for d in _ALLOWED_DIRS):
+        import logging
+        logging.getLogger(__name__).warning(f"safe_remove: path outside allowed dirs, skipping: {real}")
+        return
+    try:
+        os.remove(real)
+    except OSError:
+        pass
 _VALID_SLUG      = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 TRUSTED_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
 ALLOWED_CATEGORIES = frozenset({
@@ -334,8 +351,10 @@ async def upload_image(
         try:
             oci_ref = await docker_load(save_path)
         except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"docker load failed: {e}")
             os.remove(save_path)
-            raise HTTPException(status_code=500, detail=f"docker load に失敗しました: {e}")
+            raise HTTPException(status_code=500, detail="イメージ処理に失敗しました")
     else:
         # URL から docker pull → docker save でアーカイブ保存
         ref = image_url.strip()
@@ -344,7 +363,9 @@ async def upload_image(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"docker pull に失敗しました: {e}")
+            import logging
+            logging.getLogger(__name__).error(f"docker pull failed: {e}")
+            raise HTTPException(status_code=500, detail="イメージ取得に失敗しました")
 
     # README 保存（ファイル優先、なければテキスト入力）
     readme_path = None
@@ -526,11 +547,8 @@ async def update_image(
                 old_path = image.archive_path
                 image.archive_path = save_path
                 image.oci_ref = new_oci_ref
-                if old_path and old_path != save_path and os.path.exists(old_path):
-                    try:
-                        os.remove(old_path)
-                    except OSError:
-                        pass
+                if old_path and old_path != save_path:
+                    _safe_remove(old_path)
             except HTTPException:
                 if os.path.exists(save_path):
                     os.remove(save_path)
@@ -546,15 +564,14 @@ async def update_image(
                 old_path = image.archive_path
                 image.oci_ref = new_oci_ref
                 image.archive_path = save_path
-                if old_path and old_path != save_path and os.path.exists(old_path):
-                    try:
-                        os.remove(old_path)
-                    except OSError:
-                        pass
+                if old_path and old_path != save_path:
+                    _safe_remove(old_path)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"docker pull に失敗しました: {e}")
+                import logging
+                logging.getLogger(__name__).error(f"docker pull failed (update): {e}")
+                raise HTTPException(status_code=500, detail="イメージ取得に失敗しました")
 
     # メタデータ更新
     if name is not None:

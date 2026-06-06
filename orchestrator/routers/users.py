@@ -80,10 +80,10 @@ async def search_users(
     """ユーザ名の前方一致検索（候補サジェスト用）。自分自身は除外。"""
     if len(q) < 1 or len(q) > 64:
         return []
-    from sqlalchemy import func
+    q_escaped = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
     result = await db.execute(
         select(User.username).where(
-            User.username.ilike(f"{q}%"),
+            User.username.ilike(f"{q_escaped}%", escape='\\'),
             User.id != current_user.id,
             User.is_active == True,
             User.needs_username_setup == False,

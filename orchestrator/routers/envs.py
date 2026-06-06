@@ -169,33 +169,36 @@ async def extend_env(
     user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Environment)
-        .options(selectinload(Environment.image))
-        .where(
-            Environment.id == env_id,
-            Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
-        )
-    )
-    env = result.scalar_one_or_none()
-    if not env:
-        raise HTTPException(status_code=404, detail="環境が見つかりません")
-    if env.user_id != user.id and user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="権限がありません")
-
     from services.network import _ip_pool
-    max_extend = len(_ip_pool())
-    if user.role != UserRole.admin and env.extended_count >= max_extend:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"延長回数の上限（{max_extend}回）に達しています",
+    async with _ip_lock:
+        # WITH_FOR_UPDATE で行ロックを取得し、同時リクエストによる上限超過を防ぐ
+        result = await db.execute(
+            select(Environment)
+            .options(selectinload(Environment.image))
+            .where(
+                Environment.id == env_id,
+                Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+            )
+            .with_for_update()
         )
+        env = result.scalar_one_or_none()
+        if not env:
+            raise HTTPException(status_code=404, detail="環境が見つかりません")
+        if env.user_id != user.id and user.role != UserRole.admin:
+            raise HTTPException(status_code=403, detail="権限がありません")
 
-    # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）
-    extend_minutes = env.image.timeout_minutes if env.image and env.image.timeout_minutes else settings.DEFAULT_TIMEOUT_MINUTES
-    env.expires_at = datetime.utcnow() + timedelta(minutes=extend_minutes)
-    env.extended_count += 1
-    await db.commit()
+        max_extend = len(_ip_pool())
+        if user.role != UserRole.admin and env.extended_count >= max_extend:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"延長回数の上限（{max_extend}回）に達しています",
+            )
+
+        # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）
+        extend_minutes = env.image.timeout_minutes if env.image and env.image.timeout_minutes else settings.DEFAULT_TIMEOUT_MINUTES
+        env.expires_at = datetime.utcnow() + timedelta(minutes=extend_minutes)
+        env.extended_count += 1
+        await db.commit()
     return {"message": f"{extend_minutes}分延長しました", "expires_at": env.expires_at.isoformat(), "extend_minutes": extend_minutes}
 
 

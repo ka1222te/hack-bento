@@ -109,7 +109,6 @@ const API = {
 const isLoggedIn = !!API.token();
 initNavbar();
 
-const myUsername = localStorage.getItem('hb_username') || '';
 const diffLabel  = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
 const visLabel   = { public: '🌍 Public', protected: '🔒 Protected', private: '🔐 Private' };
 
@@ -240,12 +239,12 @@ function renderLaunchPanel() {
             <div class="launch-panel-ip">
               <span class="label">IP</span>
               <code class="ip-code">${escHtml(running.ip_address || '取得中...')}</code>
-              ${running.ip_address ? `<button class="copy-btn" onclick="copyIP('${escHtml(running.ip_address)}', this)" title="IPアドレスをコピー">📋</button>` : ''}
+              ${running.ip_address ? `<button class="copy-btn js-copy-ip" data-ip="${escHtml(running.ip_address)}" title="IPアドレスをコピー">📋</button>` : ''}
             </div>
           </div>
         </div>
         <div class="launch-panel-actions">
-          <button class="btn btn-danger" onclick="stopEnv(${running.id})">&#x23F9; 停止する</button>
+          <button class="btn btn-danger js-stop-env" data-eid="${running.id}">&#x23F9; 停止する</button>
         </div>
       </div>`;
   } else {
@@ -271,8 +270,8 @@ function renderLaunchPanel() {
           </div>
         </div>
         <div class="launch-panel-actions">
-          <button class="btn btn-launch btn-launch-lg ${atLimit ? 'btn-disabled' : ''}"
-            onclick="startEnv(${imageData.id})" ${atLimit ? `disabled title="同時起動上限(${MAX_ENVS})に達しています"` : ''}>
+          <button class="btn btn-launch btn-launch-lg ${atLimit ? 'btn-disabled' : ''} js-start-env"
+            data-iid="${imageData.id}" ${atLimit ? `disabled title="同時起動上限(${MAX_ENVS})に達しています"` : ''}>
             &#x25B6; 起動する
           </button>
         </div>
@@ -280,8 +279,8 @@ function renderLaunchPanel() {
   }
 }
 
-async function startEnv(imageId) {
-  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+async function startEnv(imageId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
   const res = await API.post(`/api/envs/${imageId}/start`);
   if (res.ok) {
     showToast('環境を起動しました', 'success');
@@ -289,7 +288,7 @@ async function startEnv(imageId) {
     renderLaunchPanel();
   } else {
     const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
-    btn.disabled = false; btn.textContent = '▶ 起動する';
+    if (btn) { btn.disabled = false; btn.textContent = '▶ 起動する'; }
   }
 }
 
@@ -302,6 +301,19 @@ async function stopEnv(envId) {
     renderLaunchPanel();
   } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
 }
+
+// イベント委譲: 起動・停止・IPコピー
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.classList.contains('js-start-env')) {
+    startEnv(Number(btn.dataset.iid), btn);
+  } else if (btn.classList.contains('js-stop-env')) {
+    stopEnv(Number(btn.dataset.eid));
+  } else if (btn.classList.contains('js-copy-ip')) {
+    copyIP(btn.dataset.ip, btn);
+  }
+});
 
 // copyIP は navbar.html で定義済み
 

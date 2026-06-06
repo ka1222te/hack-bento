@@ -1,8 +1,9 @@
 import asyncio
 import uuid
 import logging
+import ipaddress
 from config import settings
-from services.network import create_tap, delete_tap
+from services.network import create_tap, delete_tap, _ip_pool
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,18 @@ async def docker_load(archive_path: str) -> str:
 
 # ---- Docker + macvlan バックエンド ----
 
+def _validate_ip(ip: str) -> None:
+    """IPがIPv4形式かつプール内に含まれることを確認する。"""
+    try:
+        ipaddress.IPv4Address(ip)
+    except ipaddress.AddressValueError:
+        raise ValueError(f"Invalid IP address: {ip}")
+    if ip not in _ip_pool():
+        raise ValueError(f"IP address not in pool: {ip}")
+
+
 async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
+    _validate_ip(ip)
     vm_id = str(uuid.uuid4())
     logger.info(f"docker run: oci_ref={repr(oci_ref)} ip={ip}")
 

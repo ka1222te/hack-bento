@@ -31,18 +31,15 @@ const API = {
 };
 
 (async () => {
-  // localStorageにトークンがない場合はCookie認証を試みてlocalStorageを同期する
+  // sessionStorageにトークンがない場合はCookie認証を試みてsessionStorageを同期する
   if (!API.token()) {
     const res = await fetch('/api/auth/me');
     if (!res.ok) { window.location.href = '/login'; return; }
     const me = await res.json();
     if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
-    // CookieのJWTをlocalStorageに同期してAPI呼び出しを統一する
+    // CookieのJWTをsessionStorageに同期してAPI呼び出しを統一する
     sessionStorage.setItem('hb_token', me.access_token);
-    localStorage.setItem('hb_username', me.username);
-    localStorage.setItem('hb_role', me.role);
-    localStorage.setItem('hb_needs_setup', 'false');
-  } else if (localStorage.getItem('hb_needs_setup') === 'true') {
+  } else if (sessionStorage.getItem('hb_needs_setup') === 'true') {
     window.location.href = '/setup-username'; return;
   }
   initNavbar();

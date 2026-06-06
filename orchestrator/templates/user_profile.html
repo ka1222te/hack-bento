@@ -58,10 +58,13 @@ async function init() {
   const av = document.getElementById('profile-avatar');
   av.textContent = TARGET_USER ? TARGET_USER[0].toUpperCase() : '?';
 
-  // 自分のプロフィールかどうか
-  const isMe = localStorage.getItem('hb_username') === TARGET_USER;
-  if (isMe) {
-    document.getElementById('profile-sub').textContent = 'あなたのプロフィール';
+  // 自分のプロフィールかどうか（/api/auth/me で判定）
+  const meRes2 = await API.get('/api/auth/me');
+  if (meRes2.ok) {
+    const meData = await meRes2.json();
+    if (meData.username === TARGET_USER) {
+      document.getElementById('profile-sub').textContent = 'あなたのプロフィール';
+    }
   }
 
   const [imgRes, envRes] = await Promise.all([

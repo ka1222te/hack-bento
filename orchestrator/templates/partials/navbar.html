@@ -1,12 +1,12 @@
 <!-- ドロワーオーバーレイ -->
-<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer-overlay" id="drawer-overlay"></div>
 
 <!-- ドロワーサイドバー -->
 <aside class="drawer" id="drawer">
   <div class="drawer-header">
     <img src="/static/img/bento.svg" class="logo-svg" alt="HackBento" />
     <span class="logo-text">HackBento</span>
-    <button class="drawer-close" onclick="closeDrawer()">&#x2715;</button>
+    <button class="drawer-close" id="drawer-close-btn">&#x2715;</button>
   </div>
 
   <nav class="drawer-nav">
@@ -54,7 +54,7 @@
 <!-- ナビバー本体 -->
 <nav class="navbar">
   <div class="navbar-left">
-    <button class="hamburger" id="hamburger-btn" onclick="openDrawer()" aria-label="メニュー">
+    <button class="hamburger" id="hamburger-btn" aria-label="メニュー">
       <span></span><span></span><span></span>
     </button>
     <a href="/" class="navbar-brand">
@@ -67,7 +67,7 @@
   </div>
   <div class="navbar-right">
     <!-- ユーザアイコンボタン -->
-    <button class="nav-user-btn" id="nav-user-btn" onclick="toggleUserMenu(event)" aria-label="ユーザメニュー">
+    <button class="nav-user-btn" id="nav-user-btn" aria-label="ユーザメニュー">
       <span class="nav-user-avatar" id="nav-user-avatar">?</span>
       <svg class="nav-user-caret" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/></svg>
     </button>
@@ -95,6 +95,12 @@ document.addEventListener('click', () => {
   document.getElementById('user-dropdown')?.classList.remove('open');
 });
 
+// ドロワー・ユーザメニューのイベント登録（inline onclick の代替）
+document.getElementById('hamburger-btn').addEventListener('click', openDrawer);
+document.getElementById('drawer-close-btn').addEventListener('click', closeDrawer);
+document.getElementById('drawer-overlay').addEventListener('click', closeDrawer);
+document.getElementById('nav-user-btn').addEventListener('click', toggleUserMenu);
+
 function _setDrawerActive() {
   const path = location.pathname;
   document.querySelectorAll('.drawer-link').forEach(a => {
@@ -103,45 +109,48 @@ function _setDrawerActive() {
 }
 
 function initNavbar() {
-  const username = localStorage.getItem('hb_username') || '';
-  const role = localStorage.getItem('hb_role') || 'user';
-
-  // アバター（ユーザ名の頭文字）
-  const avatarEl = document.getElementById('nav-user-avatar');
-  if (avatarEl) avatarEl.textContent = username ? username[0].toUpperCase() : '?';
-
-  // ドロップダウン内のユーザ名
-  const udName = document.getElementById('ud-username');
-  if (udName) udName.textContent = username;
-
-  // 管理者リンク
-  const udAdmin = document.getElementById('ud-admin-link');
-  if (udAdmin && role === 'admin') udAdmin.classList.remove('hidden');
-
   // ログアウト
   const udLogout = document.getElementById('ud-logout');
   if (udLogout) udLogout.addEventListener('click', async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
-    sessionStorage.removeItem('hb_token');
-    localStorage.removeItem('hb_username');
-    localStorage.removeItem('hb_role');
-    localStorage.removeItem('hb_needs_setup');
+    sessionStorage.clear();
     window.location.href = '/login';
   });
 
   _setDrawerActive();
-  _loadMyProjects();
+  _loadNavbarUser();
 }
 
-async function _loadMyProjects() {
+async function _loadNavbarUser() {
   const token = sessionStorage.getItem('hb_token');
   if (!token) return;
+  try {
+    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return;
+    const me = await res.json();
+
+    const avatarEl = document.getElementById('nav-user-avatar');
+    if (avatarEl) avatarEl.textContent = me.username ? me.username[0].toUpperCase() : '?';
+
+    const udName = document.getElementById('ud-username');
+    if (udName) udName.textContent = me.username || '';
+
+    const udAdmin = document.getElementById('ud-admin-link');
+    if (udAdmin && me.role === 'admin') udAdmin.classList.remove('hidden');
+
+    _loadMyProjects(me.username);
+  } catch {}
+}
+
+async function _loadMyProjects(username) {
+  const token = sessionStorage.getItem('hb_token');
+  if (!token || !username) return;
   const el = document.getElementById('drawer-my-projects');
   try {
     const res = await fetch('/api/images/', { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) { el.innerHTML = ''; return; }
     const images = await res.json();
-    const mine = images.filter(i => i.owner_username === localStorage.getItem('hb_username'));
+    const mine = images.filter(i => i.owner_username === username);
     el.innerHTML = mine.length === 0
       ? '<span class="drawer-loading">プロジェクトなし</span>'
       : mine.map(i => `<a href="/${escHtml(i.owner_username)}/${escHtml(i.slug)}" class="drawer-link">${escHtml(i.name)}</a>`).join('');

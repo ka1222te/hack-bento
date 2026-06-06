@@ -55,7 +55,7 @@
 
 <!-- Modal: Create User -->
 <div id="modal-user" class="modal hidden">
-  <div class="modal-backdrop" onclick="closeModal('modal-user')"></div>
+  <div class="modal-backdrop js-close-modal" data-modal="modal-user"></div>
   <div class="modal-box">
     <h3 class="modal-title">ローカルユーザ追加</h3>
     <form id="form-user">
@@ -67,7 +67,7 @@
       </div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">作成</button>
-        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-user')">キャンセル</button>
+        <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-user">キャンセル</button>
       </div>
     </form>
   </div>
@@ -75,7 +75,7 @@
 
 <!-- Overlay: Change Password (admin) -->
 <div id="overlay-pw" class="modal hidden">
-  <div class="modal-backdrop" onclick="closeModal('overlay-pw')"></div>
+  <div class="modal-backdrop js-close-modal" data-modal="overlay-pw"></div>
   <div class="modal-box" style="max-width:400px">
     <h3 class="modal-title">パスワード変更</h3>
     <p id="overlay-pw-username" style="color:var(--text2);font-size:.875rem;margin-bottom:1rem"></p>
@@ -85,7 +85,7 @@
       <div id="overlay-pw-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">変更</button>
-        <button type="button" class="btn btn-ghost" onclick="closeModal('overlay-pw')">キャンセル</button>
+        <button type="button" class="btn btn-ghost js-close-modal" data-modal="overlay-pw">キャンセル</button>
       </div>
     </form>
   </div>
@@ -270,6 +270,12 @@ document.addEventListener('click', _closeDropdown);
 // 静的ボタンのイベント登録
 document.getElementById('btn-refresh-envs').addEventListener('click', loadAdminEnvs);
 document.getElementById('btn-create-user').addEventListener('click', showCreateUserModal);
+
+// モーダル閉じる（背景クリック・キャンセルボタン共通）
+document.addEventListener('click', e => {
+  const el = e.target.closest('.js-close-modal');
+  if (el) { closeModal(el.dataset.modal); }
+});
 
 // テーブルへのイベント委譲（onclick属性の代替）
 document.addEventListener('click', e => {

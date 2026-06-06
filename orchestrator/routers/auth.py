@@ -180,6 +180,8 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
     token = create_access_token(user.id, user.username, user.role.value, user.needs_username_setup)
     redirect_url = "/setup-username" if user.needs_username_setup else "/"
     resp = RedirectResponse(url=redirect_url, status_code=302)
+    # 既存セッションを破棄してから新規発行（セッション固定化対策）
+    resp.delete_cookie("access_token")
     resp.set_cookie(
         "access_token", token,
         httponly=True, samesite="lax",

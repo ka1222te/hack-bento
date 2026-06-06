@@ -89,9 +89,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   if (res.ok) {
     const data = await res.json();
     sessionStorage.setItem('hb_token', data.access_token);
-    localStorage.setItem('hb_username', data.username);
-    localStorage.setItem('hb_role', data.role);
-    localStorage.setItem('hb_needs_setup', data.needs_username_setup ? 'true' : 'false');
+    if (data.needs_username_setup) sessionStorage.setItem('hb_needs_setup', 'true');
     window.location.href = data.needs_username_setup ? '/setup-username' : '/';
   } else {
     const data = await res.json();

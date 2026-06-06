@@ -116,7 +116,7 @@
           <div id="collab-list" class="collab-edit-list"></div>
           <div style="position:relative;margin-top:.5rem">
             <input class="np-input" id="collab-input" placeholder="ユーザ名を入力..." autocomplete="off"
-                   style="width:100%" oninput="onCollabInput(this.value)" />
+                   style="width:100%" />
             <div id="collab-suggest" class="collab-suggest hidden"></div>
           </div>
           <!-- 権限選択（候補クリック後に表示） -->
@@ -128,8 +128,8 @@
             <label style="display:flex;align-items:center;gap:.3rem;font-size:.875rem;cursor:pointer">
               <input type="radio" name="collab-role" value="read_write" /> Read-Write
             </label>
-            <button type="button" class="btn btn-sm btn-primary" onclick="confirmAddCollaborator()">追加</button>
-            <button type="button" class="btn btn-sm btn-ghost" onclick="cancelCollabSelect()">キャンセル</button>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-confirm-add-collab">追加</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btn-cancel-collab">キャンセル</button>
           </div>
         </div>
 
@@ -227,7 +227,7 @@
       <div id="danger-zone" class="hidden" style="margin-top:2rem;padding:1.25rem 1.5rem;border:1px solid var(--danger,#e53e3e);border-radius:.75rem;">
         <h3 style="margin:0 0 .5rem;font-size:1rem;color:var(--danger,#e53e3e);">Danger Zone</h3>
         <p style="margin:0 0 1rem;font-size:.875rem;color:var(--text2);">このプロジェクトを削除すると、起動中の全環境が停止され、復元できません。</p>
-        <button type="button" class="btn btn-danger" id="delete-btn" onclick="deleteProject()">
+        <button type="button" class="btn btn-danger" id="delete-btn">
           プロジェクトを削除
         </button>
       </div>
@@ -351,8 +351,8 @@ async function loadCollaborators() {
     : collabs.map(c => `
       <div class="collab-row">
         <span class="collab-name">@${escHtml(c.username)}</span>
-        <span class="cat-badge">${c.role}</span>
-        <button type="button" class="btn btn-xs btn-danger" onclick="removeCollaborator('${escHtml(c.username)}')">✕</button>
+        <span class="cat-badge">${escHtml(c.role)}</span>
+        <button type="button" class="btn btn-xs btn-danger js-remove-collab" data-username="${escHtml(c.username)}">✕</button>
       </div>`).join('');
 }
 
@@ -370,7 +370,7 @@ async function onCollabInput(val) {
     const users = await res.json();
     if (users.length === 0) { suggest.classList.add('hidden'); return; }
     suggest.innerHTML = users.map(u => `
-      <div class="collab-suggest-item" onmousedown="selectCollab('${escHtml(u)}')">${escHtml(u)}</div>
+      <div class="collab-suggest-item js-select-collab" data-username="${escHtml(u)}">${escHtml(u)}</div>
     `).join('');
     suggest.classList.remove('hidden');
   }, 200);
@@ -415,6 +415,8 @@ async function confirmAddCollaborator() {
   }
 }
 
+// コラボレーター入力欄イベント（oninput属性の代替）
+document.getElementById('collab-input').addEventListener('input', e => onCollabInput(e.target.value));
 // 入力欄からフォーカスが外れたらサジェストを閉じる
 document.getElementById('collab-input').addEventListener('blur', () => {
   setTimeout(() => document.getElementById('collab-suggest').classList.add('hidden'), 150);
@@ -554,6 +556,27 @@ async function deleteProject() {
     btn.textContent = 'プロジェクトを削除';
   }
 }
+
+// イベント委譲: コラボレーター削除・サジェスト選択
+document.addEventListener('click', e => {
+  const removeBtn = e.target.closest('.js-remove-collab');
+  if (removeBtn) { removeCollaborator(removeBtn.dataset.username); return; }
+
+  const deleteBtn = e.target.closest('#delete-btn');
+  if (deleteBtn) { deleteProject(); return; }
+
+  const confirmBtn = e.target.closest('#btn-confirm-add-collab');
+  if (confirmBtn) { confirmAddCollaborator(); return; }
+
+  const cancelBtn = e.target.closest('#btn-cancel-collab');
+  if (cancelBtn) { cancelCollabSelect(); return; }
+});
+
+// サジェストはmousedownで処理（blurより先に発火させるため）
+document.addEventListener('mousedown', e => {
+  const item = e.target.closest('.js-select-collab');
+  if (item) { selectCollab(item.dataset.username); }
+});
 
 init();
 </script>

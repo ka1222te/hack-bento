@@ -111,7 +111,7 @@ const API = {
 };
 
 if (!isLoggedIn) { window.location.href = '/login'; }
-if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
+if (sessionStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
 
 initNavbar();
 
@@ -183,8 +183,8 @@ function renderImages() {
             ? `<a href="/login" class="btn btn-sm btn-launch">&#x1F511; ログイン</a>`
             : running
               ? `<button class="btn btn-sm btn-running" disabled>&#x25CF; 起動中</button>`
-              : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''}"
-                   onclick="startEnv(${img.id})" ${disabled ? 'disabled' : ''}>
+              : `<button class="btn btn-sm btn-launch${disabled ? ' btn-disabled' : ''} js-start-env"
+                   data-iid="${img.id}" ${disabled ? 'disabled' : ''}>
                    &#x25B6; 起動
                  </button>`
           }
@@ -193,12 +193,17 @@ function renderImages() {
   }).join('');
 }
 
-async function startEnv(imageId) {
-  const btn = event.target; btn.disabled = true; btn.textContent = '起動中...';
+async function startEnv(imageId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
   const res = await API.post(`/api/envs/${imageId}/start`);
   if (res.ok) { showToast('環境を起動しました', 'success'); setTimeout(() => window.location.href = '/', 800); }
-  else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); btn.disabled = false; btn.textContent = '▶ 起動'; }
+  else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); if (btn) { btn.disabled = false; btn.textContent = '▶ 起動'; } }
 }
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.js-start-env');
+  if (btn) startEnv(Number(btn.dataset.iid), btn);
+});
 
 document.getElementById('search-input').addEventListener('input', renderImages);
 document.getElementById('user-input').addEventListener('input', renderImages);

@@ -238,10 +238,22 @@
 <script>
 const token = sessionStorage.getItem('hb_token');
 if (!token) { window.location.href = '/login'; }
-if (localStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
+if (sessionStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
 
 initNavbar();
-document.getElementById('owner-display').textContent = localStorage.getItem('hb_username') || '';
+
+// オーナー表示を /api/auth/me から取得
+(async () => {
+  const token = sessionStorage.getItem('hb_token');
+  if (!token) return;
+  try {
+    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) {
+      const me = await res.json();
+      document.getElementById('owner-display').textContent = me.username || '';
+    }
+  } catch {}
+})();
 
 // name → slug 自動生成
 document.getElementById('proj-name').addEventListener('input', e => {
