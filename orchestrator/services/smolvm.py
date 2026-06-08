@@ -302,14 +302,37 @@ async def _fc_api(socket_path: str, method: str, path: str, body: dict | None = 
     return json.loads(data) if data else {}
 
 
+def _fc_socket_accepts(socket_path: str) -> bool:
+    """Unix socket が実際に accept 可能か（listen 済みか）を確認する。
+
+    ソケットファイルは bind() 時点で生成され、Firecracker が listen()/accept()
+    を呼ぶ前にも存在し得る。ファイルの存在だけで判定すると、起動直後の
+    ConnectionRefusedError を _fc_api 呼び出しがそのまま例外として外へ漏らし、
+    本来は数百ms待てば成功するはずの VM 起動を失敗させてしまう。
+    実際に connect できることまで確認することで、この競合を防ぐ。
+    """
+    import socket as _socket
+
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        sock.settimeout(0.5)
+        sock.connect(socket_path)
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 async def _fc_wait_socket(socket_path: str, timeout: float = 10.0) -> None:
     """Firecracker プロセスの Unix socket が ready になるまで待つ。"""
     deadline = asyncio.get_event_loop().time() + timeout
+    loop = asyncio.get_event_loop()
     while True:
-        if os.path.exists(socket_path):
+        if os.path.exists(socket_path) and await loop.run_in_executor(None, _fc_socket_accepts, socket_path):
             return
         if asyncio.get_event_loop().time() > deadline:
-            raise RuntimeError(f"Firecracker socket が {timeout}秒以内に現れませんでした: {socket_path}")
+            raise RuntimeError(f"Firecracker socket が {timeout}秒以内に応答しませんでした: {socket_path}")
         await asyncio.sleep(0.2)
 
 
@@ -376,7 +399,11 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
     os.makedirs(FC_SOCKET_DIR, mode=0o700, exist_ok=True)
-    writable_rootfs_path = _prepare_writable_rootfs(vm_id, rootfs_path)
+    # shutil.copy2 は数百MB単位のブロッキングI/Oになり得るため、event loop を
+    # 専有しないよう executor で実行する（他リクエスト・watchdog 等が詰まるのを防ぐ）。
+    writable_rootfs_path = await asyncio.get_event_loop().run_in_executor(
+        None, _prepare_writable_rootfs, vm_id, rootfs_path
+    )
     tap = None
     fc_proc = None
 
@@ -455,11 +482,12 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
                 os.remove(socket_path)
         except Exception:
             pass
-        try:
-            fc_proc.kill()
-            await fc_proc.wait()
-        except Exception:
-            pass
+        if fc_proc is not None:
+            try:
+                fc_proc.kill()
+                await fc_proc.wait()
+            except Exception:
+                pass
         if pid is not None and _pid_alive(pid):
             try:
                 os.kill(pid, signal.SIGKILL)

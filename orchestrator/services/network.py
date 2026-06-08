@@ -259,8 +259,16 @@ def tap_name(vm_id: str) -> str:
 async def create_tap(vm_id: str) -> str:
     name = tap_name(vm_id)
     await _run(["ip", "tuntap", "add", name, "mode", "tap"])
-    await _run(["ip", "link", "set", name, "master", settings.BRIDGE_NAME])
-    await _run(["ip", "link", "set", name, "up"])
+    try:
+        await _run(["ip", "link", "set", name, "master", settings.BRIDGE_NAME])
+        await _run(["ip", "link", "set", name, "up"])
+    except Exception:
+        # master 設定や up に失敗すると TAP が host 上に取り残され、
+        # 例外発生時点では呼び出し元の create_tap() が未返却＝tap=None のため
+        # _start_firecracker の例外ハンドラからも delete_tap が呼ばれない。
+        # ここで確実に削除しておく。
+        await _run(["ip", "link", "del", name], check=False)
+        raise
     logger.info(f"TAP created: {name} (master={settings.BRIDGE_NAME})")
     return name
 
