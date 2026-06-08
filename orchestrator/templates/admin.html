@@ -108,7 +108,22 @@
       <input type="hidden" name="kind" id="vm-asset-kind" />
       <div id="form-vm-asset-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
       <div class="form-group"><label>ラベル</label><input name="label" placeholder="例: Ubuntu 22.04 minimal" required /></div>
-      <div class="form-group"><label>ファイル</label><input name="file" type="file" required /></div>
+      <div class="form-group">
+        <label>ファイル</label>
+        <div class="np-upload-area" id="vm-asset-upload-area">
+          <input type="file" name="file" id="vm-asset-file-input" class="file-input-hidden" required />
+          <div id="vm-asset-upload-placeholder" class="np-upload-ph">
+            <span class="np-upload-icon">📦</span>
+            <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+            <span class="np-upload-sub" id="vm-asset-upload-hint">vmlinux / rootfs.ext4 形式のファイル</span>
+          </div>
+          <div id="vm-asset-upload-selected" class="np-upload-selected hidden">
+            <span class="np-upload-icon">✅</span>
+            <span id="vm-asset-filename" class="np-upload-text"></span>
+            <span id="vm-asset-filesize" class="np-upload-sub"></span>
+          </div>
+        </div>
+      </div>
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">追加</button>
         <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-vm-asset">キャンセル</button>
@@ -357,15 +372,50 @@ function showVmAssetModal(kind, title) {
   document.getElementById('form-vm-asset').reset();
   document.getElementById('vm-asset-kind').value = kind;
   document.getElementById('form-vm-asset-error').classList.add('hidden');
+  document.getElementById('vm-asset-upload-hint').textContent =
+    kind === 'kernels' ? 'vmlinux 形式のカーネルイメージ' : 'ext4 形式の rootfs イメージ';
+  resetVmAssetUploadArea();
   document.getElementById('modal-vm-asset').classList.remove('hidden');
 }
 
+// プロジェクト作成画面の np-upload-area と同じドラッグ&ドロップ UI に揃える
+function resetVmAssetUploadArea() {
+  document.getElementById('vm-asset-upload-placeholder').classList.remove('hidden');
+  document.getElementById('vm-asset-upload-selected').classList.add('hidden');
+  document.getElementById('vm-asset-filename').textContent = '';
+  document.getElementById('vm-asset-filesize').textContent = '';
+}
+
+(function setupVmAssetUploadArea() {
+  const area  = document.getElementById('vm-asset-upload-area');
+  const input = document.getElementById('vm-asset-file-input');
+  area.addEventListener('click', () => input.click());
+  area.addEventListener('dragover',  e => { e.preventDefault(); area.classList.add('np-upload-drag'); });
+  area.addEventListener('dragleave', () => area.classList.remove('np-upload-drag'));
+  area.addEventListener('drop', e => {
+    e.preventDefault(); area.classList.remove('np-upload-drag');
+    if (e.dataTransfer.files[0]) { input.files = e.dataTransfer.files; showVmAssetFile(e.dataTransfer.files[0]); }
+  });
+  input.addEventListener('change', () => { if (input.files[0]) showVmAssetFile(input.files[0]); });
+})();
+
+function showVmAssetFile(f) {
+  document.getElementById('vm-asset-upload-placeholder').classList.add('hidden');
+  document.getElementById('vm-asset-upload-selected').classList.remove('hidden');
+  document.getElementById('vm-asset-filename').textContent = f.name;
+  document.getElementById('vm-asset-filesize').textContent = (f.size / 1024 / 1024).toFixed(1) + ' MB';
+}
+
 async function loadVmAssets() {
+  // kind は API パスのセグメント（複数形: kernels/rootfs）。
+  // テーブル要素の id は kernel-assets-tbody（単数形）/ rootfs-assets-tbody なので、
+  // そのまま `${kind}-assets-tbody` にすると kernels 側が一致せず取得に失敗する。
+  const idPrefix = { kernels: 'kernel', rootfs: 'rootfs' };
   for (const kind of ['kernels', 'rootfs']) {
     const res = await API.get(`/api/admin/default-assets/${kind}`);
     if (!res.ok) continue;
     const assets = await res.json();
-    const tbody = document.getElementById(`${kind}-assets-tbody`);
+    const tbody = document.getElementById(`${idPrefix[kind]}-assets-tbody`);
     tbody.innerHTML = assets.map(a => `
       <tr>
         <td>${a.id}</td>

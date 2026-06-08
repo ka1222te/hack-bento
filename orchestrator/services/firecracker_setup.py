@@ -16,6 +16,12 @@ DEFAULT_ROOTFS_PATH = os.path.join(DEFAULTS_DIR, "rootfs.ext4")
 KERNEL_URL = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128"
 ROOTFS_SIZE_MB = 512
 
+# 資産一覧での表示ラベル。バージョン番号は KERNEL_URL のファイル名から取得し、
+# rootfs はログイン情報を明示してすぐに使えることが伝わるようにする
+# （認証情報は _ROOTFS_BUILD_SCRIPT で設定している値と一致させること）。
+DEFAULT_KERNEL_LABEL = os.path.basename(KERNEL_URL)
+DEFAULT_ROOTFS_LABEL = "Alpine + sshd (user:hackbento, password:hackbento)"
+
 _INIT_SCRIPT = """#!/bin/sh
 sleep 1
 mount -t proc proc /proc 2>/dev/null || true
@@ -155,16 +161,23 @@ async def _register_builtin_asset_records() -> None:
             existing = await db.execute(
                 select(DefaultKernelAsset).where(DefaultKernelAsset.file_path == DEFAULT_KERNEL_PATH)
             )
-            if not existing.scalar_one_or_none():
-                db.add(DefaultKernelAsset(label="組み込みデフォルト (vmlinux-6.1.128)", file_path=DEFAULT_KERNEL_PATH))
+            asset = existing.scalar_one_or_none()
+            if asset is None:
+                db.add(DefaultKernelAsset(label=DEFAULT_KERNEL_LABEL, file_path=DEFAULT_KERNEL_PATH))
                 logger.info("組み込みデフォルトカーネルを資産として登録しました")
+            elif asset.label != DEFAULT_KERNEL_LABEL:
+                # 過去のバージョンで登録されたラベルを最新の表示形式に揃える
+                asset.label = DEFAULT_KERNEL_LABEL
 
         if os.path.exists(DEFAULT_ROOTFS_PATH):
             existing = await db.execute(
                 select(DefaultRootfsAsset).where(DefaultRootfsAsset.file_path == DEFAULT_ROOTFS_PATH)
             )
-            if not existing.scalar_one_or_none():
-                db.add(DefaultRootfsAsset(label="組み込みデフォルト (Alpine + sshd)", file_path=DEFAULT_ROOTFS_PATH))
+            asset = existing.scalar_one_or_none()
+            if asset is None:
+                db.add(DefaultRootfsAsset(label=DEFAULT_ROOTFS_LABEL, file_path=DEFAULT_ROOTFS_PATH))
                 logger.info("組み込みデフォルト rootfs を資産として登録しました")
+            elif asset.label != DEFAULT_ROOTFS_LABEL:
+                asset.label = DEFAULT_ROOTFS_LABEL
 
         await db.commit()
