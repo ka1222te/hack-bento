@@ -1,5 +1,7 @@
+import os
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
@@ -7,16 +9,36 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
+from config import settings
 from database import get_db
-from models import User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator
+from models import (
+    User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator,
+    DefaultKernelAsset, DefaultRootfsAsset,
+)
 from reserved import is_reserved
 from deps import require_admin
+from services.firecracker_setup import DEFAULTS_DIR
 
 _VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 from services.auth_local import hash_password
-from services.watchdog import destroy_env
+from services.watchdog import destroy_env, claim_env_for_stop
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+_DEFAULT_ASSET_KINDS = {
+    "kernels": {"model": DefaultKernelAsset, "suffix": "vmlinux", "label": "ゲストカーネル"},
+    "rootfs": {"model": DefaultRootfsAsset, "suffix": "rootfs.ext4", "label": "rootfs"},
+}
+
+
+class DefaultAssetResponse(BaseModel):
+    id: int
+    label: str
+    file_path: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class UserResponse(BaseModel):
@@ -137,15 +159,17 @@ async def delete_user(
     if user.role == UserRole.admin:
         raise HTTPException(status_code=400, detail="管理者ユーザは削除できません。先に一般ユーザに降格してください")
 
-    # 起動中の環境を強制停止
+    # 起動中の環境を強制停止（行ロックで watchdog 等との二重停止を防ぐ）
     env_result = await db.execute(
-        select(Environment).where(
+        select(Environment.id).where(
             Environment.user_id == user_id,
             Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
         )
     )
-    for env in env_result.scalars().all():
-        await destroy_env(env)
+    for env_id in env_result.scalars().all():
+        env = await claim_env_for_stop(db, env_id)
+        if env is not None:
+            await destroy_env(env)
 
     # ユーザが所有するイメージのコラボレーター・環境・イメージ本体を削除
     img_result = await db.execute(select(Image).where(Image.owner_id == user_id))
@@ -153,21 +177,25 @@ async def delete_user(
         await db.execute(delete(ImageCollaborator).where(ImageCollaborator.image_id == img.id))
         # 他ユーザが起動中のコンテナも含めて停止してからレコードを削除
         running_result = await db.execute(
-            select(Environment).where(
+            select(Environment.id).where(
                 Environment.image_id == img.id,
                 Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
             )
         )
-        for env in running_result.scalars().all():
+        for env_id in running_result.scalars().all():
             try:
-                await destroy_env(env)
+                env = await claim_env_for_stop(db, env_id)
+                if env is not None:
+                    await destroy_env(env)
             except Exception:
                 pass
         await db.execute(delete(Environment).where(Environment.image_id == img.id))
-        # アーカイブ・READMEの実ファイルを削除（パストラバーサル対策付き）
+        # アーカイブ・README・カーネル/rootfs の実ファイルを削除（パストラバーサル対策付き）
         from routers.images import _safe_remove
         _safe_remove(img.archive_path)
         _safe_remove(getattr(img, "readme_path", None))
+        _safe_remove(getattr(img, "kernel_path", None))
+        _safe_remove(getattr(img, "rootfs_path", None))
         await db.delete(img)
 
     # コラボレーター参加分を削除
@@ -184,7 +212,7 @@ async def list_all_envs(_: User = Depends(require_admin), db: AsyncSession = Dep
     result = await db.execute(
         select(Environment)
         .options(selectinload(Environment.user), selectinload(Environment.image))
-        .where(Environment.status.in_([EnvStatus.starting, EnvStatus.running]))
+        .where(Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]))
         .order_by(Environment.started_at.desc())
     )
     envs = result.scalars().all()
@@ -209,15 +237,103 @@ async def force_stop_env(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Environment).where(
-            Environment.id == env_id,
-            Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
-        )
-    )
-    env = result.scalar_one_or_none()
-    if not env:
-        raise HTTPException(status_code=404, detail="環境が見つかりません")
+    env = await claim_env_for_stop(db, env_id)
+    if env is None:
+        raise HTTPException(status_code=404, detail="環境が見つかりません（既に停止処理中の可能性があります）")
     await destroy_env(env)
     await db.commit()
     return {"message": "強制停止しました"}
+
+
+@router.get("/default-assets/{kind}", response_model=list[DefaultAssetResponse])
+async def list_default_assets(
+    kind: str,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    info = _DEFAULT_ASSET_KINDS.get(kind)
+    if not info:
+        raise HTTPException(status_code=400, detail="kind は kernels または rootfs を指定してください")
+    result = await db.execute(select(info["model"]).order_by(info["model"].created_at.desc()))
+    return result.scalars().all()
+
+
+@router.post("/default-assets/{kind}", response_model=DefaultAssetResponse, status_code=status.HTTP_201_CREATED)
+async def create_default_asset(
+    kind: str,
+    label: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    info = _DEFAULT_ASSET_KINDS.get(kind)
+    if not info:
+        raise HTTPException(status_code=400, detail="kind は kernels または rootfs を指定してください")
+
+    label = label.strip()
+    if not label or len(label) > 128:
+        raise HTTPException(status_code=400, detail="label は 1〜128 文字で指定してください")
+    if not (file and file.filename and file.size and file.size > 0):
+        raise HTTPException(status_code=400, detail="ファイルを指定してください")
+
+    os.makedirs(DEFAULTS_DIR, exist_ok=True)
+    dest_path = os.path.join(DEFAULTS_DIR, f"{uuid.uuid4()}-{info['suffix']}")
+    image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
+    try:
+        written = 0
+        with open(dest_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > image_max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise
+    except Exception:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise HTTPException(status_code=500, detail="ファイルの保存に失敗しました")
+
+    asset = info["model"](label=label, file_path=dest_path, created_by=current_user.id)
+    db.add(asset)
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
+@router.delete("/default-assets/{kind}/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_default_asset(
+    kind: str,
+    asset_id: int,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    info = _DEFAULT_ASSET_KINDS.get(kind)
+    if not info:
+        raise HTTPException(status_code=400, detail="kind は kernels または rootfs を指定してください")
+    AssetModel = info["model"]
+    asset = await db.get(AssetModel, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="資産が見つかりません")
+
+    ref_column = Image.default_kernel_asset_id if kind == "kernels" else Image.default_rootfs_asset_id
+    ref_result = await db.execute(
+        select(Image.id).where(ref_column == asset_id, Image.is_active == True)
+    )
+    if ref_result.first():
+        raise HTTPException(status_code=400, detail="このデフォルト資産を使用しているプロジェクトが存在するため削除できません")
+
+    if asset.file_path and os.path.realpath(asset.file_path).startswith(os.path.realpath(DEFAULTS_DIR) + os.sep):
+        try:
+            if os.path.exists(asset.file_path):
+                os.remove(asset.file_path)
+        except OSError:
+            pass
+
+    await db.delete(asset)
+    await db.commit()

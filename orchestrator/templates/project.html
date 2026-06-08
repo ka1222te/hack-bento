@@ -241,12 +241,20 @@ function renderLaunchPanel() {
               <code class="ip-code">${escHtml(running.ip_address || '取得中...')}</code>
               ${running.ip_address ? `<button class="copy-btn js-copy-ip" data-ip="${escHtml(running.ip_address)}" title="IPアドレスをコピー">📋</button>` : ''}
             </div>
+            <div class="env-timer" id="proj-timer-${running.id}">
+              <span>残り</span>
+              <span class="countdown"></span>
+              <span class="warn-badge hidden" id="proj-warn-${running.id}">⚠ まもなく終了</span>
+            </div>
+            <div class="timer-bar"><div class="timer-bar-inner" id="proj-tbar-inner-${running.id}"></div></div>
           </div>
         </div>
         <div class="launch-panel-actions">
+          <button class="btn btn-extend js-extend-env" data-eid="${running.id}" data-min="${running.timeout_minutes}">&#x23F1; 延長 (+${running.timeout_minutes}分)</button>
           <button class="btn btn-danger js-stop-env" data-eid="${running.id}">&#x23F9; 停止する</button>
         </div>
       </div>`;
+    startProjCountdown(running.id, running.seconds_remaining, running.timeout_minutes * 60);
   } else {
     const catchphrases = [
       'この環境を使ってみよう',
@@ -279,6 +287,61 @@ function renderLaunchPanel() {
   }
 }
 
+// ---- 起動中環境のカウントダウン・延長 ----
+const projTimers = {};
+
+function _projTimerColor(s, timeoutSec) {
+  const pct = s / timeoutSec;
+  if (pct > 0.30) return 'blue';
+  if (pct > 0.10) return 'yellow';
+  return 'red';
+}
+
+function startProjCountdown(envId, seconds, timeoutSec) {
+  if (projTimers[envId]) clearInterval(projTimers[envId]);
+  let s = seconds;
+
+  const update = () => {
+    const timerEl = document.getElementById(`proj-timer-${envId}`);
+    const barEl   = document.getElementById(`proj-tbar-inner-${envId}`);
+    const warnEl  = document.getElementById(`proj-warn-${envId}`);
+    if (!timerEl) { clearInterval(projTimers[envId]); return; }
+    if (s <= 0)   { clearInterval(projTimers[envId]); init(); return; }
+
+    const countEl = timerEl.querySelector('.countdown');
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    countEl.textContent = h > 0
+      ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+
+    const pct = Math.min(100, s / timeoutSec * 100);
+    if (barEl) barEl.style.width = pct + '%';
+
+    const phase = _projTimerColor(s, timeoutSec);
+    if (barEl)   barEl.className   = 'timer-bar-inner timer-' + phase;
+    if (timerEl) timerEl.className = 'env-timer timer-text-' + phase;
+    if (warnEl)  warnEl.classList.toggle('hidden', phase === 'blue');
+
+    s--;
+  };
+
+  update();
+  projTimers[envId] = setInterval(update, 1000);
+}
+
+async function extendEnv(envId, timeoutMin, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '延長中...'; }
+  const res = await API.post(`/api/envs/${envId}/extend`);
+  if (res.ok) {
+    showToast(`${timeoutMin}分延長しました`, 'success');
+    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+    renderLaunchPanel();
+  } else {
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = `⏱ 延長 (+${timeoutMin}分)`; }
+  }
+}
+
 async function startEnv(imageId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
   const res = await API.post(`/api/envs/${imageId}/start`);
@@ -297,6 +360,7 @@ async function stopEnv(envId) {
   const res = await API.post(`/api/envs/${envId}/stop`);
   if (res.ok) {
     showToast('停止しました', 'success');
+    if (projTimers[envId]) { clearInterval(projTimers[envId]); delete projTimers[envId]; }
     const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
     renderLaunchPanel();
   } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
@@ -310,6 +374,8 @@ document.addEventListener('click', e => {
     startEnv(Number(btn.dataset.iid), btn);
   } else if (btn.classList.contains('js-stop-env')) {
     stopEnv(Number(btn.dataset.eid));
+  } else if (btn.classList.contains('js-extend-env')) {
+    extendEnv(Number(btn.dataset.eid), Number(btn.dataset.min), btn);
   } else if (btn.classList.contains('js-copy-ip')) {
     copyIP(btn.dataset.ip, btn);
   }

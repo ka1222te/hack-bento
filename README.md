@@ -232,7 +232,7 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 | `VM_PIDS_LIMIT` | `256` | Max process count per environment (fork bomb protection) |
 | `UPLOAD_IMAGE_MAX_MB` | `6144` | Max upload size for Docker image files (MB) |
 | `UPLOAD_README_MAX_MB` | `10` | Max upload size for README files (MB) |
-| `VM_BACKEND` | `docker` | `docker` or `firecracker` |
+| `VM_BACKEND` | `macvlan` | `macvlan` or `bridge` |
 | `MACVLAN_NETWORK` | `hackbento-vm` | macvlan network name |
 | `IP_POOL_START` | `192.168.181.200` | IP pool start address (must be within subnet) |
 | `IP_POOL_END` | `192.168.181.230` | IP pool end address (must be within subnet) |

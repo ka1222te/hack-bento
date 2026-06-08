@@ -45,6 +45,28 @@ async def _get_docker_used_ips() -> set[str]:
         return set()
 
 
+async def _get_bridge_used_ips() -> set[str]:
+    """ブリッジ配下の TAP インターフェース上で実際に使用中の IP を ARP/近隣テーブルから取得する。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ip", "neigh", "show", "dev", settings.BRIDGE_NAME,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return set()
+    if proc.returncode != 0:
+        return set()
+    ips = set()
+    for line in stdout.decode().splitlines():
+        parts = line.split()
+        if parts:
+            ips.add(parts[0])
+    return ips
+
+
 async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
     """IP を確保し、lock 保持中に flush_record() を呼んで DB に仮記録する。
 
@@ -58,16 +80,22 @@ async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
 
         result = await db.execute(
             select(Environment.ip_address).where(
-                Environment.status.in_([EnvStatus.starting, EnvStatus.running])
+                # stopping は destroy_env（stop_vm の完了待ち）の途中でまだ実体が
+                # 残っている可能性が高いため、使用中とみなして含める。
+                # 含めないと、停止処理中の IP を空きと誤認して二重割当てしてしまう恐れがある。
+                Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping])
             )
         )
         # DB に記録されたIPのうちプール内のものだけを使用中とみなす
         db_used = {row[0] for row in result.fetchall() if row[0] and row[0] in pool_set}
 
-        # macvlan 上の実使用IPもプール内のものだけを考慮する
-        docker_used = {ip for ip in await _get_docker_used_ips() if ip in pool_set}
+        # ホストの実使用IPもプール内のものだけを考慮する（ゾンビ占有回避）
+        if settings.VM_BACKEND == "bridge":
+            real_used = {ip for ip in await _get_bridge_used_ips() if ip in pool_set}
+        else:
+            real_used = {ip for ip in await _get_docker_used_ips() if ip in pool_set}
 
-        used = db_used | docker_used
+        used = db_used | real_used
         for ip in pool:
             if ip not in used:
                 await flush_record(ip)
@@ -144,6 +172,68 @@ async def ensure_macvlan_network() -> None:
     logger.info(f"IP pool validated: {pool[0]} - {pool[-1]} ({len(pool)} addresses) within {subnet}")
 
 
+async def _get_bridge_subnet() -> Optional[ipaddress.IPv4Network]:
+    """ホストのブリッジインターフェースに割り当てられた IPv4 subnet を取得する。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ip", "-4", "-o", "addr", "show", "dev", settings.BRIDGE_NAME,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in stdout.decode().splitlines():
+        parts = line.split()
+        for part in parts:
+            if "/" in part:
+                try:
+                    return ipaddress.IPv4Network(part, strict=False)
+                except ValueError:
+                    continue
+    return None
+
+
+async def ensure_bridge_network() -> None:
+    """ホストブリッジ（BRIDGE_NAME）の存在確認と IP プールの妥当性検証を行う。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ip", "link", "show", settings.BRIDGE_NAME,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ブリッジ '{settings.BRIDGE_NAME}' が見つかりません。"
+            " setup.sh で bridge ネットワークを構成してください。"
+        )
+
+    subnet = await _get_bridge_subnet()
+    if subnet is None:
+        logger.warning("ブリッジの subnet を取得できませんでした。IP プールの検証をスキップします。")
+        return
+
+    pool = _ip_pool()
+    invalid = [ip for ip in pool if ipaddress.IPv4Address(ip) not in subnet]
+    if invalid:
+        raise RuntimeError(
+            f"IP_POOL の一部がブリッジ subnet ({subnet}) の範囲外です: {invalid[:3]}{'...' if len(invalid) > 3 else ''}。"
+            " .env の IP_POOL_START / IP_POOL_END を subnet 内のアドレスに修正してください。"
+        )
+    logger.info(f"IP pool validated: {pool[0]} - {pool[-1]} ({len(pool)} addresses) within {subnet}")
+
+
+async def ensure_vm_network() -> None:
+    """VM_BACKEND に応じてホスト側のネットワーク（macvlan または bridge）の妥当性を検証する。"""
+    if settings.VM_BACKEND == "bridge":
+        await ensure_bridge_network()
+    else:
+        await ensure_macvlan_network()
+
+
 async def detach_container_network(container_id: str) -> None:
     """コンテナを macvlan ネットワークから切断する。"""
     rc, err = await _run(
@@ -169,8 +259,9 @@ def tap_name(vm_id: str) -> str:
 async def create_tap(vm_id: str) -> str:
     name = tap_name(vm_id)
     await _run(["ip", "tuntap", "add", name, "mode", "tap"])
+    await _run(["ip", "link", "set", name, "master", settings.BRIDGE_NAME])
     await _run(["ip", "link", "set", name, "up"])
-    logger.info(f"TAP created: {name}")
+    logger.info(f"TAP created: {name} (master={settings.BRIDGE_NAME})")
     return name
 
 

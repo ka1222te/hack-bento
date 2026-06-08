@@ -48,6 +48,11 @@ class CollaboratorRole(str, PyEnum):
     read_write = "read_write"  # 閲覧・起動・編集
 
 
+class Backend(str, PyEnum):
+    macvlan = "macvlan"  # Docker コンテナ + macvlan（OCIイメージを保持）
+    bridge = "bridge"    # Firecracker microVM + bridge（カーネル・rootfsを保持）
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -77,8 +82,16 @@ class Image(Base):
     name = Column(String(128), nullable=False, index=True)
     slug = Column(String(128), nullable=False)
     description = Column(Text, nullable=True)
-    oci_ref = Column(String(512), nullable=False)
+    backend = Column(Enum(Backend), default=Backend.macvlan, nullable=False)
+    # macvlan バックエンド: Docker OCI イメージ
+    oci_ref = Column(String(512), nullable=False, default="")
     archive_path = Column(String(512), nullable=True)
+    # bridge バックエンド: Firecracker ゲストカーネル・rootfs
+    kernel_path = Column(String(512), nullable=True)
+    rootfs_path = Column(String(512), nullable=True)
+    # 「default」モードで選択された共有デフォルト資産への参照（編集画面の初期表示用）
+    default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
+    default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     readme_path = Column(String(512), nullable=True)
     difficulty = Column(Enum(Difficulty), default=Difficulty.medium, nullable=False)
     category = Column(String(64), nullable=True)
@@ -98,6 +111,30 @@ class Image(Base):
     creator = relationship("User", foreign_keys=[created_by])
     environments = relationship("Environment", back_populates="image")
     collaborators = relationship("ImageCollaborator", back_populates="image")
+
+
+class DefaultKernelAsset(Base):
+    """管理者が登録した共有デフォルトゲストカーネル（bridge プロジェクト作成時に選択可能）。"""
+    __tablename__ = "default_kernel_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String(128), nullable=False)
+    file_path = Column(String(512), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DefaultRootfsAsset(Base):
+    """管理者が登録した共有デフォルト rootfs（bridge プロジェクト作成時に選択可能）。"""
+    __tablename__ = "default_rootfs_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    label = Column(String(128), nullable=False)
+    file_path = Column(String(512), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class ImageCollaborator(Base):

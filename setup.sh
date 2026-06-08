@@ -73,10 +73,16 @@ check_bridge_tools() {
 check_bridge_capability() {
     local probe="vmbr-test"
 
-    # 既に同名の bridge が存在する場合は衝突を避けるため判定不能とする
+    # 同名の bridge が既に存在する場合、本スクリプトの過去の中断実行による残骸である
+    # 可能性が高い（実際に bridge 作成が可能な環境でしか作られないものなので、
+    # 「判定不能」として bridge モードの選択肢を消してしまうと不便）。
+    # 安全に削除を試み、削除できればそのまま判定を続行する。
     if ip link show "$probe" &>/dev/null; then
-        yellow "  [--] 試験用 bridge '${probe}' が既に存在するため、作成試験をスキップします。"
-        return 1
+        yellow "  [--] 試験用 bridge '${probe}' が既に存在します。残骸とみなして削除を試みます。"
+        if ! ip link delete "$probe" &>/dev/null; then
+            yellow "  [--] '${probe}' を削除できなかったため、作成試験をスキップします。"
+            return 1
+        fi
     fi
 
     if ip link add "$probe" type bridge &>/dev/null; then
@@ -89,11 +95,26 @@ check_bridge_capability() {
 # ---------- .env 書き換え ----------
 
 env_set() {
+    # key/val を sed の正規表現・置換パターンとして展開しない（val に
+    # `|` `&` `\` 等の sed 特殊文字が含まれるとパターンが壊れる、または
+    # 意図しない置換結果になるため）。awk に変数として渡し、文字列として
+    # 一致・置換することで、val の内容に関わらず安全に書き換える。
     local key="$1" val="$2"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+    if [[ -f "$ENV_FILE" ]] && grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        local tmp line found="" out=()
+        tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
+        : > "$tmp"
+        local prefix="${key}="
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" == "$prefix"* ]]; then
+                printf '%s=%s\n' "$key" "$val" >> "$tmp"
+            else
+                printf '%s\n' "$line" >> "$tmp"
+            fi
+        done < "$ENV_FILE"
+        mv "$tmp" "$ENV_FILE"
     else
-        echo "${key}=${val}" >> "$ENV_FILE"
+        printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
     fi
 }
 
@@ -363,6 +384,66 @@ persist_bridge_network() {
     fi
 }
 
+# ---------- VM 用 cgroup 委譲ツリーのセットアップ ----------
+
+# Firecracker VM ごとにホスト側でメモリ・PID数・CPU使用率の上限を
+# Linux cgroup v2 で強制するため、ルート cgroup 直下に専用ツリー
+# /sys/fs/cgroup/hackbento-vms を作成し、memory/pids/cpu/cpuset を委譲する。
+#
+# コンテナの scope cgroup 配下では cgroup v2 の "no internal processes" 制約
+# （コンテナ自身のプロセスが scope 直下に存在するため memory/io を子へ委譲できない）
+# により実現できないため、ホスト側のルート直下に独立したツリーを作成し、
+# そのサブツリーだけを orchestrator コンテナへ rw バインドマウントする。
+#
+# cgroup ツリーは tmpfs 上にあり再起動で消えるため、起動毎に再作成する
+# systemd oneshot サービスとして永続化する。
+VM_CGROUP_NAME="hackbento-vms"
+VM_CGROUP_PATH="/sys/fs/cgroup/${VM_CGROUP_NAME}"
+VM_CGROUP_UNIT="/etc/systemd/system/hackbento-vm-cgroup.service"
+
+setup_vm_cgroup() {
+    bold "=== VM 用 cgroup 委譲ツリーのセットアップ ==="
+    echo "Firecracker VM のメモリ・PID数・CPU使用率をホスト側で強制するため、"
+    echo "cgroup v2 の専用ツリー '${VM_CGROUP_PATH}' を作成します。"
+    echo ""
+
+    cat > "$VM_CGROUP_UNIT" <<EOF
+[Unit]
+Description=HackBento VM cgroup 委譲ツリーの作成 (${VM_CGROUP_PATH})
+DefaultDependencies=no
+After=sysinit.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\\
+    set -e; \\
+    mkdir -p ${VM_CGROUP_PATH}; \\
+    echo "+memory +pids +cpu +cpuset" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \\
+    echo "+memory +pids +cpu +cpuset" > ${VM_CGROUP_PATH}/cgroup.subtree_control \\
+'
+ExecStop=/bin/sh -c 'rmdir ${VM_CGROUP_PATH}/* 2>/dev/null || true; rmdir ${VM_CGROUP_PATH} 2>/dev/null || true'
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
+    chmod 644 "$VM_CGROUP_UNIT"
+    systemctl daemon-reload
+    systemctl enable hackbento-vm-cgroup.service &>/dev/null || true
+
+    if systemctl restart hackbento-vm-cgroup.service; then
+        green "[OK] cgroup 委譲ツリーを作成しました: ${VM_CGROUP_PATH}"
+        echo "     (systemd ユニット 'hackbento-vm-cgroup.service' により次回起動時も自動作成されます)"
+        cat "${VM_CGROUP_PATH}/cgroup.subtree_control" 2>/dev/null | sed 's/^/     委譲済みコントローラ: /'
+    else
+        red "[ERROR] cgroup 委譲ツリーの作成に失敗しました。"
+        echo "        VM のホスト側リソース制限（メモリ/PID数/CPU）が無効化された状態で動作します。"
+    fi
+    echo ""
+}
+
 # ---------- bridge セットアップ ----------
 
 setup_bridge() {
@@ -496,18 +577,29 @@ setup_bridge() {
     env_set "IP_POOL_END"     "${POOL_END}"
     env_set "FC_GUEST_GATEWAY" "${GATEWAY}"
 
+        # VM ごとのホスト側リソース制限 (memory/pids/cpu) 用 cgroup 委譲ツリー
+    setup_vm_cgroup
+
     # docker-compose.override.yml 生成 (ネットワーク定義なし)
     cat > "$OVERRIDE_FILE" <<EOF
 # 自動生成 by setup.sh (bridge モード)
 # bridge はホスト OS で管理するため Docker ネットワーク定義なし。
 # 再生成するには: sudo ./setup.sh
+#
+# cgroup: host は ${VM_CGROUP_PATH} のバインドマウント用に必要。
+# デフォルト (cgroupns: private) では /sys/fs/cgroup が読み取り専用になり、
+# その配下にマウントポイントを作成できないため。
 
 services:
   orchestrator:
     devices:
       - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
+    cgroup: host
+    volumes:
+      - ${VM_CGROUP_PATH}:${VM_CGROUP_PATH}:rw
 EOF
 
     own "$OVERRIDE_FILE"
@@ -515,6 +607,19 @@ EOF
 }
 
 # ---------- メイン ----------
+
+# 既にネットワーク (bridge/macvlan) を設定済みで、VM 用 cgroup 委譲ツリーだけを
+# (再) セットアップしたい場合のショートカット。
+if [[ "${1:-}" == "--vm-cgroup-only" ]]; then
+    setup_vm_cgroup
+    if [[ -f "$OVERRIDE_FILE" ]] && ! grep -q "${VM_CGROUP_PATH}" "$OVERRIDE_FILE"; then
+        yellow "[--] ${OVERRIDE_FILE} に ${VM_CGROUP_PATH} のバインドマウントがありません。"
+        echo "     services.orchestrator.volumes に以下を追加してください:"
+        echo "       - ${VM_CGROUP_PATH}:${VM_CGROUP_PATH}:rw"
+        echo "     追加後、コンテナを再作成してください: docker compose up -d orchestrator"
+    fi
+    exit 0
+fi
 
 echo ""
 bold "============================================"

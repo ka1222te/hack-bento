@@ -15,7 +15,9 @@ from database import init_db, AsyncSessionLocal
 from models import User, UserRole, AuthProvider, Image, Visibility, ImageCollaborator
 from services.auth_local import hash_password
 from services.watchdog import run_watchdog
-from services.network import ensure_macvlan_network
+from services.network import ensure_vm_network
+from services.firecracker_setup import ensure_default_vm_assets
+from services.smolvm import cleanup_orphaned_vms
 from routers import auth, envs, images, admin, users
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,14 +32,18 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     await init_db()
     await _seed_admin()
-    await ensure_macvlan_network()
+    await ensure_vm_network()
+    await cleanup_orphaned_vms()
     task = asyncio.create_task(run_watchdog())
+    vm_assets_task = asyncio.create_task(ensure_default_vm_assets())
     yield
     task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    vm_assets_task.cancel()
+    for t in (task, vm_assets_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 async def _seed_admin():

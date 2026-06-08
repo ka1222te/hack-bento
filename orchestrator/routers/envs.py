@@ -8,11 +8,11 @@ from pydantic import BaseModel
 from typing import Optional
 
 from database import get_db
-from models import Environment, EnvStatus, Image, User, UserRole
+from models import Environment, EnvStatus, Image, Backend, User, UserRole
 from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
-from services.watchdog import destroy_env
+from services.watchdog import destroy_env, claim_env_for_stop
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ async def list_my_envs(
         .options(selectinload(Environment.image).selectinload(Image.owner))
         .where(
             Environment.user_id == user.id,
-            Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+            Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]),
         )
         .order_by(Environment.started_at.desc())
     )
@@ -93,6 +93,13 @@ async def start_env(
     if not await _can_see(image, user, db):
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
 
+    host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
+    if image.backend != host_backend:
+        raise HTTPException(
+            status_code=400,
+            detail=f"このホストでは backend={host_backend.value} のプロジェクトのみ起動できます",
+        )
+
     timeout = image.timeout_minutes or settings.DEFAULT_TIMEOUT_MINUTES
     env: Environment | None = None
 
@@ -104,7 +111,7 @@ async def start_env(
             user_count = await db.execute(
                 select(func.count()).where(
                     Environment.user_id == user.id,
-                    Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
+                    Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]),
                 )
             )
             if user_count.scalar() >= settings.MAX_ENVS_PER_USER:
@@ -114,7 +121,7 @@ async def start_env(
                 )
             total_count = await db.execute(
                 select(func.count()).where(
-                    Environment.status.in_([EnvStatus.starting, EnvStatus.running])
+                    Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping])
                 )
             )
             if total_count.scalar() >= settings.MAX_ENVS_TOTAL:
@@ -140,19 +147,22 @@ async def start_env(
 
     try:
         vm_result = await start_vm(
-            oci_ref=image.oci_ref,
+            image=image,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
         )
-        env.vm_id = vm_result.vm_id
-        env.status = EnvStatus.running
     except Exception as e:
         logger.error(f"start_vm failed env_id={env.id}: {e}")
         await destroy_env(env)
         await db.commit()
         raise HTTPException(status_code=500, detail="VM起動に失敗しました")
 
+    # vm_id は取得後すぐに確定させる。ここで commit せずに後続処理中にオーケストレータが
+    # 落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL のまま残り、
+    # cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
+    env.vm_id = vm_result.vm_id
+    env.status = EnvStatus.running
     await db.commit()
     result = await db.execute(
         select(Environment)
@@ -208,17 +218,23 @@ async def stop_env(
     user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
+    # 権限確認は行ロック取得前に行う（不正なリクエストで状態遷移させないため）
     result = await db.execute(
-        select(Environment).where(
+        select(Environment.user_id).where(
             Environment.id == env_id,
             Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
         )
     )
-    env = result.scalar_one_or_none()
-    if not env:
+    owner_id = result.scalar_one_or_none()
+    if owner_id is None:
         raise HTTPException(status_code=404, detail="環境が見つかりません")
-    if env.user_id != user.id and user.role != UserRole.admin:
+    if owner_id != user.id and user.role != UserRole.admin:
         raise HTTPException(status_code=403, detail="権限がありません")
+
+    # 行ロックを取得して stopping へ遷移。watchdog や他リクエストとの二重停止を防ぐ。
+    env = await claim_env_for_stop(db, env_id)
+    if env is None:
+        raise HTTPException(status_code=404, detail="環境が見つかりません（既に停止処理中です）")
 
     await destroy_env(env)
     await db.commit()

@@ -52,11 +52,11 @@ class Settings(BaseSettings):
         return [d.strip() for d in str(v).split(",") if d.strip()]
 
     # バックエンド
-    VM_BACKEND: str = "docker"
+    VM_BACKEND: str = "macvlan"
 
     # ---- ネットワーク設定 ----
     MACVLAN_NETWORK: str = "hackbento-vm"   # macvlan モード: docker-compose.override.yml の name と一致させる
-    BRIDGE_NAME: str = "br0"               # bridge モード: TAP を接続するホスト bridge 名
+    BRIDGE_NAME: str = "vmbr-hackbento"               # bridge モード: TAP を接続するホスト bridge 名
 
     # VM に払い出す IP プール
     IP_POOL_START: str = "192.168.181.200"

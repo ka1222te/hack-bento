@@ -8,7 +8,11 @@
   <div class="np-wrap">
     <div class="np-header">
       <h1 class="np-title">Create a new project</h1>
+      {% if settings.VM_BACKEND == "bridge" %}
+      <p class="np-sub">ゲストカーネル・rootfs と README をアップロードしてプロジェクトを作成します</p>
+      {% else %}
       <p class="np-sub">Docker イメージと README をアップロードしてプロジェクトを作成します</p>
+      {% endif %}
     </div>
 
     <div class="np-card">
@@ -136,7 +140,95 @@
 
         <hr class="np-divider" />
 
+        {% if settings.VM_BACKEND == "bridge" %}
+        <!-- 7. Firecracker kernel + rootfs -->
+        <input type="hidden" name="backend" value="bridge" />
+        <div class="np-field">
+          <div class="np-toggle-header">
+            <label class="np-label">ゲストカーネル <span class="np-required">*</span></label>
+            <div class="np-toggle-group" id="kernel-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="kernel-default">Default</button>
+              <button type="button" class="np-toggle-btn"        data-target="kernel-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="kernel-link">Link</button>
+            </div>
+          </div>
+
+          <!-- Default -->
+          <div id="kernel-default-panel">
+            <select class="np-input" name="default_kernel_asset_id" id="kernel-default-select"></select>
+            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません。File または Link を選択してください</p>
+          </div>
+
+          <!-- File -->
+          <div id="kernel-file-panel" class="hidden">
+            <div class="np-upload-area" id="kernel-upload-area">
+              <input type="file" name="kernel" id="kernel-file-input"
+                     class="file-input-hidden" />
+              <div id="kernel-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">🧬</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">vmlinux 形式のカーネルイメージ</span>
+              </div>
+              <div id="kernel-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="kernel-filename" class="np-upload-text"></span>
+                <span id="kernel-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Link -->
+          <div id="kernel-link-panel" class="hidden">
+            <input class="np-input" type="url" name="kernel_url" id="kernel-url-input"
+                   placeholder="https://example.com/vmlinux" autocomplete="off" />
+            <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します</p>
+          </div>
+        </div>
+
+        <div class="np-field">
+          <div class="np-toggle-header">
+            <label class="np-label">rootfs <span class="np-required">*</span></label>
+            <div class="np-toggle-group" id="rootfs-toggle">
+              <button type="button" class="np-toggle-btn active" data-target="rootfs-default">Default</button>
+              <button type="button" class="np-toggle-btn"        data-target="rootfs-file">File</button>
+              <button type="button" class="np-toggle-btn"        data-target="rootfs-link">Link</button>
+            </div>
+          </div>
+
+          <!-- Default -->
+          <div id="rootfs-default-panel">
+            <select class="np-input" name="default_rootfs_asset_id" id="rootfs-default-select"></select>
+            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません。File または Link を選択してください</p>
+          </div>
+
+          <!-- File -->
+          <div id="rootfs-file-panel" class="hidden">
+            <div class="np-upload-area" id="rootfs-upload-area">
+              <input type="file" name="rootfs" id="rootfs-file-input"
+                     class="file-input-hidden" />
+              <div id="rootfs-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">💽</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">ext4 形式の rootfs イメージ</span>
+              </div>
+              <div id="rootfs-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="rootfs-filename" class="np-upload-text"></span>
+                <span id="rootfs-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Link -->
+          <div id="rootfs-link-panel" class="hidden">
+            <input class="np-input" type="url" name="rootfs_url" id="rootfs-url-input"
+                   placeholder="https://example.com/rootfs.ext4" autocomplete="off" />
+            <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します</p>
+          </div>
+        </div>
+        {% else %}
         <!-- 7. Docker image -->
+        <input type="hidden" name="backend" value="macvlan" />
         <div class="np-field">
           <div class="np-toggle-header">
             <label class="np-label">Docker イメージ <span class="np-required">*</span></label>
@@ -171,6 +263,7 @@
             <p class="np-hint" style="margin:.3rem 0 0">対応: docker.io / ghcr.io / quay.io / gcr.io</p>
           </div>
         </div>
+        {% endif %}
 
         <hr class="np-divider" />
 
@@ -283,10 +376,24 @@ function setupToggle(groupId, panels) {
     });
   });
 }
-setupToggle('img-toggle', [
-  { id: 'img-file-panel', key: 'img-file' },
-  { id: 'img-link-panel', key: 'img-link' },
-]);
+const isBridge = {{ 'true' if settings.VM_BACKEND == 'bridge' else 'false' }};
+if (!isBridge) {
+  setupToggle('img-toggle', [
+    { id: 'img-file-panel', key: 'img-file' },
+    { id: 'img-link-panel', key: 'img-link' },
+  ]);
+} else {
+  setupToggle('kernel-toggle', [
+    { id: 'kernel-default-panel', key: 'kernel-default' },
+    { id: 'kernel-file-panel',    key: 'kernel-file' },
+    { id: 'kernel-link-panel',    key: 'kernel-link' },
+  ]);
+  setupToggle('rootfs-toggle', [
+    { id: 'rootfs-default-panel', key: 'rootfs-default' },
+    { id: 'rootfs-file-panel',    key: 'rootfs-file' },
+    { id: 'rootfs-link-panel',    key: 'rootfs-link' },
+  ]);
+}
 setupToggle('readme-toggle', [
   { id: 'readme-file-panel', key: 'readme-file' },
   { id: 'readme-text-panel', key: 'readme-text' },
@@ -315,7 +422,40 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
     }
   }
 }
-setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
+if (isBridge) {
+  setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
+  setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
+
+  // デフォルト資産の選択肢を取得して <select> を埋める
+  async function loadDefaultAssetOptions(kind, selectId, hintId, toggleGroupId) {
+    const select = document.getElementById(selectId);
+    const hint = document.getElementById(hintId);
+    try {
+      const res = await fetch(`/api/images/default-assets?kind=${kind}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const assets = res.ok ? await res.json() : [];
+      select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+      if (assets.length === 0) {
+        select.disabled = true;
+        hint.hidden = false;
+        // デフォルト資産が無ければ File モードへ切り替える
+        const fileBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target$="-file"]`);
+        if (fileBtn) fileBtn.click();
+      } else {
+        select.disabled = false;
+        hint.hidden = true;
+      }
+    } catch {
+      select.disabled = true;
+      hint.hidden = false;
+    }
+  }
+  loadDefaultAssetOptions('kernel', 'kernel-default-select', 'kernel-default-empty-hint', 'kernel-toggle');
+  loadDefaultAssetOptions('rootfs', 'rootfs-default-select', 'rootfs-default-empty-hint', 'rootfs-toggle');
+} else {
+  setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
+}
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
 
 // 送信
@@ -328,27 +468,59 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   const pb  = document.getElementById('progress-bar-inner');
   const pl  = document.getElementById('progress-label');
 
-  // アクティブでない側をクリア（混在防止）
-  const imgMode = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
   const readmeMode = document.querySelector('#readme-toggle .np-toggle-btn.active').dataset.target;
-  if (imgMode === 'img-link') {
-    // File モードでない → ファイル入力を無効化
-    document.getElementById('image-file-input').value = '';
-  } else {
-    document.getElementById('image-url-input').value = '';
-  }
   if (readmeMode === 'readme-text') {
     document.getElementById('readme-file-input').value = '';
   } else {
     document.getElementById('readme-textarea').value = '';
   }
 
-  const hasFile = !!document.getElementById('image-file-input').files[0];
-  const hasUrl  = !!document.getElementById('image-url-input').value.trim();
-  if (!hasFile && !hasUrl) {
-    errBox.textContent = 'Docker イメージファイルまたはイメージ URL を指定してください';
-    errBox.classList.remove('hidden');
-    return;
+  // モードごとの入力検証。検証を満たさなければエラーメッセージを返す
+  function validateAssetMode(toggleGroupId, label, { selectId, fileInputId, urlInputId }) {
+    const mode = document.querySelector(`#${toggleGroupId} .np-toggle-btn.active`).dataset.target.split('-')[1];
+    if (mode === 'default') {
+      const select = document.getElementById(selectId);
+      if (!select.value) return `${label}のデフォルト資産を選択してください`;
+    } else if (mode === 'file') {
+      if (!document.getElementById(fileInputId).files[0]) return `${label}のファイルをアップロードしてください`;
+    } else if (mode === 'link') {
+      const url = document.getElementById(urlInputId).value.trim();
+      if (!url) return `${label}のダウンロードURLを指定してください`;
+      if (!/^https?:\/\//i.test(url)) return `${label}のURLは http:// または https:// で始まる必要があります`;
+    }
+    return null;
+  }
+
+  let hasFile = false, hasUrl = false;
+  if (isBridge) {
+    const kernelErr = validateAssetMode('kernel-toggle', 'ゲストカーネル', {
+      selectId: 'kernel-default-select', fileInputId: 'kernel-file-input', urlInputId: 'kernel-url-input',
+    });
+    const rootfsErr = validateAssetMode('rootfs-toggle', 'rootfs', {
+      selectId: 'rootfs-default-select', fileInputId: 'rootfs-file-input', urlInputId: 'rootfs-url-input',
+    });
+    const err = kernelErr || rootfsErr;
+    if (err) {
+      errBox.textContent = err;
+      errBox.classList.remove('hidden');
+      return;
+    }
+  } else {
+    // アクティブでない側をクリア（混在防止）
+    const imgMode = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
+    if (imgMode === 'img-link') {
+      // File モードでない → ファイル入力を無効化
+      document.getElementById('image-file-input').value = '';
+    } else {
+      document.getElementById('image-url-input').value = '';
+    }
+    hasFile = !!document.getElementById('image-file-input').files[0];
+    hasUrl  = !!document.getElementById('image-url-input').value.trim();
+    if (!hasFile && !hasUrl) {
+      errBox.textContent = 'Docker イメージファイルまたはイメージ URL を指定してください';
+      errBox.classList.remove('hidden');
+      return;
+    }
   }
 
   btn.disabled = true;
@@ -359,6 +531,30 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   const fd = new FormData(e.target);
   // ファイルがある場合は URL フィールドを無視（サーバ側でも同様）
   if (hasFile) fd.delete('image_url');
+  if (isBridge) {
+    // 選択中のモードに応じて、不要なフィールドを除去しモード値をセットする
+    function applyAssetMode(toggleGroupId, prefix, modeFieldName, { selectFieldName, fileInputId, fileFieldName, urlFieldName }) {
+      const mode = document.querySelector(`#${toggleGroupId} .np-toggle-btn.active`).dataset.target.split('-')[1];
+      fd.set(modeFieldName, mode);
+      if (mode !== 'default') fd.delete(selectFieldName);
+      if (mode !== 'file') {
+        fd.delete(fileFieldName);
+        document.getElementById(fileInputId).value = '';
+      }
+      if (mode !== 'link') fd.delete(urlFieldName);
+    }
+    applyAssetMode('kernel-toggle', 'kernel', 'kernel_mode', {
+      selectFieldName: 'default_kernel_asset_id', fileInputId: 'kernel-file-input',
+      fileFieldName: 'kernel', urlFieldName: 'kernel_url',
+    });
+    applyAssetMode('rootfs-toggle', 'rootfs', 'rootfs_mode', {
+      selectFieldName: 'default_rootfs_asset_id', fileInputId: 'rootfs-file-input',
+      fileFieldName: 'rootfs', urlFieldName: 'rootfs_url',
+    });
+    // FormData は再構築が必要（input.value クリア後に file フィールドが残る場合があるため）
+    if (document.querySelector('#kernel-toggle .np-toggle-btn.active').dataset.target !== 'kernel-file') fd.delete('kernel');
+    if (document.querySelector('#rootfs-toggle .np-toggle-btn.active').dataset.target !== 'rootfs-file') fd.delete('rootfs');
+  }
 
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -368,10 +564,12 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);
         pb.style.width = pct + '%';
-        if (pct >= 100 && hasFile) {
-          pl.textContent = 'アップロードされたファイルを元にイメージを構築しています...';
+        if (pct >= 100 && (hasFile || isBridge)) {
+          pl.textContent = isBridge
+            ? 'アップロードされたファイルを保存しています...'
+            : 'アップロードされたファイルを元にイメージを構築しています...';
         } else {
-          pl.textContent = hasFile ? `アップロード中... ${pct}%` : `処理中... ${pct}%`;
+          pl.textContent = (hasFile || isBridge) ? `アップロード中... ${pct}%` : `処理中... ${pct}%`;
         }
       }
     });

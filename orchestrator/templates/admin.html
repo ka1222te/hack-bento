@@ -11,6 +11,7 @@
       <button class="tab-btn active" data-tab="envs">起動中の環境</button>
       <button class="tab-btn" data-tab="users">ユーザ管理</button>
       <button class="tab-btn" data-tab="images">プロジェクト管理</button>
+      <button class="tab-btn" data-tab="vm-assets">デフォルトVM資産</button>
     </div>
 
     <!-- Running Envs -->
@@ -50,6 +51,31 @@
         </table>
       </div>
     </div>
+
+    <!-- Default VM Assets -->
+    <div id="tab-vm-assets" class="tab-panel hidden">
+      <div class="panel-header">
+        <h2 class="panel-title">デフォルトゲストカーネル</h2>
+        <button class="btn btn-sm btn-primary" id="btn-create-kernel-asset">+ カーネルを追加</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="kernel-assets-table">
+          <thead><tr><th>ID</th><th>ラベル</th><th>登録日</th><th>操作</th></tr></thead>
+          <tbody id="kernel-assets-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel-header" style="margin-top:2rem">
+        <h2 class="panel-title">デフォルト rootfs</h2>
+        <button class="btn btn-sm btn-primary" id="btn-create-rootfs-asset">+ rootfsを追加</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="rootfs-assets-table">
+          <thead><tr><th>ID</th><th>ラベル</th><th>登録日</th><th>操作</th></tr></thead>
+          <tbody id="rootfs-assets-tbody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -68,6 +94,24 @@
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">作成</button>
         <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-user">キャンセル</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Add Default Kernel/Rootfs Asset -->
+<div id="modal-vm-asset" class="modal hidden">
+  <div class="modal-backdrop js-close-modal" data-modal="modal-vm-asset"></div>
+  <div class="modal-box">
+    <h3 class="modal-title" id="modal-vm-asset-title">デフォルト資産を追加</h3>
+    <form id="form-vm-asset">
+      <input type="hidden" name="kind" id="vm-asset-kind" />
+      <div id="form-vm-asset-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
+      <div class="form-group"><label>ラベル</label><input name="label" placeholder="例: Ubuntu 22.04 minimal" required /></div>
+      <div class="form-group"><label>ファイル</label><input name="file" type="file" required /></div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">追加</button>
+        <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-vm-asset">キャンセル</button>
       </div>
     </form>
   </div>
@@ -122,6 +166,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'envs') loadAdminEnvs();
     if (btn.dataset.tab === 'users') loadUsers();
     if (btn.dataset.tab === 'images') loadAdminImages();
+    if (btn.dataset.tab === 'vm-assets') loadVmAssets();
   });
 });
 
@@ -299,6 +344,68 @@ document.addEventListener('click', e => {
     deleteImage(Number(btn.dataset.iid));
   } else if (btn.classList.contains('js-force-stop')) {
     forceStop(Number(btn.dataset.eid));
+  } else if (btn.classList.contains('js-delete-vm-asset')) {
+    deleteVmAsset(btn.dataset.kind, Number(btn.dataset.aid));
+  }
+});
+
+document.getElementById('btn-create-kernel-asset').addEventListener('click', () => showVmAssetModal('kernels', 'デフォルトカーネルを追加'));
+document.getElementById('btn-create-rootfs-asset').addEventListener('click', () => showVmAssetModal('rootfs', 'デフォルト rootfs を追加'));
+
+function showVmAssetModal(kind, title) {
+  document.getElementById('modal-vm-asset-title').textContent = title;
+  document.getElementById('form-vm-asset').reset();
+  document.getElementById('vm-asset-kind').value = kind;
+  document.getElementById('form-vm-asset-error').classList.add('hidden');
+  document.getElementById('modal-vm-asset').classList.remove('hidden');
+}
+
+async function loadVmAssets() {
+  for (const kind of ['kernels', 'rootfs']) {
+    const res = await API.get(`/api/admin/default-assets/${kind}`);
+    if (!res.ok) continue;
+    const assets = await res.json();
+    const tbody = document.getElementById(`${kind}-assets-tbody`);
+    tbody.innerHTML = assets.map(a => `
+      <tr>
+        <td>${a.id}</td>
+        <td>${escHtml(a.label)}</td>
+        <td>${fmt(a.created_at)}</td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${kind}" data-aid="${a.id}">削除</button></td>
+      </tr>
+    `).join('') || '<tr><td colspan="4" class="empty-cell">登録されている資産がありません</td></tr>';
+  }
+}
+
+async function deleteVmAsset(kind, assetId) {
+  if (!confirm('この資産を削除しますか？')) return;
+  const res = await API.del(`/api/admin/default-assets/${kind}/${assetId}`);
+  if (res.ok) { showToast('削除しました', 'success'); loadVmAssets(); }
+  else { const d = await res.json(); showToast(d.detail || 'エラーが発生しました', 'error'); }
+}
+
+document.getElementById('form-vm-asset').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errBox = document.getElementById('form-vm-asset-error');
+  errBox.classList.add('hidden');
+
+  const kind = document.getElementById('vm-asset-kind').value;
+  const fd = new FormData(e.target);
+  fd.delete('kind');
+
+  const res = await fetch(`/api/admin/default-assets/${kind}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${API.token()}` },
+    body: fd,
+  });
+  if (res.ok) {
+    showToast('資産を追加しました', 'success');
+    closeModal('modal-vm-asset');
+    loadVmAssets();
+  } else {
+    const d = await res.json();
+    errBox.textContent = d.detail || 'エラーが発生しました';
+    errBox.classList.remove('hidden');
   }
 });
 
