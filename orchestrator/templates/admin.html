@@ -71,7 +71,7 @@
       </div>
       <div class="table-wrap">
         <table class="data-table" id="rootfs-assets-table">
-          <thead><tr><th>ID</th><th>ラベル</th><th>登録日</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>ラベル</th><th>状態</th><th>登録日</th><th>操作</th></tr></thead>
           <tbody id="rootfs-assets-tbody"></tbody>
         </table>
       </div>
@@ -373,7 +373,10 @@ function showVmAssetModal(kind, title) {
   document.getElementById('vm-asset-kind').value = kind;
   document.getElementById('form-vm-asset-error').classList.add('hidden');
   document.getElementById('vm-asset-upload-hint').textContent =
-    kind === 'kernels' ? 'vmlinux 形式のカーネルイメージ' : 'ext4 形式の rootfs イメージ';
+    kind === 'kernels'
+      ? 'vmlinux 形式のカーネルイメージ'
+      : 'ext4 形式の rootfs イメージ、またはファイルシステム単体の tar（docker export 形式）。'
+        + ' tar の場合は自動的に ext4 へ変換されます（変換完了まで「変換中」と表示されます）。';
   resetVmAssetUploadArea();
   document.getElementById('modal-vm-asset').classList.remove('hidden');
 }
@@ -406,6 +409,24 @@ function showVmAssetFile(f) {
   document.getElementById('vm-asset-filesize').textContent = (f.size / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+const _CONVERSION_STATUS_LABELS = {
+  pending: '変換待ち',
+  converting: '変換中...',
+  failed: '変換失敗',
+};
+
+let _vmAssetPollTimer = null;
+
+function _maybeToggleVmAssetPolling(rootfsAssets) {
+  const inProgress = rootfsAssets.some(a => ['pending', 'converting'].includes(a.conversion_status));
+  if (inProgress && !_vmAssetPollTimer) {
+    _vmAssetPollTimer = setInterval(loadVmAssets, 5000);
+  } else if (!inProgress && _vmAssetPollTimer) {
+    clearInterval(_vmAssetPollTimer);
+    _vmAssetPollTimer = null;
+  }
+}
+
 async function loadVmAssets() {
   // kind は API パスのセグメント（複数形: kernels/rootfs）。
   // テーブル要素の id は kernel-assets-tbody（単数形）/ rootfs-assets-tbody なので、
@@ -416,7 +437,25 @@ async function loadVmAssets() {
     if (!res.ok) continue;
     const assets = await res.json();
     const tbody = document.getElementById(`${idPrefix[kind]}-assets-tbody`);
-    tbody.innerHTML = assets.map(a => `
+    if (kind === 'rootfs') {
+      tbody.innerHTML = assets.map(a => {
+        const st = a.conversion_status;
+        const badge = (st && st !== 'ready')
+          ? `<span class="status-badge ${st}" ${a.conversion_error ? `title="${escHtml(a.conversion_error)}"` : ''}>${_CONVERSION_STATUS_LABELS[st] || st}</span>`
+          : '—';
+        return `
+      <tr>
+        <td>${a.id}</td>
+        <td>${escHtml(a.label)}</td>
+        <td>${badge}</td>
+        <td>${fmt(a.created_at)}</td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${kind}" data-aid="${a.id}">削除</button></td>
+      </tr>
+    `;
+      }).join('') || '<tr><td colspan="5" class="empty-cell">登録されている資産がありません</td></tr>';
+      _maybeToggleVmAssetPolling(assets);
+    } else {
+      tbody.innerHTML = assets.map(a => `
       <tr>
         <td>${a.id}</td>
         <td>${escHtml(a.label)}</td>
@@ -424,6 +463,7 @@ async function loadVmAssets() {
         <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${kind}" data-aid="${a.id}">削除</button></td>
       </tr>
     `).join('') || '<tr><td colspan="4" class="empty-cell">登録されている資産がありません</td></tr>';
+    }
   }
 }
 

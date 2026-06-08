@@ -17,6 +17,7 @@ from services.auth_local import hash_password
 from services.watchdog import run_watchdog
 from services.network import ensure_vm_network
 from services.firecracker_setup import ensure_default_vm_assets
+from services.rootfs_convert import run_rootfs_conversion_worker
 from services.smolvm import cleanup_orphaned_vms
 from routers import auth, envs, images, admin, users
 from sqlalchemy import select
@@ -36,10 +37,12 @@ async def lifespan(app: FastAPI):
     await cleanup_orphaned_vms()
     task = asyncio.create_task(run_watchdog())
     vm_assets_task = asyncio.create_task(ensure_default_vm_assets())
+    rootfs_convert_task = asyncio.create_task(run_rootfs_conversion_worker())
     yield
     task.cancel()
     vm_assets_task.cancel()
-    for t in (task, vm_assets_task):
+    rootfs_convert_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task):
         try:
             await t
         except asyncio.CancelledError:

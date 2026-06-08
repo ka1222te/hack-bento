@@ -183,6 +183,7 @@
             <label class="np-label">
               rootfs 変更
               <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
+              <span id="rootfs-conversion-badge"></span>
             </label>
             <div class="np-toggle-group" id="rootfs-toggle">
               <button type="button" class="np-toggle-btn active" data-target="rootfs-default">Default</button>
@@ -202,7 +203,7 @@
               <div id="rootfs-upload-placeholder" class="np-upload-ph">
                 <span class="np-upload-icon">💽</span>
                 <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
-                <span class="np-upload-sub">ext4 形式の rootfs イメージ</span>
+                <span class="np-upload-sub">ext4 形式の rootfs イメージ、またはファイルシステム単体の tar（docker export 形式・自動的に ext4 へ変換されます）</span>
               </div>
               <div id="rootfs-upload-selected" class="np-upload-selected hidden">
                 <span class="np-upload-icon">✅</span>
@@ -215,7 +216,7 @@
           <div id="rootfs-link-panel" class="hidden">
             <input class="np-input" type="url" name="rootfs_url" id="rootfs-url-input"
                    placeholder="https://example.com/rootfs.ext4" autocomplete="off" />
-            <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します</p>
+            <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します（tar の場合は自動的に ext4 へ変換されます）</p>
           </div>
         </div>
         {% else %}
@@ -372,6 +373,8 @@ async function init() {
       initAssetToggle('kernel', imageData.default_kernel_asset_id),
       initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
     ]);
+    renderRootfsConversionBadge(imageData);
+    _maybeStartRootfsConversionPolling(imageData);
   }
 
   // visibility
@@ -390,6 +393,46 @@ async function init() {
   }
 
   loadCollaborators();
+}
+
+// rootfs 変換状態バッジ（admin.html の _CONVERSION_STATUS_LABELS と表示を統一）
+const _ROOTFS_CONVERSION_STATUS_LABELS = {
+  pending: '変換待ち',
+  converting: '変換中...',
+  failed: '変換失敗',
+};
+
+function renderRootfsConversionBadge(img) {
+  const el = document.getElementById('rootfs-conversion-badge');
+  const st = img.rootfs_conversion_status;
+  el.innerHTML = '';
+  if (!st || st === 'ready') return;
+  const badge = document.createElement('span');
+  badge.className = `status-badge ${st}`;
+  badge.textContent = _ROOTFS_CONVERSION_STATUS_LABELS[st] || st;
+  if (img.rootfs_conversion_error) badge.title = img.rootfs_conversion_error;
+  el.appendChild(badge);
+}
+
+let _rootfsConversionPollTimer = null;
+
+function _maybeStartRootfsConversionPolling(img) {
+  const inProgress = ['pending', 'converting'].includes(img.rootfs_conversion_status);
+  if (inProgress && !_rootfsConversionPollTimer) {
+    _rootfsConversionPollTimer = setInterval(async () => {
+      const res = await API.get('/api/images/');
+      if (!res.ok) return;
+      const images = await res.json();
+      const fresh = images.find(i => i.id === imageData.id);
+      if (!fresh) return;
+      imageData = fresh;
+      renderRootfsConversionBadge(fresh);
+      if (!['pending', 'converting'].includes(fresh.rootfs_conversion_status)) {
+        clearInterval(_rootfsConversionPollTimer);
+        _rootfsConversionPollTimer = null;
+      }
+    }, 5000);
+  }
 }
 
 // Visibility ボタン

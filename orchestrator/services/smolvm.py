@@ -5,16 +5,22 @@ import logging
 import ipaddress
 import os
 import signal
+import shutil
+import tempfile
 from config import settings
 from services.network import create_tap, delete_tap, _ip_pool, _get_bridge_subnet
 
 logger = logging.getLogger(__name__)
 
 FC_SOCKET_DIR = "/tmp/fc-sockets"                       # VMごとのUnix socketディレクトリ
+FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs
 
 # 実行中 Firecracker プロセスの vm_id → PID マップ（同一プロセス内でのみ有効）。
 # stop_vm 時に確実にプロセスを終了させるために保持する。
 _fc_pids: dict[str, int] = {}
+
+# vm_id → 起動時に作成した writable rootfs の実体パス
+_fc_rootfs_paths: dict[str, str] = {}
 
 # VM ごとのホスト側リソース制限 (メモリ・PID数・CPU使用率) を強制するための
 # cgroup v2 委譲ツリーのルート。setup.sh の hackbento-vm-cgroup.service が
@@ -248,6 +254,10 @@ def _fc_socket_path(vm_id: str) -> str:
     return os.path.join(FC_SOCKET_DIR, f"{vm_id}.sock")
 
 
+def _fc_rootfs_runtime_path(vm_id: str) -> str:
+    return os.path.join(FC_ROOTFS_DIR, f"{vm_id}.ext4")
+
+
 _FC_API_TIMEOUT = 10.0
 
 
@@ -303,6 +313,44 @@ async def _fc_wait_socket(socket_path: str, timeout: float = 10.0) -> None:
         await asyncio.sleep(0.2)
 
 
+def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
+    """VM 専用の writable rootfs を作る。
+
+    共有 rootfs をそのまま rw で渡すと、複数 VM 間で書き込みが競合したり
+    元イメージを汚染するため、起動ごとにコピーを作って使い捨てにする。
+    """
+    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
+    runtime_path = _fc_rootfs_runtime_path(vm_id)
+    tmp_path = runtime_path + ".tmp"
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if os.path.exists(runtime_path):
+            os.remove(runtime_path)
+        shutil.copy2(rootfs_path, tmp_path)
+        os.replace(tmp_path, runtime_path)
+        _fc_rootfs_paths[vm_id] = runtime_path
+        return runtime_path
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
+
+
+def _cleanup_writable_rootfs(vm_id: str) -> None:
+    path = _fc_rootfs_paths.pop(vm_id, None)
+    if path is None:
+        path = _fc_rootfs_runtime_path(vm_id)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
     """
     Firecracker microVM を起動する。
@@ -328,14 +376,17 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
     os.makedirs(FC_SOCKET_DIR, mode=0o700, exist_ok=True)
-
-    # TAP インターフェースを作成してゲストのネットワークに使用
-    tap = await create_tap(vm_id)
-
-    # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
-    _create_vm_cgroup(vm_id, cpu, memory_mb)
+    writable_rootfs_path = _prepare_writable_rootfs(vm_id, rootfs_path)
+    tap = None
+    fc_proc = None
 
     try:
+        # TAP インターフェースを作成してゲストのネットワークに使用
+        tap = await create_tap(vm_id)
+
+        # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
+        _create_vm_cgroup(vm_id, cpu, memory_mb)
+
         # Firecracker プロセスを起動（--no-api はなし、REST API 経由で設定）
         fc_proc = await asyncio.create_subprocess_exec(
             "firecracker",
@@ -360,16 +411,16 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
             "boot_args": (
                 f"console=ttyS0 reboot=k panic=1 pci=off "
                 f"ip={ip}::{gw}:{netmask}::eth0:off "
-                "ro"
+                "rw"
             ),
         })
 
-        # rootfs（プロジェクトごとにアップロードされた読み取り専用 ext4 を使用）
+        # rootfs（VM ごとの writable copy を使用）
         await _fc_api(socket_path, "PUT", "/drives/rootfs", {
             "drive_id": "rootfs",
-            "path_on_host": rootfs_path,
+            "path_on_host": writable_rootfs_path,
             "is_root_device": True,
-            "is_read_only": True,
+            "is_read_only": False,
         })
 
         # ネットワークインターフェース（TAP 経由でゲストに eth0 を提供）
@@ -389,7 +440,7 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         # VM 起動
         await _fc_api(socket_path, "PUT", "/actions", {"action_type": "InstanceStart"})
 
-        logger.info(f"Firecracker VM started: vm_id={vm_id[:8]} ip={ip} tap={tap} kernel={kernel_path} rootfs={rootfs_path}")
+        logger.info(f"Firecracker VM started: vm_id={vm_id[:8]} ip={ip} tap={tap} kernel={kernel_path} rootfs={writable_rootfs_path}")
         return VMStartResult(vm_id=vm_id, ip=ip)
 
     except Exception as e:
@@ -418,7 +469,9 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
                 logger.warning(f"SIGKILL 送信に失敗しました: vm_id={vm_id[:8]} pid={pid}: {e2}")
         # cgroup の削除はプロセスが完全に終了していないと失敗するため、確実に止めてから行う
         _remove_vm_cgroup(vm_id)
-        await delete_tap(vm_id)
+        _cleanup_writable_rootfs(vm_id)
+        if tap is not None:
+            await delete_tap(vm_id)
         raise RuntimeError(f"Firecracker VM起動に失敗しました: {e}") from e
 
 
@@ -442,6 +495,7 @@ async def _stop_firecracker(vm_id: str) -> None:
     await _terminate_pid(pid, vm_id)
     # プロセス終了後に leaf cgroup を削除（残っていると rmdir が失敗するため終了確認後に行う）
     _remove_vm_cgroup(vm_id)
+    _cleanup_writable_rootfs(vm_id)
 
     try:
         if os.path.exists(socket_path):
@@ -622,6 +676,7 @@ async def cleanup_orphaned_vms() -> None:
                     await _terminate_pid(pid, vm_id)
                 _fc_pids.pop(vm_id, None)
                 _remove_vm_cgroup(vm_id)
+                _cleanup_writable_rootfs(vm_id)
 
                 socket_path = _fc_socket_path(vm_id)
                 try:

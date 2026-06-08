@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from database import get_db
-from models import Environment, EnvStatus, Image, Backend, User, UserRole
+from models import Environment, EnvStatus, Image, Backend, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
@@ -98,6 +98,17 @@ async def start_env(
         raise HTTPException(
             status_code=400,
             detail=f"このホストでは backend={host_backend.value} のプロジェクトのみ起動できます",
+        )
+
+    if image.rootfs_conversion_status in (RootfsConversionStatus.pending.value, RootfsConversionStatus.converting.value):
+        raise HTTPException(
+            status_code=409,
+            detail="rootfs を ext4 形式へ変換中です。完了までしばらくお待ちください",
+        )
+    if image.rootfs_conversion_status == RootfsConversionStatus.failed.value:
+        raise HTTPException(
+            status_code=409,
+            detail="rootfs の変換に失敗しています。プロジェクト編集画面から rootfs を再アップロードしてください",
         )
 
     timeout = image.timeout_minutes or settings.DEFAULT_TIMEOUT_MINUTES

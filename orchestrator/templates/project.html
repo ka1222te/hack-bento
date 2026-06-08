@@ -114,6 +114,7 @@ const visLabel   = { public: '🌍 Public', protected: '🔒 Protected', private
 
 let imageData = null;
 let myEnvs    = [];
+let _projConvPollTimer = null;
 
 async function init() {
   const imgRes = await API.get('/api/images/');
@@ -228,6 +229,43 @@ function renderLaunchPanel() {
 
   const running = myEnvs.find(e => e.image_id === imageData.id);
   const atLimit = myEnvs.length >= MAX_ENVS;
+
+  const _ROOTFS_CONVERSION_LABELS = { pending: 'rootfs を変換待ちです', converting: 'rootfs を ext4 へ変換中です', failed: 'rootfs の変換に失敗しました' };
+  const _ROOTFS_CONVERSION_BADGE_LABELS = { pending: '変換待ち', converting: '変換中...', failed: '変換失敗' };
+  const convStatus = imageData.rootfs_conversion_status;
+  if (!running && convStatus && convStatus !== 'ready') {
+    panel.innerHTML = `
+      <div class="launch-panel launch-panel-idle">
+        <div class="launch-panel-info">
+          <span class="launch-status-dot ${convStatus === 'failed' ? 'error' : 'idle'}"></span>
+          <div>
+            <div class="launch-panel-label">${_ROOTFS_CONVERSION_LABELS[convStatus] || convStatus}</div>
+            <div class="launch-panel-ip"><span class="status-badge ${convStatus}" ${imageData.rootfs_conversion_error ? `title="${escHtml(imageData.rootfs_conversion_error)}"` : ''}>${_ROOTFS_CONVERSION_BADGE_LABELS[convStatus] || convStatus}</span></div>
+          </div>
+        </div>
+        <div class="launch-panel-actions">
+          <button class="btn btn-launch btn-launch-lg btn-disabled" disabled title="${convStatus === 'failed' ? 'プロジェクト編集画面から rootfs を再アップロードしてください' : '変換完了までお待ちください'}">
+            &#x25B6; 起動する
+          </button>
+        </div>
+      </div>`;
+    if (['pending', 'converting'].includes(convStatus) && !_projConvPollTimer) {
+      _projConvPollTimer = setInterval(async () => {
+        const r = await API.get('/api/images/');
+        if (!r.ok) return;
+        const images = await r.json();
+        const fresh = images.find(i => i.id === imageData.id);
+        if (!fresh) return;
+        imageData = fresh;
+        if (!['pending', 'converting'].includes(fresh.rootfs_conversion_status)) {
+          clearInterval(_projConvPollTimer);
+          _projConvPollTimer = null;
+        }
+        renderLaunchPanel();
+      }, 5000);
+    }
+    return;
+  }
 
   if (running) {
     panel.innerHTML = `

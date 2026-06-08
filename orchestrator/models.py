@@ -29,6 +29,13 @@ class EnvStatus(str, PyEnum):
     error = "error"
 
 
+class RootfsConversionStatus(str, PyEnum):
+    ready = "ready"
+    pending = "pending"
+    converting = "converting"
+    failed = "failed"
+
+
 class Difficulty(str, PyEnum):
     none = "none"
     easy = "easy"
@@ -89,6 +96,12 @@ class Image(Base):
     # bridge バックエンド: Firecracker ゲストカーネル・rootfs
     kernel_path = Column(String(512), nullable=True)
     rootfs_path = Column(String(512), nullable=True)
+    # rootfs としてファイルシステム tar がアップロード/リンクされた場合、ext4への変換が
+    # バックグラウンドジョブ（services.rootfs_convert）で行われるまでの状態を管理する
+    # （DefaultRootfsAsset と同じカラム構成・RootfsConversionStatus を共有）
+    rootfs_conversion_status = Column(String(16), default=RootfsConversionStatus.ready.value, nullable=False)
+    rootfs_conversion_error = Column(String(512), nullable=True)
+    rootfs_source_archive_path = Column(String(512), nullable=True)
     # 「default」モードで選択された共有デフォルト資産への参照（編集画面の初期表示用）
     default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
     default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
@@ -126,7 +139,12 @@ class DefaultKernelAsset(Base):
 
 
 class DefaultRootfsAsset(Base):
-    """管理者が登録した共有デフォルト rootfs（bridge プロジェクト作成時に選択可能）。"""
+    """管理者が登録した共有デフォルト rootfs（bridge プロジェクト作成時に選択可能）。
+
+    ext4 イメージを直接アップロードした場合は conversion_status="ready" のまま即利用可能。
+    単純なファイルシステム tar をアップロードした場合は "pending" で登録され、
+    バックグラウンドジョブ（services.rootfs_convert）が ext4 へ変換して file_path を差し替える。
+    """
     __tablename__ = "default_rootfs_assets"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -135,6 +153,9 @@ class DefaultRootfsAsset(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    conversion_status = Column(String(16), default=RootfsConversionStatus.ready.value, nullable=False)
+    conversion_error = Column(String(512), nullable=True)
+    source_archive_path = Column(String(512), nullable=True)
 
 
 class ImageCollaborator(Base):

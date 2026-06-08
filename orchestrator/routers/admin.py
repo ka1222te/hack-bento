@@ -13,11 +13,11 @@ from config import settings
 from database import get_db
 from models import (
     User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator,
-    DefaultKernelAsset, DefaultRootfsAsset,
+    DefaultKernelAsset, DefaultRootfsAsset, RootfsConversionStatus,
 )
 from reserved import is_reserved
 from deps import require_admin
-from services.firecracker_setup import DEFAULTS_DIR
+from services.firecracker_setup import DEFAULTS_DIR, _detect_archive_kind
 
 _VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 from services.auth_local import hash_password
@@ -37,8 +37,24 @@ class DefaultAssetResponse(BaseModel):
     file_path: str
     is_active: bool
     created_at: datetime
+    conversion_status: str = RootfsConversionStatus.ready.value
+    conversion_error: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        # DefaultKernelAsset には conversion_status 系カラムが存在しないため、
+        # 無ければ「変換不要」として扱う（rootfs専用フィールドをモデル間で共有しているため）
+        if not hasattr(obj, "conversion_status"):
+            return cls(
+                id=obj.id,
+                label=obj.label,
+                file_path=obj.file_path,
+                is_active=obj.is_active,
+                created_at=obj.created_at,
+            )
+        return super().model_validate(obj, **kwargs)
 
 
 class UserResponse(BaseModel):
@@ -299,6 +315,30 @@ async def create_default_asset(
             os.remove(dest_path)
         raise HTTPException(status_code=500, detail="ファイルの保存に失敗しました")
 
+    if kind == "rootfs":
+        kind_detected = _detect_archive_kind(dest_path)
+        if kind_detected == "docker-save":
+            os.remove(dest_path)
+            raise HTTPException(
+                status_code=400,
+                detail="docker save 形式のアーカイブ（複数レイヤー構成のOCIイメージ）は対応していません。"
+                       "`docker export` 等でファイルシステム単体の tar を作成してアップロードしてください。",
+            )
+        if kind_detected == "tar":
+            tar_path = dest_path
+            ext4_path = os.path.join(DEFAULTS_DIR, f"{uuid.uuid4()}-{info['suffix']}")
+            asset = info["model"](
+                label=label,
+                file_path=ext4_path,
+                created_by=current_user.id,
+                conversion_status=RootfsConversionStatus.pending.value,
+                source_archive_path=tar_path,
+            )
+            db.add(asset)
+            await db.commit()
+            await db.refresh(asset)
+            return asset
+
     asset = info["model"](label=label, file_path=dest_path, created_by=current_user.id)
     db.add(asset)
     await db.commit()
@@ -328,12 +368,19 @@ async def delete_default_asset(
     if ref_result.first():
         raise HTTPException(status_code=400, detail="このデフォルト資産を使用しているプロジェクトが存在するため削除できません")
 
-    if asset.file_path and os.path.realpath(asset.file_path).startswith(os.path.realpath(DEFAULTS_DIR) + os.sep):
-        try:
-            if os.path.exists(asset.file_path):
-                os.remove(asset.file_path)
-        except OSError:
-            pass
+    paths_to_remove = [asset.file_path]
+    source_archive_path = getattr(asset, "source_archive_path", None)
+    if source_archive_path:
+        paths_to_remove.append(source_archive_path)
+
+    defaults_dir_real = os.path.realpath(DEFAULTS_DIR) + os.sep
+    for path in paths_to_remove:
+        if path and os.path.realpath(path).startswith(defaults_dir_real):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
 
     await db.delete(asset)
     await db.commit()

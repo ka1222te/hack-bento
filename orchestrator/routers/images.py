@@ -13,7 +13,8 @@ from database import get_db
 from models import Image, Backend, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
 from deps import get_current_user, require_admin, require_username_set
 from services.smolvm import docker_load
-from services.firecracker_setup import DEFAULTS_DIR
+from services.firecracker_setup import DEFAULTS_DIR, _detect_archive_kind
+from models import RootfsConversionStatus
 from config import settings
 
 router = APIRouter(prefix="/api/images", tags=["images"])
@@ -71,6 +72,8 @@ class ImageResponse(BaseModel):
     is_default_rootfs: bool = False
     default_kernel_asset_id: Optional[int] = None
     default_rootfs_asset_id: Optional[int] = None
+    rootfs_conversion_status: str = RootfsConversionStatus.ready.value
+    rootfs_conversion_error: Optional[str] = None
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -195,6 +198,8 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         is_default_rootfs=(image.default_rootfs_asset_id is not None),
         default_kernel_asset_id=image.default_kernel_asset_id,
         default_rootfs_asset_id=image.default_rootfs_asset_id,
+        rootfs_conversion_status=image.rootfs_conversion_status,
+        rootfs_conversion_error=image.rootfs_conversion_error,
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -309,9 +314,15 @@ async def _resolve_vm_asset(
     url: Optional[str],
     asset_id: Optional[int],
     db: AsyncSession,
-) -> tuple[str, Optional[int]]:
+) -> tuple[str, Optional[int], Optional[dict]]:
     """kernel/rootfs の入力（default/file/link のいずれか）を検証・保存し、
-    (file_path, default_asset_id) を返す。
+    (file_path, default_asset_id, conversion_info) を返す。
+
+    conversion_info は rootfs として単純なファイルシステム tar が検出された場合のみ
+    {"source_archive_path": <アップロードされたtarの保存パス>} を返し、呼び出し側はこれを基に
+    Image を conversion_status="pending" として登録し、file_path には変換後の ext4 の
+    格納予定パスを設定する（バックグラウンドジョブが変換して差し替える）。
+    docker save 形式（複数レイヤー）が検出された場合はその場で 400 エラーとする。
 
     呼び出し側で保存先ディレクトリ作成・モデルへの代入・旧ファイルの削除を行う。
     """
@@ -330,7 +341,7 @@ async def _resolve_vm_asset(
             raise HTTPException(status_code=400, detail=f"指定された{label}のデフォルト資産が見つかりません")
         if not os.path.exists(asset.file_path):
             raise HTTPException(status_code=503, detail=f"{label}のデフォルト資産ファイルが見つかりません。管理者に連絡してください")
-        return asset.file_path, asset.id
+        return asset.file_path, asset.id, None
 
     if mode == "link":
         if not url or not url.strip():
@@ -347,7 +358,9 @@ async def _resolve_vm_asset(
             if os.path.exists(dest_path):
                 os.remove(dest_path)
             raise HTTPException(status_code=500, detail=f"{label}のダウンロードに失敗しました")
-        return dest_path, None
+        if kind == "rootfs":
+            return _check_rootfs_archive(dest_path, info["suffix"])
+        return dest_path, None, None
 
     # mode == "file"
     has_file = bool(upload and upload.filename and upload.size and upload.size > 0)
@@ -374,7 +387,33 @@ async def _resolve_vm_asset(
         if os.path.exists(dest_path):
             os.remove(dest_path)
         raise HTTPException(status_code=500, detail=f"{label}の保存に失敗しました")
-    return dest_path, None
+    if kind == "rootfs":
+        return _check_rootfs_archive(dest_path, info["suffix"])
+    return dest_path, None, None
+
+
+def _check_rootfs_archive(saved_path: str, suffix: str) -> tuple[str, Optional[int], Optional[dict]]:
+    """保存済みファイルが ext4 / 単純な tar / docker save 形式のいずれかを判定する。
+
+    - ext4 と推定: そのまま (saved_path, None, None) を返す
+    - 単純な tar（docker export 形式）: 変換先 ext4 パスを採番し、
+      (ext4_path, None, {"source_archive_path": saved_path}) を返す
+      → 呼び出し側が conversion_status="pending" で登録し、バックグラウンドジョブが変換する
+    - docker save 形式: アップロード済みファイルを削除して 400 エラー
+    """
+    kind_detected = _detect_archive_kind(saved_path)
+    if kind_detected == "docker-save":
+        if os.path.exists(saved_path):
+            os.remove(saved_path)
+        raise HTTPException(
+            status_code=400,
+            detail="docker save 形式のアーカイブ（複数レイヤー構成のOCIイメージ）は対応していません。"
+                   "`docker export` 等でファイルシステム単体の tar を作成してアップロード/リンクしてください。",
+        )
+    if kind_detected == "tar":
+        ext4_path = os.path.join(VM_DIR, f"{uuid.uuid4()}-{suffix}")
+        return ext4_path, None, {"source_archive_path": saved_path}
+    return saved_path, None, None
 
 
 async def _get_optional_user(request: Request, db: AsyncSession) -> Optional[User]:
@@ -520,6 +559,8 @@ async def upload_image(
     rootfs_path = None
     kernel_asset_id: Optional[int] = None
     rootfs_asset_id: Optional[int] = None
+    rootfs_conversion_status: str = RootfsConversionStatus.ready.value
+    rootfs_source_archive_path: Optional[str] = None
 
     if backend == Backend.macvlan:
         # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
@@ -582,22 +623,30 @@ async def upload_image(
 
         new_kernel_path: Optional[str] = None
         new_rootfs_path: Optional[str] = None
+        rootfs_conversion: Optional[dict] = None
         try:
-            new_kernel_path, kernel_asset_id = await _resolve_vm_asset(
+            new_kernel_path, kernel_asset_id, _ = await _resolve_vm_asset(
                 kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
                 asset_id=default_kernel_asset_id, db=db,
             )
-            new_rootfs_path, rootfs_asset_id = await _resolve_vm_asset(
+            new_rootfs_path, rootfs_asset_id, rootfs_conversion = await _resolve_vm_asset(
                 kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
                 asset_id=default_rootfs_asset_id, db=db,
             )
         except HTTPException:
-            for p, mode in ((new_kernel_path, kernel_mode), (new_rootfs_path, rootfs_mode)):
-                if p and mode != "default" and os.path.exists(p):
-                    os.remove(p)
+            if new_kernel_path and kernel_mode != "default" and os.path.exists(new_kernel_path):
+                os.remove(new_kernel_path)
+            # rootfs: tar変換待ちの場合は変換元アーカイブが実体（ext4の方は未生成）
+            rootfs_cleanup_path = (rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
+            if rootfs_cleanup_path and rootfs_mode != "default" and os.path.exists(rootfs_cleanup_path):
+                os.remove(rootfs_cleanup_path)
             raise
         kernel_path = new_kernel_path
         rootfs_path = new_rootfs_path
+        rootfs_conversion_status = (
+            RootfsConversionStatus.pending.value if rootfs_conversion else RootfsConversionStatus.ready.value
+        )
+        rootfs_source_archive_path = (rootfs_conversion or {}).get("source_archive_path")
 
     # README 保存（ファイル優先、なければテキスト入力）
     readme_path = None
@@ -648,6 +697,8 @@ async def upload_image(
         rootfs_path=rootfs_path,
         default_kernel_asset_id=kernel_asset_id,
         default_rootfs_asset_id=rootfs_asset_id,
+        rootfs_conversion_status=rootfs_conversion_status,
+        rootfs_source_archive_path=rootfs_source_archive_path,
         readme_path=readme_path,
         difficulty=difficulty,
         category=category,
@@ -853,7 +904,7 @@ async def update_image(
     else:
         # bridge バックエンド: ゲストカーネル・rootfs の差し替え（変更がある場合のみ）
         if kernel_changing:
-            new_kernel_path, new_kernel_asset_id = await _resolve_vm_asset(
+            new_kernel_path, new_kernel_asset_id, _ = await _resolve_vm_asset(
                 kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
                 asset_id=default_kernel_asset_id, db=db,
             )
@@ -869,19 +920,31 @@ async def update_image(
                 raise
 
         if rootfs_changing:
-            new_rootfs_path, new_rootfs_asset_id = await _resolve_vm_asset(
+            new_rootfs_path, new_rootfs_asset_id, new_rootfs_conversion = await _resolve_vm_asset(
                 kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
                 asset_id=default_rootfs_asset_id, db=db,
             )
+            new_rootfs_cleanup_path = (new_rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
             try:
                 old_rootfs = image.rootfs_path
+                old_source_archive = image.rootfs_source_archive_path
                 image.rootfs_path = new_rootfs_path
                 image.default_rootfs_asset_id = new_rootfs_asset_id
+                if new_rootfs_conversion:
+                    image.rootfs_conversion_status = RootfsConversionStatus.pending.value
+                    image.rootfs_conversion_error = None
+                    image.rootfs_source_archive_path = new_rootfs_conversion["source_archive_path"]
+                else:
+                    image.rootfs_conversion_status = RootfsConversionStatus.ready.value
+                    image.rootfs_conversion_error = None
+                    image.rootfs_source_archive_path = None
                 if old_rootfs and old_rootfs != new_rootfs_path:
                     _safe_remove(old_rootfs)
+                if old_source_archive and old_source_archive != image.rootfs_source_archive_path:
+                    _safe_remove(old_source_archive)
             except Exception:
-                if rootfs_mode != "default" and os.path.exists(new_rootfs_path):
-                    os.remove(new_rootfs_path)
+                if rootfs_mode != "default" and new_rootfs_cleanup_path and os.path.exists(new_rootfs_cleanup_path):
+                    os.remove(new_rootfs_cleanup_path)
                 raise
 
     # メタデータ更新

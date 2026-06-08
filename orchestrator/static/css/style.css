@@ -681,6 +681,9 @@ textarea { resize: vertical; min-height: 70px; }
 .status-badge.running { background: rgba(163,190,140,.15); color: var(--green); border: 1px solid rgba(163,190,140,.25); }
 .status-badge.starting { background: rgba(235,203,139,.15); color: var(--yellow); border: 1px solid rgba(235,203,139,.25); }
 .status-badge.error { background: rgba(191,97,106,.15); color: var(--red); border: 1px solid rgba(191,97,106,.25); }
+.status-badge.pending,
+.status-badge.converting { background: rgba(235,203,139,.15); color: var(--yellow); border: 1px solid rgba(235,203,139,.25); }
+.status-badge.failed { background: rgba(191,97,106,.15); color: var(--red); border: 1px solid rgba(191,97,106,.25); }
 
 .role-badge {
   display: inline-block;
@@ -1108,6 +1111,7 @@ textarea { resize: vertical; min-height: 70px; }
 }
 .launch-status-dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.5s ease-in-out infinite; }
 .launch-status-dot.idle    { background: var(--text3); }
+.launch-status-dot.error   { background: var(--red); }
 .launch-panel-label { font-size: 0.95rem; font-weight: 600; color: var(--text); margin-bottom: 0.35rem; }
 .launch-panel-ip { display: flex; align-items: center; gap: 0.4rem; font-size: 0.875rem; margin-bottom: 0.25rem; }
 .launch-panel-ssh { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.82rem; color: var(--text2); }

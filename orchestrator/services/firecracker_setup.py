@@ -69,6 +69,60 @@ async def _run(cmd: list[str], timeout: int = 600) -> None:
         raise RuntimeError(f"{' '.join(cmd)}: {stderr.decode().strip()}")
 
 
+async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB) -> None:
+    """単純なファイルシステム tar を ext4 イメージへ変換し、dest_path へ os.replace する。
+
+    mount/loop デバイスを使わず mkfs.ext4 -d で直接構築する（_build_default_rootfs と同じ方式）。
+    """
+    tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-convert-")
+    try:
+        rootfs_root = os.path.join(tmpdir, "rootfs")
+        os.makedirs(rootfs_root, exist_ok=True)
+        await _run(["tar", "-xf", tar_path, "-C", rootfs_root])
+        for d in ("proc", "sys", "dev", "tmp"):
+            os.makedirs(os.path.join(rootfs_root, d), exist_ok=True)
+
+        tmp_image = dest_path + ".tmp"
+        if os.path.exists(tmp_image):
+            os.remove(tmp_image)
+        await _run(["dd", "if=/dev/zero", f"of={tmp_image}", "bs=1M", f"count={size_mb}"])
+        await _run(["mkfs.ext4", "-F", "-d", rootfs_root, tmp_image])
+        os.replace(tmp_image, dest_path)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _detect_archive_kind(path: str) -> str:
+    """アップロードされたファイルの種類を判定する。
+
+    戻り値: "ext4"（変換不要・そのまま利用可能） / "tar"（単純なファイルシステムtar・変換対象）
+            / "docker-save"（複数レイヤーのOCIアーカイブ・非対応）
+    """
+    import struct
+    import tarfile
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(1024 + 56)
+            magic = f.read(2)
+        if struct.unpack("<H", magic)[0] == 0xEF53:
+            return "ext4"
+    except (OSError, struct.error):
+        pass
+
+    if tarfile.is_tarfile(path):
+        try:
+            with tarfile.open(path) as tf:
+                names = {os.path.normpath(n).lstrip("./") for n in tf.getnames()}
+        except tarfile.TarError:
+            return "tar"
+        if "manifest.json" in names and "repositories" in names:
+            return "docker-save"
+        return "tar"
+
+    return "ext4"
+
+
 async def _download_default_kernel() -> None:
     if os.path.exists(DEFAULT_KERNEL_PATH):
         logger.info(f"デフォルトゲストカーネルは既に存在します: {DEFAULT_KERNEL_PATH}")
@@ -106,20 +160,7 @@ async def _build_default_rootfs() -> None:
         tar_path = os.path.join(tmpdir, "rootfs.tar")
         await _run(["docker", "cp", f"{container_name}:/rootfs.tar", tar_path])
 
-        rootfs_root = os.path.join(tmpdir, "rootfs")
-        os.makedirs(rootfs_root, exist_ok=True)
-        await _run(["tar", "-xf", tar_path, "-C", rootfs_root])
-        for d in ("proc", "sys", "dev", "tmp"):
-            os.makedirs(os.path.join(rootfs_root, d), exist_ok=True)
-
-        tmp_rootfs = DEFAULT_ROOTFS_PATH + ".tmp"
-        if os.path.exists(tmp_rootfs):
-            os.remove(tmp_rootfs)
-
-        # mount/loop デバイスを使わずに ext4 イメージを直接構築する
-        await _run(["dd", "if=/dev/zero", f"of={tmp_rootfs}", "bs=1M", f"count={ROOTFS_SIZE_MB}"])
-        await _run(["mkfs.ext4", "-F", "-d", rootfs_root, tmp_rootfs])
-        os.replace(tmp_rootfs, DEFAULT_ROOTFS_PATH)
+        await convert_tar_to_ext4(tar_path, DEFAULT_ROOTFS_PATH)
         logger.info(f"デフォルト rootfs を保存しました: {DEFAULT_ROOTFS_PATH}")
     finally:
         try:
