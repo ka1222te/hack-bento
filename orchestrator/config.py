@@ -54,14 +54,15 @@ class Settings(BaseSettings):
     # バックエンド
     VM_BACKEND: str = "docker"
 
-    # ---- macvlan ネットワーク設定 ----
-    MACVLAN_NETWORK: str = "hackbento-vm"   # docker-compose.yml の networks.vm_net.name と一致させる
+    # ---- ネットワーク設定 ----
+    MACVLAN_NETWORK: str = "hackbento-vm"   # macvlan モード: docker-compose.override.yml の name と一致させる
+    BRIDGE_NAME: str = "br0"               # bridge モード: TAP を接続するホスト bridge 名
 
-    # VM に払い出す IP プール（docker-compose.yml の ip_range 内に収めること）
+    # VM に払い出す IP プール
     IP_POOL_START: str = "192.168.181.200"
     IP_POOL_END: str = "192.168.181.230"
 
-    # Firecracker ゲスト VM のデフォルトゲートウェイ（macvlan サブネットの gateway に合わせること）
+    # VM のデフォルトゲートウェイ
     FC_GUEST_GATEWAY: str = "192.168.180.1"
 
     model_config = {
