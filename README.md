@@ -1,20 +1,24 @@
 # HackBento
 
 An on-premises environment platform for internal security training and vulnerability reproduction.  
-Users can upload and register Docker images, then instantly launch isolated container environments — a TryHackMe-like experience that runs entirely on-premises within your internal network.
+Users can upload and register Docker images, or guest kernels/rootfs for Firecracker microVMs, then instantly launch isolated container/microVM environments — a TryHackMe-like experience that runs entirely on-premises within your internal network.
 
 > **This project is designed to be deployed within a corporate/private network (private IP space).  
 > It is not intended to be exposed directly to the internet.**
 
-HackBento uses **direct IP assignment via macvlan**, eliminating the need for port mappings or Bastion hosts. Users can SSH directly into the allocated IP address of their environment.
+HackBento uses **direct IP assignment to containers/VMs** (via a macvlan or bridge network), eliminating the need for port mappings or Bastion hosts. Users can SSH directly into the allocated IP address of their environment.
 
 ![HackBento Overview](assets/overview.png)
 
 ## Features
 
-- **One-click launch** — Select a Docker image and press a button to spin up an environment with an IP address assigned instantly
-- **Direct IP access** — Users can SSH, curl, and nmap the allocated IP directly (no Bastion or VPN required). Note: the launched Docker image must have SSH/curl/nmap support built in.
-- **macvlan network** — Assigns physical-network IP addresses directly to containers (no port mapping required)
+- **One-click launch** — Select a project and press a button to spin up an environment with an IP address assigned instantly
+- **Direct IP access** — Users can SSH, curl, and nmap the allocated IP directly (no Bastion or VPN required). Note: the launched environment must have SSH/curl/nmap support built in.
+- **Two backends to choose from**:
+  - **macvlan + Docker containers** (no KVM required; runs OCI images)
+  - **bridge + Firecracker microVMs** (KVM required; kernel-level isolation; runs guest kernel/rootfs images)
+  - Each host runs exactly one backend (selected interactively by `setup.sh`). IP addresses on the physical network are assigned directly to containers/VMs (no port mapping required)
+- **Automatic rootfs tar→ext4 conversion** (bridge mode) — Uploading a simple `docker export`-style tar archive as a rootfs is automatically converted to an ext4 image in the background
 - **Timeout management** — Environments are automatically deleted after a set period; an extend button resets the timer
 - **3 authentication methods** — Local accounts / LDAP / Google OAuth2
 - **Project management** — Manage and share projects via GitHub-style `owner/slug` URLs
@@ -38,15 +42,15 @@ Corporate user terminal
   └─ ssh user@192.168.180.200  ← Direct IP access (no Bastion required)
                 │
                 ▼
-         Docker container or microVM
-         (IP assigned directly via macvlan)
+         Docker container or Firecracker microVM
+         (IP assigned directly via macvlan or bridge)
 
 [Web server role]
-  HackBento ──Docker API──► Container runtime
-  (management API only)      │
-                              ├─ env-001: 192.168.180.200
-                              ├─ env-002: 192.168.180.201
-                              └─ env-003: 192.168.180.202
+  HackBento ──Docker API / Firecracker REST API──► Container/VM runtime
+  (management API only)                              │
+                                                     ├─ env-001: 192.168.180.200
+                                                     ├─ env-002: 192.168.180.201
+                                                     └─ env-003: 192.168.180.202
 ```
 
 ## Tech Stack
@@ -57,16 +61,17 @@ Corporate user terminal
 | Frontend | Jinja2 templates + Vanilla JS |
 | Database | SQLite (async via aiosqlite) |
 | Authentication | JWT (Cookie + Bearer) / LDAP / Google OAuth2 |
-| Container infrastructure | Docker + macvlan network |
+| Environment runtime | Docker + macvlan network, or Firecracker + bridge network (KVM required) |
 | Deployment | Docker Compose (`network_mode: host`) |
 
 ## Requirements
 
 - Linux host
 - Docker Engine / Docker Compose
-- NIC that supports the macvlan driver
+- **macvlan mode**: NIC that supports the macvlan driver
+- **bridge mode** (Firecracker microVMs, kernel-level isolation): KVM (`/dev/kvm`, SVM/VT-x enabled in BIOS), `iproute2`, systemd
 
-> Future plan: when KVM is available, the backend can be switched to SmolVM + Firecracker for kernel-level isolation.
+Each host runs exactly one backend (chosen interactively by the setup script described below).
 
 ## Setup
 
@@ -77,13 +82,27 @@ git clone <repository-url> hack-bento
 cd hack-bento
 ```
 
-### 2. Create the environment configuration file
+### 2. Run the setup script
+
+The interactive `setup.sh` script (requires root) automates everything from backend selection to network configuration and generation of `.env` / `docker-compose.override.yml`.
 
 ```bash
-cp .env.example .env
+sudo ./setup.sh
 ```
 
-Edit `.env` and set at minimum the following:
+What the script does:
+
+- Checks for `/dev/kvm` and whether a bridge can be created, then offers a choice of available backend (`bridge`/`macvlan`)
+- Detects/asks for the physical NIC, subnet, gateway, and DNS
+- **macvlan mode**: Generates a `docker-compose.override.yml` defining a macvlan network named `hackbento-vm`
+- **bridge mode**: Creates a Linux bridge on the host OS, attaches the physical NIC to it, and persists the configuration via `netplan`. It also sets up a cgroup v2 delegation tree (and a systemd service to recreate it on boot) used to enforce per-VM resource limits (memory, PID count, CPU usage) for Firecracker
+- Generates `.env` (copied from `.env.example`) and sets `VM_BACKEND` and the relevant network variables
+
+> To change the network configuration later, run `docker compose -f docker-compose.yml -f docker-compose.override.yml down` and re-run `sudo ./setup.sh` (it regenerates `docker-compose.override.yml`).
+
+### 3. Review and edit .env
+
+At minimum, check and set the following:
 
 ```bash
 # Public hostname and port
@@ -92,52 +111,14 @@ PORT=8000
 
 # JWT signing key (must be changed)
 SECRET_KEY=$(openssl rand -hex 32)
-
-# macvlan IP pool
-# IP_POOL_START / IP_POOL_END must fall within the subnet defined
-# in docker-compose.yml under networks.vm_net.
-# If an out-of-range IP is specified, the Docker daemon will return an error
-# at docker run time and the container will fail to start
-# (HackBento does not validate this in advance).
-IP_POOL_START=192.168.180.200
-IP_POOL_END=192.168.180.230
 ```
 
-### 3. Configure the macvlan network
-
-Update `docker-compose.yml` with your actual NIC name and network settings:
-
-```bash
-ip link show  # Check NIC name
-```
-
-```yaml
-# docker-compose.yml
-networks:
-  vm_net:
-    driver: macvlan
-    driver_opts:
-      parent: eth0  # ← Change to your actual NIC name
-    ipam:
-      config:
-        - subnet: 192.168.176.0/20  # ← Change to your host subnet
-          gateway: 192.168.180.1    # ← Change to your default gateway
-```
-
-If you make a mistake in the macvlan settings (`parent`, `subnet`, or `gateway`), you need to recreate the network:
-
-```bash
-# Recreate the network
-docker compose down
-docker network rm hackbento-vm 2>/dev/null || true
-# Fix docker-compose.yml, then restart
-docker compose up -d
-```
+The IP pool (`IP_POOL_START`/`IP_POOL_END`) is automatically set to fall within the subnet detected by `setup.sh`, but adjust it if needed. An out-of-range IP will cause the container/VM to fail to start.
 
 ### 4. Start
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 ```
 
 ### 5. Access
@@ -192,7 +173,11 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 
 ### Project Management
 
-- Upload Docker images (`.tar` / `.tar.gz` / `.tgz` / `.tar.zst`) or register via Docker Hub URL
+Each project holds the kind of asset matching its host's `VM_BACKEND` (only projects matching the host's backend can be listed/launched):
+
+- **macvlan backend**: Upload Docker images (`.tar` / `.tar.gz` / `.tgz` / `.tar.zst`) or register via Docker Hub URL
+- **bridge backend** (Firecracker microVMs): Provide a guest kernel and a rootfs (ext4) each via upload, URL link, or by selecting one of the shared default assets registered by an admin
+  - If a simple `docker export`-style tar is uploaded as the rootfs, it is automatically converted to an ext4 image in the background (a status badge is shown during conversion, and launching is blocked until it completes)
 - Access projects via `/{owner}/{slug}` URLs
 - Visibility settings: `public` (everyone) / `protected` (logged-in users) / `private` (restricted)
 - Collaborators: `Read` (view & launch) / `Read-Write` (view, launch & edit)
@@ -203,13 +188,14 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 - Default 60-minute timeout; extendable with the "+60 min" button
 - Warning displayed when 10 minutes remain
 - Maximum 2 environments per user, 20 system-wide (configurable)
-- Each container is subject to disk quotas, process count limits, and swap disabled to reduce host impact from malicious images
+- Each environment is subject to memory limits, process count limits, and CPU usage limits to reduce host impact from malicious images/VMs (enforced via Docker's resource limiting for macvlan, and a host-side cgroup v2 delegation tree for bridge)
 
 ### Admin Panel (`/admin`)
 
 - **Running environments**: List all active environments across users; force-stop any of them
 - **User management**: Add local users, enable/disable, change roles, reset passwords, delete
 - **Project management**: List all projects; delete
+- **Default VM assets** (bridge backend): Register and manage shared guest kernels/rootfs images that bridge projects can select from when created. Rootfs tar uploads are automatically converted to ext4
 
 ## Environment Variables
 
@@ -232,8 +218,10 @@ OAUTH_ALLOWED_DOMAINS=example.com  # Leave empty to allow all Google accounts
 | `VM_PIDS_LIMIT` | `256` | Max process count per environment (fork bomb protection) |
 | `UPLOAD_IMAGE_MAX_MB` | `6144` | Max upload size for Docker image files (MB) |
 | `UPLOAD_README_MAX_MB` | `10` | Max upload size for README files (MB) |
-| `VM_BACKEND` | `macvlan` | `macvlan` or `bridge` |
+| `VM_BACKEND` | `macvlan` | `macvlan` or `bridge` (set by `setup.sh`) |
 | `MACVLAN_NETWORK` | `hackbento-vm` | macvlan network name |
+| `BRIDGE_NAME` | `vmbr-hackbento` | bridge mode: name of the host bridge that TAP interfaces attach to (created by `setup.sh`) |
+| `FC_GUEST_GATEWAY` | `192.168.180.1` | bridge mode: gateway routed to the guest (the host's bridge IP) |
 | `IP_POOL_START` | `192.168.181.200` | IP pool start address (must be within subnet) |
 | `IP_POOL_END` | `192.168.181.230` | IP pool end address (must be within subnet) |
 | `LDAP_ENABLED` | `false` | Enable LDAP authentication |
