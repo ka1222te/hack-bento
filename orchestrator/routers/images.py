@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/images", tags=["images"])
 UPLOAD_DIR = "/data/images/uploads"
 README_DIR = "/data/images/readmes"
 VM_DIR = "/data/images/vm"
-ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst")
+ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst", ".oci")
 ALLOWED_README   = (".md", ".txt")
 _ALLOWED_DIRS    = (UPLOAD_DIR, README_DIR, VM_DIR)
 
