@@ -640,6 +640,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
     fi
 fi
 own "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 
 # KVM チェック
 if check_kvm; then
