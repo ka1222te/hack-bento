@@ -336,11 +336,50 @@ async def _fc_wait_socket(socket_path: str, timeout: float = 10.0) -> None:
         await asyncio.sleep(0.2)
 
 
+def _write_resolv_conf(rootfs_path: str) -> None:
+    """ext4 rootfs の /etc/resolv.conf を FC_GUEST_DNS の内容で上書きする。
+
+    debugfs の write コマンドで一時ファイルをイメージ内へ転送する。
+    debugfs が使えない場合や書き込み失敗は警告ログのみで続行する
+    （DNS なしでも VM 自体は起動できるため）。
+    """
+    import subprocess
+    nameservers = [ns.strip() for ns in settings.FC_GUEST_DNS.split(",") if ns.strip()]
+    if not nameservers:
+        return
+    resolv_content = "".join(f"nameserver {ns}\n" for ns in nameservers)
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".resolv", delete=False) as f:
+            f.write(resolv_content)
+            tmp_resolv = f.name
+        # debugfs: mkdir -p /etc は既存でも無害、write で /etc/resolv.conf を上書き
+        script = f"mkdir /etc\nwrite {tmp_resolv} /etc/resolv.conf\n"
+        result = subprocess.run(
+            ["debugfs", "-w", rootfs_path],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning(f"debugfs write resolv.conf failed: {result.stderr.strip()}")
+    except FileNotFoundError:
+        logger.warning("debugfs not found; skipping resolv.conf injection (install e2fsprogs)")
+    except Exception as e:
+        logger.warning(f"resolv.conf injection failed: {e}")
+    finally:
+        try:
+            os.remove(tmp_resolv)
+        except Exception:
+            pass
+
+
 def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     """VM 専用の writable rootfs を作る。
 
     共有 rootfs をそのまま rw で渡すと、複数 VM 間で書き込みが競合したり
     元イメージを汚染するため、起動ごとにコピーを作って使い捨てにする。
+    コピー後に FC_GUEST_DNS の内容を /etc/resolv.conf へ書き込む。
     """
     os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
     runtime_path = _fc_rootfs_runtime_path(vm_id)
@@ -353,6 +392,7 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
         shutil.copy2(rootfs_path, tmp_path)
         os.replace(tmp_path, runtime_path)
         _fc_rootfs_paths[vm_id] = runtime_path
+        _write_resolv_conf(runtime_path)
         return runtime_path
     except Exception:
         try:

@@ -383,12 +383,14 @@ async function init() {
     if (r.checked) r.closest('.np-vis-btn').classList.add('np-vis-selected');
   });
 
-  // README 既存内容を textarea に
-  if (imageData.readme_path || imageData.readme) {
-    const rRes = await API.get(`/api/images/${imageData.id}/readme`);
-    if (rRes.ok) {
-      const rd = await rRes.json();
-      if (rd.readme) document.getElementById('readme-textarea').value = rd.readme;
+  // README 既存内容を textarea に表示し、Textタブに切り替える
+  const rRes = await API.get(`/api/images/${imageData.id}/readme`);
+  if (rRes.ok) {
+    const rd = await rRes.json();
+    if (rd.readme) {
+      document.getElementById('readme-textarea').value = rd.readme;
+      const textBtn = document.querySelector('#readme-toggle .np-toggle-btn[data-target="readme-text"]');
+      if (textBtn) textBtn.click();
     }
   }
 

@@ -302,6 +302,7 @@ setup_macvlan() {
     env_set "MACVLAN_NETWORK" "${NET_NAME}"
     env_set "IP_POOL_START" "${POOL_START}"
     env_set "IP_POOL_END"   "${POOL_END}"
+    env_set "FC_GUEST_DNS"  "${DNS_SERVER:-8.8.8.8}"
 
     # docker-compose.override.yml 生成
     cat > "$OVERRIDE_FILE" <<EOF
@@ -576,6 +577,7 @@ setup_bridge() {
     env_set "IP_POOL_START"   "${POOL_START}"
     env_set "IP_POOL_END"     "${POOL_END}"
     env_set "FC_GUEST_GATEWAY" "${GATEWAY}"
+    env_set "FC_GUEST_DNS"    "${DNS_SERVER:-8.8.8.8}"
 
         # VM ごとのホスト側リソース制限 (memory/pids/cpu) 用 cgroup 委譲ツリー
     setup_vm_cgroup

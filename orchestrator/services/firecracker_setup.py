@@ -22,7 +22,7 @@ ROOTFS_SIZE_MB = 512
 DEFAULT_KERNEL_LABEL = os.path.basename(KERNEL_URL)
 DEFAULT_ROOTFS_LABEL = "Alpine + sshd (user:hackbento, password:hackbento)"
 
-_INIT_SCRIPT = """#!/bin/sh
+_INIT_SCRIPT_TEMPLATE = """#!/bin/sh
 sleep 1
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -31,10 +31,17 @@ mkdir -p /dev/pts /dev/shm
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
+printf '{resolv_conf}' > /etc/resolv.conf
 /usr/sbin/sshd -D &
 echo "=== HackBento Firecracker VM 起動完了 ==="
 wait
 """
+
+
+def _build_init_script() -> str:
+    nameservers = [ns.strip() for ns in settings.FC_GUEST_DNS.split(",") if ns.strip()]
+    resolv_conf = "\\n".join(f"nameserver {ns}" for ns in nameservers) + "\\n"
+    return _INIT_SCRIPT_TEMPLATE.format(resolv_conf=resolv_conf)
 
 _ROOTFS_BUILD_SCRIPT = """
 set -e
@@ -146,7 +153,7 @@ async def _build_default_rootfs() -> None:
     tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-")
     container_name = f"hackbento-rootfs-build-{os.path.basename(tmpdir)}"
     try:
-        build_script = _ROOTFS_BUILD_SCRIPT.format(init_script=_INIT_SCRIPT)
+        build_script = _ROOTFS_BUILD_SCRIPT.format(init_script=_build_init_script())
         await _run(["docker", "rm", "-f", container_name])  # 残骸があれば除去（失敗は無視）
     except Exception:
         pass

@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # VM のデフォルトゲートウェイ
     FC_GUEST_GATEWAY: str = "192.168.180.1"
 
+    # VM に設定する DNS サーバ（カンマ区切りで複数指定可能）
+    FC_GUEST_DNS: str = "8.8.8.8,8.8.4.4"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
