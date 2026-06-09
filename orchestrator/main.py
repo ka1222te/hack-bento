@@ -201,7 +201,7 @@ async def _can_edit_project(owner: str, slug: str, user: Optional[User]) -> bool
 async def index(request: Request):
     user = await _get_request_user(request)
     if not user:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse("index.html", {"request": request, "settings": settings})
 
 

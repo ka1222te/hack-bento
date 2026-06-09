@@ -80,6 +80,7 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
     """単純なファイルシステム tar を ext4 イメージへ変換し、dest_path へ os.replace する。
 
     mount/loop デバイスを使わず mkfs.ext4 -d で直接構築する（_build_default_rootfs と同じ方式）。
+    イメージサイズは展開後のディレクトリ実サイズを元に自動計算し、固定値より大きい場合はそちらを使う。
     """
     tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-convert-")
     try:
@@ -89,10 +90,21 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
         for d in ("proc", "sys", "dev", "tmp"):
             os.makedirs(os.path.join(rootfs_root, d), exist_ok=True)
 
+        # 展開後の実サイズを計測し、20% + 64MB のオーバーヘッドを加えたサイズを使う
+        du_result = await asyncio.create_subprocess_exec(
+            "du", "-sb", rootfs_root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        du_stdout, _ = await du_result.communicate()
+        actual_bytes = int(du_stdout.split()[0]) if du_stdout.strip() else 0
+        auto_mb = int(actual_bytes * 1.2 / (1024 * 1024)) + 64
+        image_mb = max(size_mb, auto_mb)
+
         tmp_image = dest_path + ".tmp"
         if os.path.exists(tmp_image):
             os.remove(tmp_image)
-        await _run(["dd", "if=/dev/zero", f"of={tmp_image}", "bs=1M", f"count={size_mb}"])
+        await _run(["dd", "if=/dev/zero", f"of={tmp_image}", "bs=1M", f"count={image_mb}"])
         await _run(["mkfs.ext4", "-F", "-d", rootfs_root, tmp_image])
         os.replace(tmp_image, dest_path)
     finally:

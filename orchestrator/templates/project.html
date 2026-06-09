@@ -10,6 +10,12 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"
         integrity="sha384-jrsBdrv4eDpEYIq32u13DPbvB6tRmqIDnA6UlgFBoexpetaiWi7g/VbfMEL1WVen"
         crossorigin="anonymous"></script>
+<!-- highlight.js: コードブロックのシンタックスハイライト -->
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css"
+      crossorigin="anonymous">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
+        crossorigin="anonymous"></script>
 {% endblock %}
 
 {% block body %}
@@ -92,6 +98,24 @@
 const OWNER    = {{ owner | tojson }};
 const SLUG     = {{ slug  | tojson }};
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+
+// highlight.js を marked.js のコードブロックレンダラーに組み込む（1回だけ実行）
+if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
+  marked.use({
+    renderer: {
+      code(code, lang) {
+        const text = typeof code === 'object' ? (code.text || '') : (code || '');
+        const language = typeof code === 'object' ? (code.lang || lang || '') : (lang || '');
+        const validLang = language && hljs.getLanguage(language) ? language : null;
+        const highlighted = validLang
+          ? hljs.highlight(text, { language: validLang }).value
+          : hljs.highlightAuto(text).value;
+        const langClass = validLang ? ` language-${validLang}` : '';
+        return `<pre><code class="hljs${langClass}">${highlighted}</code></pre>`;
+      }
+    }
+  });
+}
 
 const API = {
   token: () => sessionStorage.getItem('hb_token'),
