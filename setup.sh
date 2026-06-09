@@ -633,13 +633,13 @@ echo ""
 if [[ ! -f "$ENV_FILE" ]]; then
     if [[ -f "${SCRIPT_DIR}/.env.example" ]]; then
         cp "${SCRIPT_DIR}/.env.example" "$ENV_FILE"
-        own "$ENV_FILE"
         green "[OK] .env.example を .env にコピーしました"
     else
         red "[ERROR] .env も .env.example も見つかりません。"
         exit 1
     fi
 fi
+own "$ENV_FILE"
 
 # KVM チェック
 if check_kvm; then
