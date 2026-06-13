@@ -891,6 +891,53 @@ textarea { resize: vertical; min-height: 70px; }
 .user-dropdown-logout { color: var(--red); }
 .user-dropdown-logout:hover { background: rgba(191,97,106,.1); }
 
+/* ===== Attack Machine navbar dropdown ===== */
+.am-nav-wrap { position: relative; }
+.am-nav-timer {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600; font-size: 0.82rem;
+  color: var(--text2);
+}
+.am-nav-timer-blue   { color: var(--accent2); }
+.am-nav-timer-yellow { color: var(--yellow); }
+.am-nav-timer-red    { color: var(--red); }
+.am-nav-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px); left: 0;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0.5rem;
+  min-width: 220px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  z-index: 200;
+  opacity: 0; transform: translateY(-6px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.am-nav-dropdown.open {
+  display: block;
+  opacity: 1; transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.am-nav-loading {
+  padding: 0.55rem 0.6rem;
+  font-size: 0.85rem; color: var(--text2);
+}
+.am-nav-action {
+  display: flex; align-items: center; gap: 0.6rem;
+  width: 100%; padding: 0.55rem 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem; color: var(--text);
+  background: none; border: none; cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+.am-nav-action:hover { background: var(--bg3); }
+.am-nav-action-danger { color: var(--red); }
+.am-nav-action-danger:hover { background: rgba(191,97,106,.1); }
+.am-nav-action:disabled { opacity: 0.6; cursor: default; }
+.am-nav-start-btn { width: 100%; }
+
 /* ===== Home Layout ===== */
 .home-layout { padding-top: 1.5rem; }
 

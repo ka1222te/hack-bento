@@ -1,9 +1,12 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Request, Response
+import httpx
+import websockets
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -16,10 +19,10 @@ from models import User, UserRole, AuthProvider, Image, Visibility, ImageCollabo
 from services.auth_local import hash_password
 from services.watchdog import run_watchdog
 from services.network import ensure_vm_network
-from services.firecracker_setup import ensure_default_vm_assets
+from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_machine_assets
 from services.rootfs_convert import run_rootfs_conversion_worker
 from services.smolvm import cleanup_orphaned_vms
-from routers import auth, envs, images, admin, users
+from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
@@ -38,11 +41,13 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(run_watchdog())
     vm_assets_task = asyncio.create_task(ensure_default_vm_assets())
     rootfs_convert_task = asyncio.create_task(run_rootfs_conversion_worker())
+    attack_machine_task = asyncio.create_task(ensure_attack_machine_assets())
     yield
     task.cancel()
     vm_assets_task.cancel()
     rootfs_convert_task.cancel()
-    for t in (task, vm_assets_task, rootfs_convert_task):
+    attack_machine_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task, attack_machine_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -75,9 +80,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # Attack Machine コンソール(iframe)でのクリップボード共有を許可する
+        response.headers["Permissions-Policy"] = (
+            "geolocation=(), microphone=(), camera=(), clipboard-read=(self), clipboard-write=(self)"
+        )
+        # Guacamole は同一オリジンのiframeに埋め込むため、配下のパスにはDENYを付与しない
+        guac_prefix = settings.GUACAMOLE_PUBLIC_PATH.rstrip("/") + "/"
+        if not request.url.path.startswith(guac_prefix):
+            response.headers["X-Frame-Options"] = "DENY"
         return response
 
 
@@ -92,21 +103,124 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+try:
+    _STYLE_CSS_VERSION = str(int(os.path.getmtime("static/css/style.css")))
+except OSError:
+    _STYLE_CSS_VERSION = "1"
+templates.env.globals["style_css_version"] = _STYLE_CSS_VERSION
+
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
-    return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+    return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
 
 app.include_router(auth.router)
 app.include_router(envs.router)
 app.include_router(images.router)
 app.include_router(admin.router)
 app.include_router(users.router)
+app.include_router(attack_machine.router)
 
 
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok"})
+
+
+# ---- Guacamole リバースプロキシ ----
+# Attack Machine の GUI (VNC) 表示用に、ブラウザから見える GUACAMOLE_PUBLIC_PATH (既定: /guacamole)
+# 配下へのリクエストを GUACAMOLE_INTERNAL_URL (Guacamole/Tomcat) へ転送する。
+# 認証はGuacamole側のJSON認証拡張が発行する authToken（クエリ文字列）で行われるため、
+# このプロキシ自体はHackBentoのユーザ認証チェックを行わない。
+
+_GUAC_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+    "content-encoding",
+}
+
+
+@app.websocket(f"{settings.GUACAMOLE_PUBLIC_PATH.rstrip('/')}/websocket-tunnel")
+async def guacamole_websocket_proxy(websocket: WebSocket):
+    target_base = settings.GUACAMOLE_INTERNAL_URL.rstrip("/").replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+    query = websocket.url.query
+    target_url = f"{target_base}/websocket-tunnel"
+    if query:
+        target_url += f"?{query}"
+
+    await websocket.accept(subprotocol="guacamole")
+
+    try:
+        async with websockets.connect(target_url, subprotocols=["guacamole"]) as upstream:
+            async def client_to_upstream():
+                try:
+                    while True:
+                        data = await websocket.receive_text()
+                        await upstream.send(data)
+                except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+                    pass
+
+            async def upstream_to_client():
+                try:
+                    async for data in upstream:
+                        await websocket.send_text(data)
+                except websockets.exceptions.ConnectionClosed:
+                    pass
+
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+    except Exception:
+        logging.getLogger(__name__).exception("Guacamole WebSocketプロキシでエラーが発生しました")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.api_route(
+    f"{settings.GUACAMOLE_PUBLIC_PATH.rstrip('/')}/{{path:path}}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def guacamole_http_proxy(path: str, request: Request):
+    target_base = settings.GUACAMOLE_INTERNAL_URL.rstrip("/")
+    target_url = f"{target_base}/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+
+    headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in _GUAC_HOP_BY_HOP_HEADERS and k.lower() != "host"
+    }
+    body = await request.body()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        upstream_resp = await client.request(
+            request.method,
+            target_url,
+            headers=headers,
+            content=body,
+        )
+
+    response_headers = {
+        k: v for k, v in upstream_resp.headers.items() if k.lower() not in _GUAC_HOP_BY_HOP_HEADERS
+    }
+    return Response(
+        content=upstream_resp.content,
+        status_code=upstream_resp.status_code,
+        headers=response_headers,
+        media_type=upstream_resp.headers.get("content-type"),
+    )
 
 
 async def _get_request_user(request: Request) -> Optional[User]:
@@ -230,11 +344,19 @@ async def setup_username_page(request: Request):
     return templates.TemplateResponse("setup_username.html", {"request": request, "settings": settings})
 
 
+@app.get("/attack-machine", response_class=HTMLResponse)
+async def attack_machine_console_page(request: Request):
+    user = await _get_request_user(request)
+    if not user or not settings.ATTACK_MACHINE_ENABLED:
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
+    return templates.TemplateResponse("attack_console.html", {"request": request, "settings": settings})
+
+
 @app.get("/explore", response_class=HTMLResponse)
 async def explore_page(request: Request):
     user = await _get_request_user(request)
     if not user:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("explore.html", {"request": request, "settings": settings})
 
 
@@ -242,7 +364,7 @@ async def explore_page(request: Request):
 async def new_project_page(request: Request):
     user = await _get_request_user(request)
     if not user or user.needs_username_setup:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
 
 
@@ -250,7 +372,7 @@ async def new_project_page(request: Request):
 async def settings_page(request: Request):
     user = await _get_request_user(request)
     if not user:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("settings.html", {"request": request, "settings": settings})
 
 
@@ -258,7 +380,7 @@ async def settings_page(request: Request):
 async def admin_page(request: Request):
     user = await _get_request_user(request)
     if not user or user.role != UserRole.admin:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("admin.html", {"request": request, "settings": settings})
 
 
@@ -266,12 +388,12 @@ async def admin_page(request: Request):
 async def user_profile_page(username: str, request: Request):
     user = await _get_request_user(request)
     if not user:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(User).where(User.username == username, User.is_active == True))
         target = result.scalar_one_or_none()
     if not target:
-        return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("user_profile.html", {"request": request, "username": username, "settings": settings})
 
 
@@ -280,7 +402,7 @@ async def edit_project_page(owner: str, slug: str, request: Request):
     user = await _get_request_user(request)
     if not await _can_edit_project(owner, slug, user):
         return templates.TemplateResponse(
-            "404.html", {"request": request}, status_code=404
+            "404.html", {"request": request, "settings": settings}, status_code=404
         )
     return templates.TemplateResponse("edit_project.html", {"request": request, "owner": owner, "slug": slug, "settings": settings})
 
@@ -290,6 +412,6 @@ async def project_page(owner: str, slug: str, request: Request):
     user = await _get_request_user(request)
     if not await _can_view_project(owner, slug, user):
         return templates.TemplateResponse(
-            "404.html", {"request": request}, status_code=404
+            "404.html", {"request": request, "settings": settings}, status_code=404
         )
     return templates.TemplateResponse("project.html", {"request": request, "owner": owner, "slug": slug, "settings": settings})

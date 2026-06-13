@@ -443,7 +443,7 @@ async def list_images(request: Request, db: AsyncSession = Depends(get_db)):
     host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
     result = await db.execute(
         select(Image)
-        .where(Image.is_active == True, Image.backend == host_backend)
+        .where(Image.is_active == True, Image.backend == host_backend, Image.is_attack_machine == False)
         .order_by(Image.name)
     )
     out = []

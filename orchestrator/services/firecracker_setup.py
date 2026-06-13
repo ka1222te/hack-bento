@@ -22,6 +22,23 @@ ROOTFS_SIZE_MB = 512
 DEFAULT_KERNEL_LABEL = os.path.basename(KERNEL_URL)
 DEFAULT_ROOTFS_LABEL = "Alpine + sshd (user:hackbento, password:hackbento)"
 
+# --- Attack Machine (Kali Linux + XFCE + TigerVNC) ---
+ATTACK_ROOTFS_PATH = os.path.join(DEFAULTS_DIR, "attack-rootfs.ext4")
+ATTACK_ROOTFS_SIZE_MB = 4096  # kali-linux-core + XFCE/VNC/SSH の最小構成（convert_tar_to_ext4が実サイズに応じて自動拡張する）
+KALI_DOCKER_IMAGE = "kalilinux/kali-rolling"
+
+# Attack Machine 用 rootfs (Kali) のバックグラウンド構築状況。
+# routers/attack_machine.py がこれを参照し、構築中は /api/attack-machine/ で
+# 503 ではなく「準備中」状態を返す。
+attack_rootfs_build_status = "idle"  # idle | building | ready | failed
+attack_rootfs_build_error: str | None = None
+
+ATTACK_VNC_PORT = 5901
+ATTACK_VNC_DISPLAY = ":1"
+
+ATTACK_MACHINE_SLUG = "attack-machine"
+ATTACK_MACHINE_NAME = "Attack Machine"
+
 _INIT_SCRIPT_TEMPLATE = """#!/bin/sh
 sleep 1
 mount -t proc proc /proc 2>/dev/null || true
@@ -42,6 +59,30 @@ def _build_init_script() -> str:
     nameservers = [ns.strip() for ns in settings.FC_GUEST_DNS.split(",") if ns.strip()]
     resolv_conf = "\\n".join(f"nameserver {ns}" for ns in nameservers) + "\\n"
     return _INIT_SCRIPT_TEMPLATE.format(resolv_conf=resolv_conf)
+
+
+_ATTACK_INIT_SCRIPT_TEMPLATE = """#!/bin/sh
+sleep 1
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+ip link set lo up 2>/dev/null || true
+printf '{resolv_conf}' > /etc/resolv.conf
+/usr/sbin/sshd -D &
+su - hackbento -c "vncserver {vnc_display} -geometry 1280x800 -depth 24 -localhost no" &
+echo "=== HackBento Attack Machine 起動完了 ==="
+wait
+"""
+
+
+def _build_attack_init_script() -> str:
+    nameservers = [ns.strip() for ns in settings.FC_GUEST_DNS.split(",") if ns.strip()]
+    resolv_conf = "\\n".join(f"nameserver {ns}" for ns in nameservers) + "\\n"
+    return _ATTACK_INIT_SCRIPT_TEMPLATE.format(resolv_conf=resolv_conf, vnc_display=ATTACK_VNC_DISPLAY)
+
 
 _ROOTFS_BUILD_SCRIPT = """
 set -e
@@ -72,6 +113,22 @@ async def _run(cmd: list[str], timeout: int = 600) -> None:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)}: {stderr.decode().strip()}")
+
+
+async def _run_to_file(cmd: list[str], dest_path: str, timeout: int = 600) -> None:
+    """cmd の標準出力をメモリに溜め込まず dest_path へストリーミングで書き出す。
+
+    大きな tar の `docker export` などをメモリに載せないために使用する。
+    """
+    with open(dest_path, "wb") as f:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=f,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)}: {stderr.decode().strip()}")
 
@@ -187,6 +244,153 @@ async def _build_default_rootfs() -> None:
         except Exception:
             pass
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+_ATTACK_ROOTFS_BUILD_SCRIPT = """
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+    kali-desktop-xfce xfce4-terminal tigervnc-standalone-server tigervnc-tools \
+    openssh-server sudo bash dbus-x11 \
+    kali-linux-core
+
+echo "root:hackbento" | chpasswd
+useradd -m -s /bin/bash hackbento
+echo "hackbento:hackbento" | chpasswd
+usermod -aG sudo hackbento
+echo "%sudo ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/sudo-nopasswd
+
+sed -i "s/#PermitRootLogin prohibit-password/PermitRootLogin yes/" /etc/ssh/sshd_config
+sed -i "s/#PasswordAuthentication yes/PasswordAuthentication yes/" /etc/ssh/sshd_config
+echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+ssh-keygen -A
+
+# TigerVNC: パスワード設定 + XFCE セッション起動設定
+mkdir -p /home/hackbento/.vnc
+echo "hackbento" | tigervncpasswd -f > /home/hackbento/.vnc/passwd
+chmod 600 /home/hackbento/.vnc/passwd
+cat > /home/hackbento/.vnc/xstartup << 'XSTART_EOF'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec startxfce4
+XSTART_EOF
+chmod +x /home/hackbento/.vnc/xstartup
+chown -R hackbento:hackbento /home/hackbento/.vnc
+
+cat > /tmp/hackbento-init << 'INIT_EOF'
+{init_script}
+INIT_EOF
+chmod +x /tmp/hackbento-init
+rm -f /sbin/init
+mv /tmp/hackbento-init /sbin/init
+"""
+
+
+async def _build_attack_rootfs() -> None:
+    global attack_rootfs_build_status, attack_rootfs_build_error
+
+    if os.path.exists(ATTACK_ROOTFS_PATH):
+        logger.info(f"Attack Machine 用 rootfs は既に存在します: {ATTACK_ROOTFS_PATH}")
+        attack_rootfs_build_status = "ready"
+        return
+    logger.info("Attack Machine 用 rootfs (Kali) を構築中...")
+    attack_rootfs_build_status = "building"
+    attack_rootfs_build_error = None
+
+    tmpdir = tempfile.mkdtemp(prefix="hackbento-attack-rootfs-")
+    container_name = f"hackbento-attack-rootfs-build-{os.path.basename(tmpdir)}"
+    try:
+        build_script = _ATTACK_ROOTFS_BUILD_SCRIPT.format(init_script=_build_attack_init_script())
+        await _run(["docker", "rm", "-f", container_name])  # 残骸があれば除去（失敗は無視）
+    except Exception:
+        pass
+    try:
+        await _run([
+            "docker", "run", "--name", container_name,
+            KALI_DOCKER_IMAGE,
+            "sh", "-c", build_script,
+        ], timeout=7200)
+
+        # コンテナ内で tar を作ると書き込みレイヤーにファイルシステム全体が二重に乗り
+        # ディスクを圧迫するため、`docker export` でホスト側に直接ストリーミング出力する。
+        tar_path = os.path.join(tmpdir, "attack-rootfs.tar")
+        await _run_to_file(["docker", "export", container_name], tar_path, timeout=600)
+
+        await convert_tar_to_ext4(tar_path, ATTACK_ROOTFS_PATH, size_mb=ATTACK_ROOTFS_SIZE_MB)
+        logger.info(f"Attack Machine 用 rootfs を保存しました: {ATTACK_ROOTFS_PATH}")
+        attack_rootfs_build_status = "ready"
+    except Exception as e:
+        attack_rootfs_build_status = "failed"
+        attack_rootfs_build_error = str(e)
+        raise
+    finally:
+        try:
+            await _run(["docker", "rm", "-f", container_name])
+        except Exception:
+            pass
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def ensure_attack_machine_assets() -> None:
+    """Attack Machine 用 rootfs を準備し、Image テンプレートを DB に登録する。"""
+    global attack_rootfs_build_status, attack_rootfs_build_error
+
+    if settings.VM_BACKEND != "bridge":
+        return
+    if not settings.ATTACK_MACHINE_ENABLED:
+        return
+    if not os.path.exists("/dev/kvm"):
+        logger.warning("/dev/kvm が見つからないため、Attack Machine アセットの準備をスキップします。")
+        attack_rootfs_build_status = "failed"
+        attack_rootfs_build_error = "/dev/kvm が見つかりません"
+        return
+    try:
+        os.makedirs(DEFAULTS_DIR, exist_ok=True)
+        await _download_default_kernel()  # カーネルは既存デフォルトを共有
+        await _build_attack_rootfs()
+        await _register_attack_machine_image()
+    except Exception as e:
+        attack_rootfs_build_status = "failed"
+        attack_rootfs_build_error = str(e)
+        logger.error(f"Attack Machine アセットの準備に失敗しました: {e}")
+
+
+async def _register_attack_machine_image() -> None:
+    """システム提供の Attack Machine テンプレート（Image）を作成・更新する。"""
+    from database import AsyncSessionLocal
+    from models import Image, Backend, Visibility
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Image).where(Image.is_attack_machine == True)
+        )
+        image = result.scalar_one_or_none()
+        if image is None:
+            image = Image(
+                owner_id=None,
+                created_by=None,
+                name=ATTACK_MACHINE_NAME,
+                slug=ATTACK_MACHINE_SLUG,
+                description="Kali Linux ベースの攻撃用 VM（GUI / VNC）",
+                backend=Backend.bridge,
+                kernel_path=DEFAULT_KERNEL_PATH,
+                rootfs_path=ATTACK_ROOTFS_PATH,
+                cpu_limit=settings.ATTACK_MACHINE_CPU_LIMIT,
+                memory_limit_mb=settings.ATTACK_MACHINE_MEMORY_LIMIT_MB,
+                timeout_minutes=settings.ATTACK_MACHINE_TIMEOUT_MINUTES,
+                visibility=Visibility.private,
+                is_active=True,
+                is_attack_machine=True,
+            )
+            db.add(image)
+        else:
+            image.kernel_path = DEFAULT_KERNEL_PATH
+            image.rootfs_path = ATTACK_ROOTFS_PATH
+            image.is_active = True
+        await db.commit()
 
 
 async def ensure_default_vm_assets() -> None:

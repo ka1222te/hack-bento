@@ -304,6 +304,9 @@ setup_macvlan() {
     env_set "IP_POOL_END"   "${POOL_END}"
     env_set "FC_GUEST_DNS"  "${DNS_SERVER:-8.8.8.8}"
 
+    # Attack Machine (Guacamole) は bridge モード専用機能のため macvlan では無効化する
+    env_set "ATTACK_MACHINE_ENABLED" "false"
+
     # docker-compose.override.yml 生成
     cat > "$OVERRIDE_FILE" <<EOF
 # 自動生成 by setup.sh (macvlan モード)
@@ -460,6 +463,18 @@ setup_bridge() {
     ask_ip_in_subnet POOL_END   "VM IP プール 終了アドレス" "${SUBNET}"
 
     echo ""
+    bold "--- Attack Machine (Kali Linux + Guacamole GUI) ---"
+    echo "有効にすると、Kali Linux の microVM をブラウザから Apache Guacamole 経由で"
+    echo "操作できる「Attack Machine」機能が利用可能になります。"
+    echo "初回起動時に Kali rootfs を自動構築するため、ビルドに30分以上かかる場合があります。"
+    echo ""
+    if ask_yn "Attack Machine (Guacamole) を有効にしますか？"; then
+        ATTACK_MACHINE_ENABLE=true
+    else
+        ATTACK_MACHINE_ENABLE=false
+    fi
+
+    echo ""
     bold "--- 確認 ---"
     echo "  bridge 名        : ${BRIDGE_NAME}"
     echo "  物理 NIC         : ${NIC}"
@@ -467,6 +482,7 @@ setup_bridge() {
     echo "  デフォルトGW     : ${GATEWAY}"
     echo "  DNS サーバ       : ${DNS_SERVER}"
     echo "  IP プール        : ${POOL_START} - ${POOL_END}"
+    echo "  Attack Machine   : ${ATTACK_MACHINE_ENABLE}"
     echo ""
     if ! ask_yn "この内容で bridge を作成し、ネットワーク設定を切り替えますか？"; then
         yellow "キャンセルしました。"
@@ -582,6 +598,8 @@ setup_bridge() {
         # VM ごとのホスト側リソース制限 (memory/pids/cpu) 用 cgroup 委譲ツリー
     setup_vm_cgroup
 
+    env_set "ATTACK_MACHINE_ENABLED" "${ATTACK_MACHINE_ENABLE}"
+
     # docker-compose.override.yml 生成 (ネットワーク定義なし)
     cat > "$OVERRIDE_FILE" <<EOF
 # 自動生成 by setup.sh (bridge モード)
@@ -604,8 +622,60 @@ services:
       - ${VM_CGROUP_PATH}:${VM_CGROUP_PATH}:rw
 EOF
 
+    if [[ "$ATTACK_MACHINE_ENABLE" == true ]]; then
+        setup_guacamole
+    fi
+
     own "$OVERRIDE_FILE"
     green "[OK] docker-compose.override.yml を生成しました (bridge モード)"
+}
+
+# ---------- Guacamole セットアップ ----------
+
+# GUACAMOLE_JSON_SECRET_KEY が未設定/デフォルト値のままなら openssl で生成し、
+# guacd・guacamole サービス定義を docker-compose.override.yml に追記する。
+setup_guacamole() {
+    local current_key=""
+    if [[ -f "$ENV_FILE" ]]; then
+        current_key="$(grep -m1 '^GUACAMOLE_JSON_SECRET_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+    fi
+
+    if [[ -z "$current_key" || "$current_key" == changeme* ]]; then
+        local new_key
+        new_key="$(openssl rand -hex 16)"
+        env_set "GUACAMOLE_JSON_SECRET_KEY" "$new_key"
+        green "[OK] GUACAMOLE_JSON_SECRET_KEY を生成しました (openssl rand -hex 16)"
+    else
+        echo "[--] GUACAMOLE_JSON_SECRET_KEY は既存の値を使用します。"
+    fi
+
+    cat >> "$OVERRIDE_FILE" <<EOF
+
+  # Attack Machine の GUI コンソールを提供する Apache Guacamole。
+  # JSON認証拡張のみを使用するため Guacamole 用DBは不要。
+  # orchestrator が /guacamole/* をこれらへリバースプロキシする。
+  guacd:
+    image: guacamole/guacd:1.5.5
+    container_name: hackbento-guacd
+    network_mode: host
+    restart: unless-stopped
+
+  guacamole:
+    build:
+      context: ./docker/guacamole
+      dockerfile: Dockerfile
+    container_name: hackbento-guacamole
+    network_mode: host
+    depends_on:
+      - guacd
+    environment:
+      GUACD_HOSTNAME: 127.0.0.1
+      GUACD_PORT: 4822
+      JSON_SECRET_KEY: \${GUACAMOLE_JSON_SECRET_KEY}
+    restart: unless-stopped
+EOF
+
+    green "[OK] docker-compose.override.yml に Guacamole (guacd/guacamole) サービスを追加しました"
 }
 
 # ---------- メイン ----------

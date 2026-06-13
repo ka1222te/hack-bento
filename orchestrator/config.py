@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     # VM に設定する DNS サーバ（カンマ区切りで複数指定可能）
     FC_GUEST_DNS: str = "8.8.8.8,8.8.4.4"
 
+    # ---- Attack Machine ----
+    ATTACK_MACHINE_ENABLED: bool = False
+    ATTACK_MACHINE_CPU_LIMIT: int = 2
+    ATTACK_MACHINE_MEMORY_LIMIT_MB: int = 2048
+    ATTACK_MACHINE_TIMEOUT_MINUTES: int = 60
+
+    # ---- Guacamole ----
+    # orchestrator コンテナから見た Guacamole (Tomcat) への接続先。
+    # main.py のリバースプロキシ (/guacamole/*) がこの URL へ転送する。
+    GUACAMOLE_INTERNAL_URL: str = "http://127.0.0.1:8080/guacamole"
+    # ブラウザから見た公開パス。HackBento (uvicorn) がこのパス配下を
+    # GUACAMOLE_INTERNAL_URL へリバースプロキシする。
+    GUACAMOLE_PUBLIC_PATH: str = "/guacamole"
+    # openssl rand -hex 16 (AES-128) で生成。HackBento の SECRET_KEY とは別の鍵。
+    GUACAMOLE_JSON_SECRET_KEY: str = "changeme-32byte-hex-for-guacamole-json-auth"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy import text
+from sqlalchemy import event, text
 from config import settings
 from models import Base
 import logging
@@ -8,6 +8,26 @@ logger = logging.getLogger(__name__)
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    """WAL化 + busy_timeout で複数asyncioタスクからの同時書き込み時の "database is locked" を防ぐ。
+    pysqlite/aiosqliteのデフォルトisolation_level("")はDML前に独自にBEGINを発行し、
+    SQLAlchemyのトランザクション管理と二重に競合してWAL下でも即時 "database is locked"
+    を引き起こすため、isolation_level=Noneにしてドライバ側の暗黙トランザクションを無効化する。
+    """
+    dbapi_connection.isolation_level = None
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=10000")
+    cursor.close()
+
+
+@event.listens_for(engine.sync_engine, "begin")
+def _do_begin(conn):
+    """isolation_level=None化に伴い、SQLAlchemyのトランザクション開始時に明示的にBEGINを発行する。"""
+    conn.exec_driver_sql("BEGIN")
 
 
 async def init_db():
@@ -37,6 +57,7 @@ async def _migrate(conn):
         ("images", "rootfs_conversion_status", "ALTER TABLE images ADD COLUMN rootfs_conversion_status VARCHAR(16) NOT NULL DEFAULT 'ready'"),
         ("images", "rootfs_conversion_error", "ALTER TABLE images ADD COLUMN rootfs_conversion_error VARCHAR(512)"),
         ("images", "rootfs_source_archive_path", "ALTER TABLE images ADD COLUMN rootfs_source_archive_path VARCHAR(512)"),
+        ("images", "is_attack_machine", "ALTER TABLE images ADD COLUMN is_attack_machine BOOLEAN NOT NULL DEFAULT 0"),
     ]
     for table, column, ddl in migrations:
         result = await conn.execute(text(f"PRAGMA table_info({table})"))

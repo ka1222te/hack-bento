@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Attack Machine Console - HackBento{% endblock %}
+
+{% block head %}
+<style>
+  html, body { height: 100%; margin: 0; }
+  .am-console-page { display: flex; flex-direction: column; height: 100vh; }
+  .am-console-header {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 0.6rem 1rem;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .am-console-header .am-title {
+    font-weight: 700; font-size: 0.95rem; color: var(--text);
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .am-console-header .am-spacer { flex: 1; }
+  .am-console-timer {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600; font-size: 0.9rem;
+    color: var(--text2);
+  }
+  .am-console-timer-blue   { color: var(--accent2); }
+  .am-console-timer-yellow { color: var(--yellow); }
+  .am-console-timer-red    { color: var(--red); }
+  .am-console-body {
+    flex: 1; position: relative; background: #000;
+  }
+  .am-guac-iframe {
+    width: 100%; height: 100%; border: none; display: block;
+  }
+  .am-console-message {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text2); font-size: 0.95rem; text-align: center; padding: 2rem;
+  }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="am-console-page">
+  <div class="am-console-header">
+    <span class="am-title">&#x1F5A5;&#xFE0F; Attack Machine Console</span>
+    <div class="am-spacer"></div>
+    <span class="am-console-timer hidden" id="am-console-timer"></span>
+    <button class="btn btn-sm btn-outline" id="am-console-extend" disabled>&#x23F1; 延長</button>
+  </div>
+  <div class="am-console-body">
+    <iframe id="am-guac-iframe" class="am-guac-iframe hidden" tabindex="0"
+            allow="clipboard-read *; clipboard-write *"></iframe>
+    <div class="am-console-message" id="am-console-message">読み込み中...</div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function _amHeaders() {
+  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('hb_token')}` };
+}
+function _amGet(url) { return fetch(url, { headers: _amHeaders() }); }
+function _amPost(url) { return fetch(url, { method: 'POST', headers: _amHeaders() }); }
+
+// ナビバー側で起動/延長/停止された場合や、このページでの延長をナビバー側へ
+// 通知するためのlocalStorage連携。storageイベントは他タブでのみ発火する。
+function _amNotifyChanged() {
+  localStorage.setItem('hb_attack_machine_changed', String(Date.now()));
+}
+window.addEventListener('storage', (e) => {
+  if (e.key === 'hb_attack_machine_changed') {
+    init();
+  }
+});
+
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  if (!c) return;
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`; t.textContent = msg; c.appendChild(t);
+  setTimeout(() => t.classList.add('toast-show'), 10);
+  setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3500);
+}
+
+(async () => {
+  // sessionStorageにトークンがない場合はCookie認証を試みてsessionStorageを同期する
+  if (!sessionStorage.getItem('hb_token')) {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) { window.location.href = '/login'; return; }
+    const me = await res.json();
+    if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
+    sessionStorage.setItem('hb_token', me.access_token);
+  }
+  init();
+  // ナビバー側での延長操作はstorageイベントで即時反映されるが、保険として
+  // 定期的にも残り時間を再取得し、ナビバーと表示がズレないようにする。
+  setInterval(init, 15000);
+})();
+
+let _consoleTimer = null;
+
+function _timerPhase(s, timeoutSec) {
+  const pct = s / timeoutSec;
+  if (pct > 0.30) return 'blue';
+  if (pct > 0.10) return 'yellow';
+  return 'red';
+}
+
+function _formatTime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+function startCountdown(seconds, timeoutSec) {
+  const timerEl = document.getElementById('am-console-timer');
+  if (_consoleTimer) clearInterval(_consoleTimer);
+  let s = seconds;
+
+  const update = () => {
+    if (s <= 0) { clearInterval(_consoleTimer); init(); return; }
+    timerEl.textContent = _formatTime(s);
+    timerEl.className = 'am-console-timer am-console-timer-' + _timerPhase(s, timeoutSec);
+    s--;
+  };
+  update();
+  timerEl.classList.remove('hidden');
+  _consoleTimer = setInterval(update, 1000);
+}
+
+async function init() {
+  const messageEl = document.getElementById('am-console-message');
+  const iframeEl = document.getElementById('am-guac-iframe');
+  const extendBtn = document.getElementById('am-console-extend');
+
+  const statusRes = await _amGet('/api/attack-machine/');
+  if (!statusRes.ok) {
+    if (statusRes.status === 401) { window.location.href = '/login'; return; }
+    messageEl.textContent = 'ステータスの取得に失敗しました';
+    return;
+  }
+  const status = await statusRes.json();
+  const machine = status.machine;
+
+  if (!machine || machine.status !== 'running') {
+    if (_consoleTimer) { clearInterval(_consoleTimer); _consoleTimer = null; }
+    messageEl.textContent = 'Attack Machineが起動していません。ホーム画面のヘッダから起動してください。';
+    messageEl.classList.remove('hidden');
+    iframeEl.classList.add('hidden');
+    iframeEl.src = '';
+    extendBtn.disabled = true;
+    document.getElementById('am-console-timer').classList.add('hidden');
+    return;
+  }
+
+  extendBtn.disabled = false;
+  extendBtn.onclick = extend;
+  startCountdown(machine.seconds_remaining, machine.timeout_minutes * 60);
+
+  if (!iframeEl.classList.contains('hidden')) return; // 既に接続済み
+
+  const connectRes = await _amPost('/api/attack-machine/connect');
+  if (!connectRes.ok) {
+    const d = await connectRes.json().catch(() => ({}));
+    messageEl.textContent = d.detail || 'Guacamoleへの接続に失敗しました';
+    return;
+  }
+  const { iframe_url } = await connectRes.json();
+  iframeEl.src = iframe_url;
+  iframeEl.classList.remove('hidden');
+  messageEl.classList.add('hidden');
+
+  // フォーカスをiframeに移してもcontentWindowにキーボードフォーカスが渡るようにする
+  iframeEl.addEventListener('mouseenter', () => {
+    iframeEl.focus();
+    iframeEl.contentWindow?.focus();
+  });
+  window.addEventListener('focus', () => {
+    if (document.activeElement === iframeEl) {
+      iframeEl.contentWindow?.focus();
+    }
+  });
+}
+
+async function extend() {
+  const btn = document.getElementById('am-console-extend');
+  btn.disabled = true; btn.textContent = '延長中...';
+  const res = await _amPost('/api/attack-machine/extend');
+  if (res.ok) {
+    showToast('延長しました', 'success');
+    _amNotifyChanged();
+  } else {
+    const d = await res.json().catch(() => ({}));
+    showToast(d.detail || 'エラー', 'error');
+  }
+  btn.textContent = '⏱ 延長';
+  await init();
+}
+</script>
+{% endblock %}

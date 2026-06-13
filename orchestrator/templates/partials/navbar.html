@@ -64,6 +64,19 @@
     <!-- ヘッダ: ロゴ横に + New Project → Explore の順 -->
     <a href="/new" class="btn btn-sm btn-primary navbar-new-btn">&#xFF0B; New Project</a>
     <a href="/explore" class="btn btn-sm btn-outline navbar-new-btn">&#x1F4DA; Explore</a>
+    {% if settings.ATTACK_MACHINE_ENABLED %}
+    <div class="am-nav-wrap">
+      <button class="btn btn-sm btn-outline navbar-new-btn" id="am-nav-btn">
+        &#x1F5A5;&#xFE0F; Attack Machine
+        <span class="am-nav-timer hidden" id="am-nav-timer"></span>
+        <svg class="nav-user-caret" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z"/></svg>
+      </button>
+      <div class="am-nav-dropdown" id="am-nav-dropdown">
+        <div class="am-nav-loading" id="am-nav-loading">読み込み中...</div>
+        <div class="am-nav-actions hidden" id="am-nav-actions"></div>
+      </div>
+    </div>
+    {% endif %}
   </div>
   <div class="navbar-right">
     <!-- ユーザアイコンボタン -->
@@ -93,6 +106,7 @@ function toggleUserMenu(e) {
 // 外クリックで閉じる
 document.addEventListener('click', () => {
   document.getElementById('user-dropdown')?.classList.remove('open');
+  document.getElementById('am-nav-dropdown')?.classList.remove('open');
 });
 
 // ドロワー・ユーザメニューのイベント登録（inline onclick の代替）
@@ -100,6 +114,166 @@ document.getElementById('hamburger-btn').addEventListener('click', openDrawer);
 document.getElementById('drawer-close-btn').addEventListener('click', closeDrawer);
 document.getElementById('drawer-overlay').addEventListener('click', closeDrawer);
 document.getElementById('nav-user-btn').addEventListener('click', toggleUserMenu);
+
+// ===== Attack Machine (navbar) =====
+function _amHeaders() {
+  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('hb_token')}` };
+}
+function _amGet(url) { return fetch(url, { headers: _amHeaders() }); }
+function _amPost(url) { return fetch(url, { method: 'POST', headers: _amHeaders() }); }
+
+// Attack Machineの状態（起動/延長/停止）が変化したことを別タブ・別ウィンドウ
+// (コンソール画面)へ通知する。localStorageのstorageイベントは他タブでのみ
+// 発火するため、自タブは呼び出し元で直接refreshする。
+function _amNotifyChanged() {
+  localStorage.setItem('hb_attack_machine_changed', String(Date.now()));
+}
+window.addEventListener('storage', (e) => {
+  if (e.key === 'hb_attack_machine_changed') {
+    refreshAttackMachineNav();
+  }
+});
+
+const amNavBtn = document.getElementById('am-nav-btn');
+if (amNavBtn) {
+  amNavBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('user-dropdown')?.classList.remove('open');
+    document.getElementById('am-nav-dropdown').classList.toggle('open');
+  });
+}
+
+let _amNavTimer = null;
+let _amNavPollTimer = null;
+
+function _amTimerPhase(s, timeoutSec) {
+  const pct = s / timeoutSec;
+  if (pct > 0.30) return 'blue';
+  if (pct > 0.10) return 'yellow';
+  return 'red';
+}
+
+function _amFormatTime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+async function refreshAttackMachineNav() {
+  const navTimerEl = document.getElementById('am-nav-timer');
+  const loadingEl = document.getElementById('am-nav-loading');
+  const actionsEl = document.getElementById('am-nav-actions');
+  if (!navTimerEl) return;
+
+  const res = await _amGet('/api/attack-machine/');
+  if (!res.ok) return;
+  const data = await res.json();
+  const machine = data.machine;
+
+  if (_amNavTimer) { clearInterval(_amNavTimer); _amNavTimer = null; }
+
+  if (data.rootfs_status !== 'ready') {
+    navTimerEl.classList.add('hidden');
+    loadingEl.classList.remove('hidden');
+    actionsEl.classList.add('hidden');
+    loadingEl.textContent = data.rootfs_status === 'failed'
+      ? 'rootfsの構築に失敗しました'
+      : 'rootfsを準備中です...';
+    return;
+  }
+
+  loadingEl.classList.add('hidden');
+  actionsEl.classList.remove('hidden');
+
+  if (machine && machine.status === 'running') {
+    const timeoutSec = machine.timeout_minutes * 60;
+    let s = machine.seconds_remaining;
+
+    const updateTimer = () => {
+      if (s <= 0) { clearInterval(_amNavTimer); refreshAttackMachineNav(); return; }
+      navTimerEl.textContent = _amFormatTime(s);
+      navTimerEl.className = 'am-nav-timer am-nav-timer-' + _amTimerPhase(s, timeoutSec);
+      s--;
+    };
+    updateTimer();
+    _amNavTimer = setInterval(updateTimer, 1000);
+    navTimerEl.classList.remove('hidden');
+
+    actionsEl.innerHTML = `
+      <button class="am-nav-action" id="am-nav-extend">&#x23F1; 延長 (+${machine.timeout_minutes}分)</button>
+      <button class="am-nav-action" id="am-nav-console">&#x1F5A5;&#xFE0F; コンソール画面の表示</button>
+      <button class="am-nav-action am-nav-action-danger" id="am-nav-stop">&#x23F9; 停止</button>
+    `;
+    document.getElementById('am-nav-extend').addEventListener('click', extendAttackMachineNav);
+    document.getElementById('am-nav-console').addEventListener('click', () => {
+      window.open('/attack-machine', '_blank', 'noopener');
+      document.getElementById('am-nav-dropdown').classList.remove('open');
+    });
+    document.getElementById('am-nav-stop').addEventListener('click', stopAttackMachineNav);
+  } else if (machine && (machine.status === 'starting' || machine.status === 'stopping')) {
+    // 起動・停止処理が完了するまでは操作不可。ページ再読み込み後もポーリングで自動的に
+    // running/stopped へ遷移したら再描画されるため、多重に起動/停止リクエストが
+    // 送られることを防ぐ。
+    navTimerEl.classList.add('hidden');
+    const label = machine.status === 'starting' ? '起動中...' : '停止中...';
+    actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start" disabled>${label}</button>`;
+    if (!_amNavPollTimer) {
+      _amNavPollTimer = setInterval(refreshAttackMachineNav, 5000);
+    }
+    return;
+  } else {
+    navTimerEl.classList.add('hidden');
+    actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start">&#x25B6; VM起動</button>`;
+    document.getElementById('am-nav-start').addEventListener('click', startAttackMachineNav);
+  }
+
+  if (_amNavPollTimer) { clearInterval(_amNavPollTimer); _amNavPollTimer = null; }
+}
+
+async function startAttackMachineNav() {
+  const btn = document.getElementById('am-nav-start');
+  if (btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = '起動中...';
+  }
+  const res = await _amPost('/api/attack-machine/start');
+  if (res.ok || res.status === 409) {
+    showToast(res.ok ? 'Attack Machineを起動しました' : '既に起動しています', 'success');
+    _amNotifyChanged();
+  } else {
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  }
+  await refreshAttackMachineNav();
+}
+
+async function extendAttackMachineNav() {
+  const btn = document.getElementById('am-nav-extend');
+  if (btn) { btn.disabled = true; btn.textContent = '延長中...'; }
+  const res = await _amPost('/api/attack-machine/extend');
+  if (res.ok) {
+    showToast('延長しました', 'success');
+    _amNotifyChanged();
+  } else {
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  }
+  await refreshAttackMachineNav();
+}
+
+async function stopAttackMachineNav() {
+  if (!confirm('Attack Machineを停止しますか？')) return;
+  const btn = document.getElementById('am-nav-stop');
+  if (btn) { btn.disabled = true; btn.textContent = '停止中...'; }
+  const res = await _amPost('/api/attack-machine/stop');
+  if (res.ok) {
+    showToast('停止しました', 'success');
+    _amNotifyChanged();
+  } else {
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  }
+  await refreshAttackMachineNav();
+}
 
 function _setDrawerActive() {
   const path = location.pathname;
@@ -119,6 +293,11 @@ function initNavbar() {
 
   _setDrawerActive();
   _loadNavbarUser();
+
+  if (document.getElementById('am-nav-btn')) {
+    refreshAttackMachineNav();
+    setInterval(refreshAttackMachineNav, 15000);
+  }
 }
 
 async function _loadNavbarUser() {

@@ -114,6 +114,8 @@ class Image(Base):
     memory_limit_mb = Column(Integer, default=1024)
     is_active = Column(Boolean, default=True)
     visibility = Column(Enum(Visibility), default=Visibility.protected, nullable=False)
+    # システム提供の Attack Machine テンプレート（owner_id は NULL）であることを示すフラグ
+    is_attack_machine = Column(Boolean, default=False, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
