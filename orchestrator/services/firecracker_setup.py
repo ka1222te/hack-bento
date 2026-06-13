@@ -71,9 +71,27 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 printf '{resolv_conf}' > /etc/resolv.conf
-su - hackbento -c "vncserver {vnc_display} -geometry 1280x800 -depth 24 -localhost no" &
+# hostname の自己解決に失敗すると vncserver が
+# "Could not acquire fully qualified host name of this machine." で
+# エラー終了し、init(PID1) が終了して kernel panic
+# (Attempted to kill init!) になる。/etc/hosts に自身のホスト名を
+# 登録して hostname コマンドを解決可能にしておく。
+hostname hackbento 2>/dev/null || true
+echo "127.0.0.1 localhost hackbento" >> /etc/hosts
+# rootfs イメージのビルド時（apt-getのpostinst等でXサーバが一時起動した場合）に
+# /tmp 配下へ X11 ソケット・ロックファイルが残っていると、vncserver が
+# 「既に起動中」と誤認してエラー終了し、wait 対象が消えて init(PID1) が
+# 終了 -> kernel panic (Attempted to kill init!) になる。起動時に必ず除去する。
+rm -rf /tmp/.X11-unix /tmp/.X*-lock /tmp/.ICE-unix
+# vncserver はXサーバプロセスをforkしてデーモン化した後、ラッパー自身は
+# すぐにexit 0で終了するコマンドであり、バックグラウンドジョブとして
+# `wait` し続ける対象にはならない。`&` + `wait` のままだと vncserver
+# 終了時点で wait 対象が無くなり init(PID1) が終了 -> kernel panic
+# (Attempted to kill init!) になるため、フォアグラウンドで一度だけ
+# 実行し、その後 init 自身が無限に居座る。
+su - hackbento -c "vncserver {vnc_display} -geometry 1280x800 -depth 24 -localhost no"
 echo "=== HackBento Attack Machine 起動完了 ==="
-wait
+while true; do sleep 3600; done
 """
 
 

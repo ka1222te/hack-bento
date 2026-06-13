@@ -340,38 +340,59 @@ def _write_resolv_conf(rootfs_path: str) -> None:
     """ext4 rootfs の /etc/resolv.conf を FC_GUEST_DNS の内容で上書きする。
 
     debugfs の write コマンドで一時ファイルをイメージ内へ転送する。
-    debugfs が使えない場合や書き込み失敗は警告ログのみで続行する
-    （DNS なしでも VM 自体は起動できるため）。
+
+    debugfs はディスクI/O待ちで D 状態（SIGKILLでも終了不可）にハングする
+    ことがある。これを subprocess.run(timeout=...) でタイムアウトさせても
+    プロセス本体はバックグラウンドでファイルへのI/Oを継続するため、直後に
+    Firecracker が同じファイルをドライブとしてアタッチするとファイルが
+    不整合になりクラッシュする。そのため Popen + poll でハングを検知し、
+    プロセスが完全に終了する（D状態から抜ける）まで待ってから返す。
+    タイムアウト・異常終了時は rootfs が不整合な可能性があるとみなし、
+    例外を上げて呼び出し元に writable rootfs を破棄させる。
     """
     import subprocess
     nameservers = [ns.strip() for ns in settings.FC_GUEST_DNS.split(",") if ns.strip()]
     if not nameservers:
         return
     resolv_content = "".join(f"nameserver {ns}\n" for ns in nameservers)
+    tmp_resolv = None
+    proc = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".resolv", delete=False) as f:
             f.write(resolv_content)
             tmp_resolv = f.name
-        # debugfs: mkdir -p /etc は既存でも無害、write で /etc/resolv.conf を上書き
-        script = f"mkdir /etc\nwrite {tmp_resolv} /etc/resolv.conf\n"
-        result = subprocess.run(
+        # debugfs の write は対象ファイルが既存だと失敗するため、先に rm してから write する。
+        # （/etc は通常どの rootfs にも存在するため mkdir は不要。むしろ既存ディレクトリに
+        # mkdir すると孤立 inode が生成されファイルシステムが不整合になることを確認済み）
+        # rm の対象が存在しない場合は debugfs がエラーを出すが、returncode は 0 のまま
+        # 継続するため問題ない。
+        script = f"rm /etc/resolv.conf\nwrite {tmp_resolv} /etc/resolv.conf\n"
+        proc = subprocess.Popen(
             ["debugfs", "-w", rootfs_path],
-            input=script,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
         )
-        if result.returncode != 0:
-            logger.warning(f"debugfs write resolv.conf failed: {result.stderr.strip()}")
+        try:
+            stdout, stderr = proc.communicate(input=script, timeout=300)
+        except subprocess.TimeoutExpired:
+            # D状態でハングしている可能性がある。SIGKILLは送るが、ここで
+            # 即座に諦めると裏でI/Oが続いたままFirecrackerに渡してしまう
+            # ため、プロセスが実際に終了するまで（ブロッキングで）待つ。
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"debugfs timed out and was killed (rootfs={rootfs_path})")
+        if proc.returncode != 0:
+            raise RuntimeError(f"debugfs write resolv.conf failed: {stderr.strip()}")
     except FileNotFoundError:
         logger.warning("debugfs not found; skipping resolv.conf injection (install e2fsprogs)")
-    except Exception as e:
-        logger.warning(f"resolv.conf injection failed: {e}")
     finally:
-        try:
-            os.remove(tmp_resolv)
-        except Exception:
-            pass
+        if tmp_resolv is not None:
+            try:
+                os.remove(tmp_resolv)
+            except Exception:
+                pass
 
 
 def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
@@ -380,6 +401,13 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     共有 rootfs をそのまま rw で渡すと、複数 VM 間で書き込みが競合したり
     元イメージを汚染するため、起動ごとにコピーを作って使い捨てにする。
     コピー後に FC_GUEST_DNS の内容を /etc/resolv.conf へ書き込む。
+
+    resolv.conf の注入（debugfs）に失敗した場合、書き込み中だった
+    コピーは不整合な可能性があるため破棄し、注入なしのクリーンな
+    コピーを作り直して VM 起動を続行する（デフォルト/Attack Machine
+    の rootfs はゲスト内の起動スクリプトが自前で /etc/resolv.conf を
+    生成するため問題なく動作する。カスタム rootfs の場合は DNS 設定
+    なしで起動する）。
     """
     os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
     runtime_path = _fc_rootfs_runtime_path(vm_id)
@@ -392,14 +420,25 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
         shutil.copy2(rootfs_path, tmp_path)
         os.replace(tmp_path, runtime_path)
         _fc_rootfs_paths[vm_id] = runtime_path
-        _write_resolv_conf(runtime_path)
-        return runtime_path
-    except Exception:
         try:
+            _write_resolv_conf(runtime_path)
+        except Exception as e:
+            logger.warning(
+                f"resolv.conf injection failed; rebuilding clean rootfs copy without it: {e}"
+            )
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-        except Exception:
-            pass
+            shutil.copy2(rootfs_path, tmp_path)
+            os.replace(tmp_path, runtime_path)
+        return runtime_path
+    except Exception:
+        _fc_rootfs_paths.pop(vm_id, None)
+        for p in (tmp_path, runtime_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
         raise
 
 

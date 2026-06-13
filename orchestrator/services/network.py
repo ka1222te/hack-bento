@@ -45,8 +45,39 @@ async def _get_docker_used_ips() -> set[str]:
         return set()
 
 
+async def _get_bridge_tap_count() -> int:
+    """ブリッジに接続されている tap-* インターフェースの数を返す。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ip", "-o", "link", "show", "master", settings.BRIDGE_NAME,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return -1
+    if proc.returncode != 0:
+        return -1
+    count = 0
+    for line in stdout.decode().splitlines():
+        # "N: tap-xxxxxxxx@if...: <...>" 形式
+        name = line.split(":", 2)[1].strip().split("@")[0] if ":" in line else ""
+        if name.startswith("tap-"):
+            count += 1
+    return count
+
+
 async def _get_bridge_used_ips() -> set[str]:
     """ブリッジ配下の TAP インターフェース上で実際に使用中の IP を ARP/近隣テーブルから取得する。"""
+    # ARP/近隣テーブルの STALE エントリは、TAP/VM が削除された後も残り続けることがある
+    # （FAILED と異なり再確認されない限り消えない）。tap-* インターフェースが
+    # ブリッジ上に1つも存在しない場合、起動中のVMは存在しないため、
+    # ARPテーブルの内容に関わらず実使用IPは無いとみなす（ゾンビ占有回避）。
+    tap_count = await _get_bridge_tap_count()
+    if tap_count == 0:
+        return set()
+
     proc = await asyncio.create_subprocess_exec(
         "ip", "neigh", "show", "dev", settings.BRIDGE_NAME,
         stdout=asyncio.subprocess.PIPE,
