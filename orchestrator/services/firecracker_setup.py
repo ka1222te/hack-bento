@@ -24,7 +24,7 @@ DEFAULT_ROOTFS_LABEL = "Alpine + sshd (user:hackbento, password:hackbento)"
 
 # --- Attack Machine (Kali Linux + XFCE + TigerVNC) ---
 ATTACK_ROOTFS_PATH = os.path.join(DEFAULTS_DIR, "attack-rootfs.ext4")
-ATTACK_ROOTFS_SIZE_MB = 4096  # kali-linux-core + XFCE/VNC/SSH の最小構成（convert_tar_to_ext4が実サイズに応じて自動拡張する）
+ATTACK_ROOTFS_SIZE_MB = 4096  # kali-linux-core + XFCE/VNC の最小構成（convert_tar_to_ext4が実サイズに応じて自動拡張する）
 KALI_DOCKER_IMAGE = "kalilinux/kali-rolling"
 
 # Attack Machine 用 rootfs (Kali) のバックグラウンド構築状況。
