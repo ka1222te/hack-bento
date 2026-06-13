@@ -71,7 +71,6 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 printf '{resolv_conf}' > /etc/resolv.conf
-/usr/sbin/sshd -D &
 su - hackbento -c "vncserver {vnc_display} -geometry 1280x800 -depth 24 -localhost no" &
 echo "=== HackBento Attack Machine 起動完了 ==="
 wait
@@ -252,19 +251,154 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     kali-desktop-xfce xfce4-terminal tigervnc-standalone-server tigervnc-tools \
-    openssh-server sudo bash dbus-x11 \
-    kali-linux-core
+    openssh-client sudo bash dbus-x11 \
+    kali-linux-core \
+    iputils-ping nmap hydra enum4linux john gobuster dirb wireshark wordlists \
+    locales fonts-noto-cjk fonts-noto-cjk-extra firefox-esr-l10n-ja \
+    fcitx5 fcitx5-mozc fcitx5-config-qt \
+    fcitx5-frontend-gtk2 fcitx5-frontend-gtk3 fcitx5-frontend-qt5
+
+# 日本語ロケール生成 + タイムゾーン設定（ターミナル・ブラウザの表示言語と時刻表示に反映される）
+sed -i "s/^# *ja_JP.UTF-8 UTF-8/ja_JP.UTF-8 UTF-8/" /etc/locale.gen
+locale-gen
+update-locale LANG=ja_JP.UTF-8 LANGUAGE=ja_JP:ja
+ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime
+echo "Asia/Tokyo" > /etc/timezone
+
+# キーボードレイアウトを日本語配列(JP106)に設定
+cat > /etc/default/keyboard << 'KEYBOARD_EOF'
+XKBMODEL="pc105"
+XKBLAYOUT="jp"
+XKBVARIANT=""
+XKBOPTIONS=""
+KEYBOARD_EOF
+
+# wordlists: rockyou.txt.gz を展開して使えるようにする
+if [ -f /usr/share/wordlists/rockyou.txt.gz ]; then
+    gunzip -f /usr/share/wordlists/rockyou.txt.gz
+fi
+
+# iputils-ping / nmap は postinst で setcap/setuid が行われない（あるいは
+# tar/ext4変換でfile capabilityのxattrが失われる）ため、一般ユーザが実行すると
+# SOCK_RAW作成に失敗する(cap_net_raw不足)。tar/ext4変換でも確実に残る
+# setuidビットを付与する。
+chmod u+s /usr/bin/ping
+chmod u+s /usr/lib/nmap/nmap
 
 echo "root:hackbento" | chpasswd
 useradd -m -s /bin/bash hackbento
 echo "hackbento:hackbento" | chpasswd
-usermod -aG sudo hackbento
+# wiresharkパッケージはnoninteractiveインストールではwiresharkグループのpostinst
+# 設定（dumpcapを非rootで実行可能にする）がスキップされ、グループ自体が
+# 作成されないため、明示的に作成してhackbentoユーザを追加する。
+getent group wireshark >/dev/null || groupadd wireshark
+usermod -aG sudo,wireshark hackbento
+if [ -x /usr/bin/dumpcap ]; then
+    chgrp wireshark /usr/bin/dumpcap
+    chmod 4750 /usr/bin/dumpcap
+fi
 echo "%sudo ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/sudo-nopasswd
 
-sed -i "s/#PermitRootLogin prohibit-password/PermitRootLogin yes/" /etc/ssh/sshd_config
-sed -i "s/#PasswordAuthentication yes/PasswordAuthentication yes/" /etc/ssh/sshd_config
-echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
-ssh-keygen -A
+# hackbento ユーザのデフォルト言語・タイムゾーンを日本語環境にする
+# GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS は fcitx5 (日本語入力) を
+# GTK/Qtアプリ(xfce4-terminalやFirefox等)から利用可能にするための設定。
+cat >> /home/hackbento/.bashrc << 'BASHRC_EOF'
+export LANG=ja_JP.UTF-8
+export LANGUAGE=ja_JP:ja
+export TZ=Asia/Tokyo
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+BASHRC_EOF
+cat > /etc/profile.d/hackbento-locale.sh << 'PROFILE_EOF'
+export LANG=ja_JP.UTF-8
+export LANGUAGE=ja_JP:ja
+export TZ=Asia/Tokyo
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+PROFILE_EOF
+
+# fcitx5: デフォルトの入力メソッドをMozc(日本語)+キーボード(日本語配列)に設定し、
+# Ctrl+Spaceで日本語入力のオン/オフを切り替えられるようにする。
+mkdir -p /home/hackbento/.config/fcitx5
+cat > /home/hackbento/.config/fcitx5/profile << 'FCITX_PROFILE_EOF'
+[Groups/0]
+Name=Default
+Default Layout=jp
+DefaultIM=mozc
+
+[Groups/0/Items/0]
+Name=keyboard-jp
+Layout=
+
+[Groups/0/Items/1]
+Name=mozc
+Layout=
+
+[GroupOrder]
+0=Default
+FCITX_PROFILE_EOF
+mkdir -p /home/hackbento/.config/fcitx5/conf
+cat > /home/hackbento/.config/fcitx5/config << 'FCITX_CONFIG_EOF'
+[Hotkey]
+TriggerKeys=Control+space
+EnumerateWithTriggerKeys=True
+FCITX_CONFIG_EOF
+
+# XFCEのキーボードレイアウト設定(xfconf)も日本語配列に設定する。
+# /etc/default/keyboardはコンソール/Xサーバ起動時のデフォルトに反映されるが、
+# XFCEセッションはxfce4-keyboard-settingsのxfconf設定を優先するため、
+# 両方を設定しておく。
+mkdir -p /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml/keyboard-layout.xml << 'XKBLAYOUT_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="keyboard-layout" version="1.0">
+  <property name="Default" type="empty">
+    <property name="XkbDisable" type="bool" value="false"/>
+    <property name="XkbLayout" type="string" value="jp"/>
+    <property name="XkbModel" type="string" value="pc105"/>
+    <property name="XkbVariant" type="string" value=""/>
+  </property>
+</channel>
+XKBLAYOUT_EOF
+
+# xfce4-terminal: ウィンドウサイズ変更時に行折り返しが効かない問題への対策。
+# デフォルトでは端末の列数(COLUMNS)がリサイズ通知と同期しないことがあるため、
+# 起動時に内部ジオメトリを明示し、フォントもCJK対応の等幅フォントに固定する。
+mkdir -p /home/hackbento/.config/xfce4/terminal
+cat > /home/hackbento/.config/xfce4/terminal/terminalrc << 'TERMINALRC_EOF'
+[Configuration]
+FontName=Noto Sans Mono CJK JP 11
+MiscAlwaysShowTabs=FALSE
+MiscBell=FALSE
+MiscBordersDefault=TRUE
+MiscCursorBlinks=FALSE
+MiscCursorShape=TERMINAL_CURSOR_SHAPE_BLOCK
+MiscDefaultGeometry=120x32
+MiscInheritGeometry=FALSE
+MiscMenubarDefault=TRUE
+MiscMouseAutohide=FALSE
+MiscToolbarDefault=FALSE
+MiscConfirmClose=TRUE
+MiscCycleTabs=TRUE
+MiscTabCloseButtons=TRUE
+MiscTabCloseMiddleClick=TRUE
+MiscTabPosition=GTK_POS_TOP
+MiscHighlightUrls=TRUE
+MiscMiddleClickOpensUri=FALSE
+MiscCopyOnSelect=FALSE
+MiscShowRelaunchDialog=TRUE
+MiscRewrapOnResize=TRUE
+MiscUseShiftArrowsToScroll=FALSE
+MiscSlimTabs=FALSE
+MiscNewTabAdjacent=FALSE
+MiscSearchDialogOpacity=100
+MiscShowUnsafePasteDialog=TRUE
+ScrollingUnlimited=TRUE
+TERMINALRC_EOF
+chown -R hackbento:hackbento /home/hackbento/.config
 
 # TigerVNC: パスワード設定 + XFCE セッション起動設定
 mkdir -p /home/hackbento/.vnc
@@ -274,6 +408,14 @@ cat > /home/hackbento/.vnc/xstartup << 'XSTART_EOF'
 #!/bin/sh
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
+export LANG=ja_JP.UTF-8
+export LANGUAGE=ja_JP:ja
+export TZ=Asia/Tokyo
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+setxkbmap jp 2>/dev/null || true
+fcitx5 -d --replace
 exec startxfce4
 XSTART_EOF
 chmod +x /home/hackbento/.vnc/xstartup

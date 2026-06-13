@@ -50,6 +50,14 @@ const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 let myEnvs = [];
 const timers = {};
 
+// 他ページ（project.html等）で環境の起動・停止・延長が行われたことをlocalStorageの
+// storageイベント経由で受け取り、一覧を即時更新する。
+window.addEventListener('storage', (e) => {
+  if (e.key === 'hb_envs_changed') {
+    loadMyEnvs();
+  }
+});
+
 async function loadMyEnvs() {
   const res = await API.get('/api/envs/');
   if (!res.ok) { if (res.status === 401) { window.location.href = '/login'; } return; }
@@ -72,7 +80,9 @@ function renderMyEnvs() {
     <div class="env-card" id="env-${env.id}">
       <div class="env-card-header">
         <span class="env-status-dot ${env.status}"></span>
-        <a class="env-name" href="/${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}">${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}</a>
+        ${env.is_attack_machine
+          ? `<a class="env-name" href="/attack-machine">${escHtml(env.image_name)}</a>`
+          : `<a class="env-name" href="/${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}">${escHtml(env.owner_username || '')}/${escHtml(env.image_slug)}</a>`}
       </div>
       <div class="env-ip">
         <span class="label">IP</span>
@@ -80,20 +90,33 @@ function renderMyEnvs() {
         ${env.ip_address ? `<button class="copy-btn js-copy-ip" data-ip="${escHtml(env.ip_address)}" title="IPアドレスをコピー">&#x1F4CB;</button>` : ''}
       </div>
       <div class="env-timer" id="timer-${env.id}">
+        ${env.status === 'starting' ? `
+        <span class="env-starting-label">&#x23F3; VM起動中...</span>
+        ` : `
         <span>残り</span>
         <span class="countdown"></span>
         <span class="warn-badge hidden" id="warn-${env.id}">⚠ まもなく終了</span>
+        `}
       </div>
-      <div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>
+      ${env.status === 'starting' ? '' : `<div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>`}
       <div class="env-actions">
+        ${env.status === 'starting' ? '' : `
         <button class="btn btn-sm btn-extend js-extend-env" data-eid="${env.id}" data-timeout="${env.timeout_minutes}">&#x23F1; 延長 (+${env.timeout_minutes}分)</button>
         <button class="btn btn-sm btn-danger js-stop-env" data-eid="${env.id}">&#x23F9; 停止</button>
+        `}
       </div>
     </div>
   `).join('');
 
-  // カウントダウン開始（延長後リセットのため毎回新規）
-  myEnvs.forEach(env => startCountdown(env.id, env.seconds_remaining, env.timeout_minutes * 60));
+  // カウントダウン開始（延長後リセットのため毎回新規）。
+  // starting中はVMが実際に起動完了するまでタイマーが開始されないため、表示もしない。
+  myEnvs.forEach(env => {
+    if (env.status === 'starting') {
+      if (timers[env.id]) { clearInterval(timers[env.id]); delete timers[env.id]; }
+      return;
+    }
+    startCountdown(env.id, env.seconds_remaining, env.timeout_minutes * 60);
+  });
 }
 
 // 残り時間の割合でバーと文字色を段階的に変化させる

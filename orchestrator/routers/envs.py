@@ -33,6 +33,7 @@ class EnvResponse(BaseModel):
     seconds_remaining: int
     timeout_minutes: int
     warning: bool
+    is_attack_machine: bool
 
     model_config = {"from_attributes": True}
 
@@ -55,6 +56,7 @@ def _to_response(env: Environment) -> EnvResponse:
         seconds_remaining=remaining,
         timeout_minutes=timeout,
         warning=remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
+        is_attack_machine=env.image.is_attack_machine if env.image else False,
     )
 
 
@@ -172,8 +174,28 @@ async def start_env(
     # vm_id は取得後すぐに確定させる。ここで commit せずに後続処理中にオーケストレータが
     # 落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL のまま残り、
     # cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
+    # また、vm_id が確定する前に停止要求（watchdogのstuck-starting処理含む）が
+    # 先行した場合、destroy_env が vm_id=None で実VM/TAP/cgroupを解放できず
+    # 孤児が残ってしまうため、vm_id だけを先に確定・commitする。
     env.vm_id = vm_result.vm_id
+    await db.commit()
+
+    # ここまでの間に他経路（停止要求・watchdog）が先に env を stopping/stopped へ
+    # 遷移させていた場合は、running への遷移を行わず、いま確定した vm_id を使って
+    # 実VMを後始末する（孤児防止）。
+    result = await db.execute(
+        select(Environment).where(Environment.id == env.id).with_for_update()
+    )
+    env = result.scalar_one()
+    if env.status != EnvStatus.starting:
+        await db.commit()
+        await stop_vm(vm_result.vm_id)
+        raise HTTPException(status_code=409, detail="起動中にこの環境は停止されました")
+
     env.status = EnvStatus.running
+    # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
+    # running に遷移した時点から timeout 分のカウントを開始する。
+    env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
     await db.commit()
     result = await db.execute(
         select(Environment)
@@ -229,18 +251,24 @@ async def stop_env(
     user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    # 権限確認は行ロック取得前に行う（不正なリクエストで状態遷移させないため）
+    # 権限確認は行ロック取得前に行う（不正なリクエストで状態遷移させないため）。
+    # starting 中は vm_id が未確定で destroy_env が実VM/TAP/cgroupを解放できず
+    # 孤児リソースを生むため、running になってからのみ停止を許可する
+    # （starting が長時間続く場合は watchdog の stuck-starting 処理に委ねる）。
     result = await db.execute(
-        select(Environment.user_id).where(
+        select(Environment.user_id, Environment.status).where(
             Environment.id == env_id,
             Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
         )
     )
-    owner_id = result.scalar_one_or_none()
-    if owner_id is None:
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="環境が見つかりません")
+    owner_id, env_status = row
     if owner_id != user.id and user.role != UserRole.admin:
         raise HTTPException(status_code=403, detail="権限がありません")
+    if env_status == EnvStatus.starting:
+        raise HTTPException(status_code=409, detail="VM起動中は停止できません。起動完了までお待ちください")
 
     # 行ロックを取得して stopping へ遷移。watchdog や他リクエストとの二重停止を防ぐ。
     env = await claim_env_for_stop(db, env_id)

@@ -62,7 +62,10 @@ async def _get_bridge_used_ips() -> set[str]:
     ips = set()
     for line in stdout.decode().splitlines():
         parts = line.split()
-        if parts:
+        # FAILED は近隣探索に応答がなかったエントリ（TAP削除後等に残るゴミ）であり、
+        # 実体が存在しないため使用中とみなさない。それ以外(STALE/REACHABLE等)は
+        # 過去に到達できた実体があるとみなし使用中として扱う。
+        if parts and "FAILED" not in parts:
             ips.add(parts[0])
     return ips
 

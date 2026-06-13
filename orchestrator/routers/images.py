@@ -972,6 +972,7 @@ async def update_image(
     # README 更新
     has_new_readme_file = bool(readme and readme.filename)
     has_new_readme_text = bool(readme_text and readme_text.strip())
+    old_readme_path = None
     if has_new_readme_file:
         if not _allowed_readme(readme.filename or ""):
             raise HTTPException(status_code=400, detail="README は .md または .txt のみ対応")
@@ -990,6 +991,7 @@ async def update_image(
                             detail=f"README ファイルサイズが上限を超えています（上限: {settings.UPLOAD_README_MAX_MB} MB）",
                         )
                     f.write(chunk)
+            old_readme_path = image.readme_path
             image.readme_path = readme_path
         except HTTPException:
             if os.path.exists(readme_path):
@@ -1009,12 +1011,21 @@ async def update_image(
         try:
             with open(readme_path, "w", encoding="utf-8") as f:
                 f.write(readme_text)
+            old_readme_path = image.readme_path
             image.readme_path = readme_path
         except Exception:
             pass
 
     await db.commit()
     await db.refresh(image)
+
+    # 旧README（新しいREADMEへの差し替えが成功した場合のみ）を削除し、不要ファイルの蓄積を防ぐ
+    if old_readme_path and old_readme_path != image.readme_path and os.path.exists(old_readme_path):
+        try:
+            os.remove(old_readme_path)
+        except OSError:
+            pass
+
     return await _build_response(image, db)
 
 

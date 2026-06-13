@@ -291,7 +291,20 @@ function renderLaunchPanel() {
     return;
   }
 
-  if (running) {
+  if (running && running.status === 'starting') {
+    panel.innerHTML = `
+      <div class="launch-panel launch-panel-running">
+        <div class="launch-panel-info">
+          <span class="launch-status-dot starting"></span>
+          <div>
+            <div class="launch-panel-label">環境を起動しています</div>
+            <div class="env-timer" id="proj-timer-${running.id}">
+              <span class="env-starting-label">&#x23F3; VM起動中...</span>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  } else if (running) {
     panel.innerHTML = `
       <div class="launch-panel launch-panel-running">
         <div class="launch-panel-info">
@@ -398,6 +411,7 @@ async function extendEnv(envId, timeoutMin, btn) {
     showToast(`${timeoutMin}分延長しました`, 'success');
     const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
     renderLaunchPanel();
+    notifyEnvsChanged();
   } else {
     const d = await res.json(); showToast(d.detail || 'エラー', 'error');
     if (btn) { btn.disabled = false; btn.textContent = `⏱ 延長 (+${timeoutMin}分)`; }
@@ -411,6 +425,7 @@ async function startEnv(imageId, btn) {
     showToast('環境を起動しました', 'success');
     const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
     renderLaunchPanel();
+    notifyEnvsChanged();
   } else {
     const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
     if (btn) { btn.disabled = false; btn.textContent = '▶ 起動する'; }
@@ -425,6 +440,7 @@ async function stopEnv(envId) {
     if (projTimers[envId]) { clearInterval(projTimers[envId]); delete projTimers[envId]; }
     const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
     renderLaunchPanel();
+    notifyEnvsChanged();
   } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
 }
 

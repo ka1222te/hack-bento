@@ -384,6 +384,7 @@ body::before {
   gap: 0.5rem;
 }
 .timer-warning { color: var(--yellow); }
+.env-starting-label { color: var(--text2); font-style: italic; }
 .countdown { font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: .04em; font-size: 1rem; }
 .warn-badge {
   font-size: 0.75rem;
@@ -1156,7 +1157,8 @@ textarea { resize: vertical; min-height: 70px; }
 .launch-status-dot {
   width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 0.3rem;
 }
-.launch-status-dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.5s ease-in-out infinite; }
+.launch-status-dot.running  { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.5s ease-in-out infinite; }
+.launch-status-dot.starting { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
 .launch-status-dot.idle    { background: var(--text3); }
 .launch-status-dot.error   { background: var(--red); }
 .launch-panel-label { font-size: 0.95rem; font-weight: 600; color: var(--text); margin-bottom: 0.35rem; }

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from database import get_db
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
-from services.smolvm import start_vm
+from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
@@ -181,8 +181,25 @@ async def start_attack_machine(
         await db.commit()
         raise HTTPException(status_code=500, detail="Attack Machine の起動に失敗しました")
 
+    # vm_id だけを先に確定・commitする。これにより、確定前に停止要求
+    # （watchdogのstuck-starting処理含む）が先行していても、その後の
+    # destroy_env が vm_id を使って実VM/TAP/cgroupを解放できる（孤児防止）。
     env.vm_id = vm_result.vm_id
+    await db.commit()
+
+    result = await db.execute(
+        select(Environment).where(Environment.id == env.id).with_for_update()
+    )
+    env = result.scalar_one()
+    if env.status != EnvStatus.starting:
+        await db.commit()
+        await stop_vm(vm_result.vm_id)
+        raise HTTPException(status_code=409, detail="起動中にAttack Machineは停止されました")
+
     env.status = EnvStatus.running
+    # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
+    # running に遷移した時点から timeout 分のカウントを開始する。
+    env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
     await db.commit()
     return _to_response(env, timeout)
 
@@ -227,16 +244,22 @@ async def stop_attack_machine(
     db: AsyncSession = Depends(get_db),
 ):
     image = await _get_attack_image(db)
+    # starting 中は vm_id が未確定で destroy_env が実VM/TAP/cgroupを解放できず
+    # 孤児リソースを生むため、running になってからのみ停止を許可する
+    # （starting が長時間続く場合は watchdog の stuck-starting 処理に委ねる）。
     result = await db.execute(
-        select(Environment.id).where(
+        select(Environment.id, Environment.status).where(
             Environment.user_id == user.id,
             Environment.image_id == image.id,
             Environment.status.in_([EnvStatus.starting, EnvStatus.running]),
         )
     )
-    env_id = result.scalar_one_or_none()
-    if env_id is None:
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Attack Machine が見つかりません")
+    env_id, env_status = row
+    if env_status == EnvStatus.starting:
+        raise HTTPException(status_code=409, detail="VM起動中は停止できません。起動完了までお待ちください")
 
     env = await claim_env_for_stop(db, env_id)
     if env is None:

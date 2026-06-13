@@ -129,7 +129,7 @@ document.addEventListener('click', e => {
 async function startEnv(imageId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
   const res = await API.post(`/api/envs/${imageId}/start`);
-  if (res.ok) { showToast('環境を起動しました', 'success'); setTimeout(() => window.location.href = '/', 800); }
+  if (res.ok) { showToast('環境を起動しました', 'success'); notifyEnvsChanged(); setTimeout(() => window.location.href = '/', 800); }
   else { const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error'); btn.disabled = false; btn.textContent = '▶ 起動'; }
 }
 
