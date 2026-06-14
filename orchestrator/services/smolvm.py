@@ -366,7 +366,15 @@ def _write_resolv_conf(rootfs_path: str) -> None:
         # mkdir すると孤立 inode が生成されファイルシステムが不整合になることを確認済み）
         # rm の対象が存在しない場合は debugfs がエラーを出すが、returncode は 0 のまま
         # 継続するため問題ない。
-        script = f"rm /etc/resolv.conf\nwrite {tmp_resolv} /etc/resolv.conf\n"
+        # debugfs の write で新規作成された inode のデフォルトモードは 0600 (root only) になる。
+        # 一般ユーザ（hackbento等）で実行する getent/curl 等の glibc リゾルバは
+        # /etc/resolv.conf を読めないと「DNSサーバ未設定」とみなし、DNSサーバが
+        # 正常に応答していても getaddrinfo が NOTFOUND を返す。sif で 0644 に変更する。
+        script = (
+            f"rm /etc/resolv.conf\n"
+            f"write {tmp_resolv} /etc/resolv.conf\n"
+            f"sif /etc/resolv.conf mode 0100644\n"
+        )
         proc = subprocess.Popen(
             ["debugfs", "-w", rootfs_path],
             stdin=subprocess.PIPE,

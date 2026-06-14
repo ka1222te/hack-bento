@@ -49,6 +49,9 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 printf '{resolv_conf}' > /etc/resolv.conf
+# /etc/resolv.conf が 0600 のままだと一般ユーザでの getaddrinfo が
+# DNSサーバ未設定とみなされ、サーバが正常応答してもNOTFOUNDになる。
+chmod 644 /etc/resolv.conf
 /usr/sbin/sshd -D &
 echo "=== HackBento Firecracker VM 起動完了 ==="
 wait
@@ -71,6 +74,9 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 printf '{resolv_conf}' > /etc/resolv.conf
+# /etc/resolv.conf が 0600 のままだと一般ユーザ(hackbento)での getaddrinfo が
+# DNSサーバ未設定とみなされ、サーバが正常応答してもNOTFOUNDになる。
+chmod 644 /etc/resolv.conf
 # hostname の自己解決に失敗すると vncserver が
 # "Could not acquire fully qualified host name of this machine." で
 # エラー終了し、init(PID1) が終了して kernel panic
@@ -269,6 +275,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     kali-desktop-xfce xfce4-terminal tigervnc-standalone-server tigervnc-tools \
+    x11-xserver-utils \
     openssh-client sudo bash dbus-x11 \
     kali-linux-core \
     iputils-ping nmap hydra enum4linux john gobuster dirb wireshark wordlists \
@@ -382,6 +389,57 @@ cat > /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml/keyboard-layout.x
 </channel>
 XKBLAYOUT_EOF
 
+# XFCEの電源管理(xfce4-power-manager)・画面ロック(light-locker)を無効化し、
+# 画面が常に表示されたまま(スリープ/ロックなし)になるようにする。
+# DPMS/ブランク/サスペンド/ハイバネートを全てOFFにし、light-lockerは
+# ロック無しで起動するようxstartup側でも対応する。
+mkdir -p /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml << 'POWERMGR_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-power-manager" version="1.0">
+  <property name="xfce4-power-manager" type="empty">
+    <property name="dpms-enabled" type="bool" value="false"/>
+    <property name="dpms-on-ac-sleep" type="uint" value="0"/>
+    <property name="dpms-on-ac-off" type="uint" value="0"/>
+    <property name="dpms-on-battery-sleep" type="uint" value="0"/>
+    <property name="dpms-on-battery-off" type="uint" value="0"/>
+    <property name="blank-on-ac" type="int" value="0"/>
+    <property name="blank-on-battery" type="int" value="0"/>
+    <property name="lock-screen-suspend-hibernate" type="bool" value="false"/>
+    <property name="logind-handle-lid-switch" type="bool" value="false"/>
+  </property>
+</channel>
+POWERMGR_EOF
+
+# xfce4-screensaver(導入されている場合)もロック・スクリーンセーバーを無効化
+cat > /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml << 'SCREENSAVER_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-screensaver" version="1.0">
+  <property name="saver" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+    <property name="idle-activation" type="empty">
+      <property name="enabled" type="bool" value="false"/>
+    </property>
+  </property>
+  <property name="lock" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+</channel>
+SCREENSAVER_EOF
+
+# xfce4-session: 自動ロック(LockCommand)・画面保存を無効化
+cat > /home/hackbento/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml << 'SESSION_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-session" version="1.0">
+  <property name="general" type="empty">
+    <property name="LockCommand" type="string" value="true"/>
+  </property>
+</channel>
+SESSION_EOF
+
 # xfce4-terminal: ウィンドウサイズ変更時に行折り返しが効かない問題への対策。
 # デフォルトでは端末の列数(COLUMNS)がリサイズ通知と同期しないことがあるため、
 # 起動時に内部ジオメトリを明示し、フォントもCJK対応の等幅フォントに固定する。
@@ -434,6 +492,12 @@ export QT_IM_MODULE=fcitx
 export XMODIFIERS=@im=fcitx
 setxkbmap jp 2>/dev/null || true
 fcitx5 -d --replace
+# X11レベルでもDPMS(画面オフ)・スクリーンセーバーを無効化しておく。
+# xfconf設定だけだとセッション開始タイミングによっては反映前に
+# 画面オフ判定が走ることがあるため、X起動直後にも明示的にOFFにする。
+xset s off
+xset s noblank
+xset -dpms
 exec startxfce4
 XSTART_EOF
 chmod +x /home/hackbento/.vnc/xstartup
