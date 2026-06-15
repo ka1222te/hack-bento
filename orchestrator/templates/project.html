@@ -98,6 +98,7 @@
 const OWNER    = {{ owner | tojson }};
 const SLUG     = {{ slug  | tojson }};
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+const CURRENT_PATH = `/${OWNER}/${SLUG}`;
 
 // highlight.js を marked.js のコードブロックレンダラーに組み込む（1回だけ実行）
 if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
@@ -152,8 +153,8 @@ async function init() {
 
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
   if (!imageData) {
-    // 未ログインで非公開プロジェクトにアクセスした場合はログインへ誘導
-    if (!isLoggedIn) { window.location.href = '/login'; return; }
+    // 未ログインで非公開プロジェクトにアクセスした場合はログインへ誘導（ログイン後に元のページへ戻れるようにnextを付与）
+    if (!isLoggedIn) { window.location.href = `/login?next=${encodeURIComponent(CURRENT_PATH)}`; return; }
     document.getElementById('project-header').innerHTML = '<p class="empty-msg">プロジェクトが見つかりません</p>';
     return;
   }
@@ -245,7 +246,7 @@ function renderLaunchPanel() {
           <div><div class="launch-panel-label">起動するにはログインが必要です</div></div>
         </div>
         <div class="launch-panel-actions">
-          <a href="/login" class="btn btn-launch btn-launch-lg">&#x1F511; ログインして起動</a>
+          <a href="/login?next=${encodeURIComponent(CURRENT_PATH)}" class="btn btn-launch btn-launch-lg">&#x1F511; ログインして起動</a>
         </div>
       </div>`;
     return;

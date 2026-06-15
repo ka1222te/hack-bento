@@ -1,6 +1,7 @@
 import secrets
 import httpx
-from urllib.parse import urlencode
+from typing import Optional
+from urllib.parse import urlencode, quote
 from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +43,17 @@ def _callback_url() -> str:
     if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
         return f"{scheme}://{host}/api/auth/oauth/google/callback"
     return f"{scheme}://{host}:{port}/api/auth/oauth/google/callback"
+
+
+def _safe_next_path(value: Optional[str]) -> Optional[str]:
+    """オープンリダイレクト対策: 同一オリジンの相対パス（"/"始まり・"//"や"/\\"は不可）のみ許可する。"""
+    if not value:
+        return None
+    if not value.startswith("/"):
+        return None
+    if value.startswith("//") or value.startswith("/\\"):
+        return None
+    return value
 
 
 def _issue_cookie(response: Response, token: str) -> None:
@@ -110,7 +122,7 @@ async def me(request: Request, current_user: User = Depends(get_current_user)):
 # ---- Google OAuth2 (authlib不使用・httpx直接実装) ----
 
 @router.get("/oauth/google")
-async def oauth_google_login():
+async def oauth_google_login(request: Request):
     if not settings.GOOGLE_OAUTH_ENABLED:
         raise HTTPException(status_code=404, detail="Google OAuth is disabled")
     state = secrets.token_urlsafe(24)
@@ -124,6 +136,9 @@ async def oauth_google_login():
     url = GOOGLE_AUTH_URL + "?" + urlencode(params)
     resp = RedirectResponse(url=url, status_code=302)
     resp.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=300, secure=(settings.SCHEME == "https"))
+    next_path = _safe_next_path(request.query_params.get("next"))
+    if next_path:
+        resp.set_cookie("oauth_next", next_path, httponly=True, samesite="lax", max_age=300, secure=(settings.SCHEME == "https"))
     return resp
 
 
@@ -178,7 +193,11 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
     await db.commit()
 
     token = create_access_token(user.id, user.username, user.role.value, user.needs_username_setup)
-    redirect_url = "/setup-username" if user.needs_username_setup else "/"
+    next_path = _safe_next_path(request.cookies.get("oauth_next"))
+    if user.needs_username_setup:
+        redirect_url = f"/setup-username?next={quote(next_path)}" if next_path else "/setup-username"
+    else:
+        redirect_url = next_path or "/"
     resp = RedirectResponse(url=redirect_url, status_code=302)
     # 既存セッションを破棄してから新規発行（セッション固定化対策）
     resp.delete_cookie("access_token")
@@ -189,4 +208,5 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     resp.delete_cookie("oauth_state")
+    resp.delete_cookie("oauth_next")
     return resp

@@ -35,6 +35,9 @@
 
 {% block scripts %}
 <script>
+// リダイレクト元のパス（?next=...）を検証して保持する
+const NEXT_PATH = safeNextPath(new URLSearchParams(location.search).get('next'));
+
 // Cookie経由でもトークンを取得できる（OAuthコールバック後はCookieのみセットされる）
 let token = sessionStorage.getItem('hb_token');
 
@@ -46,8 +49,8 @@ let token = sessionStorage.getItem('hb_token');
   if (!meRes.ok) { window.location.href = '/login'; return; }
   const me = await meRes.json();
 
-  // ユーザ名設定不要なら / へ
-  if (!me.needs_username_setup) { window.location.href = '/'; return; }
+  // ユーザ名設定不要なら next または / へ
+  if (!me.needs_username_setup) { window.location.href = NEXT_PATH || '/'; return; }
 
   // OAuthユーザ: CookieのJWTをsessionStorageに同期
   if (!token && me.access_token) {
@@ -119,7 +122,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     const data = await res.json();
     sessionStorage.setItem('hb_token', data.access_token);
     sessionStorage.removeItem('hb_needs_setup');
-    window.location.href = '/';
+    window.location.href = NEXT_PATH || '/';
   } else {
     const data = await res.json();
     errBox.textContent = data.detail || 'エラーが発生しました';
