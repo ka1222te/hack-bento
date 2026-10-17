@@ -197,9 +197,21 @@
 
 ---
 
-## フェーズ 5: docker-base.ext4 の作成
+## フェーズ 5: docker-base.ext4 の作成 ✅ 実装・実機検証完了
 
 **目的**: compose を載せる共通土台 rootfs を1つ用意する。管理者が「デフォルト VM 資産」として登録し、全 compose バンドルで共有する。
+
+**実施メモ**:
+- init は**自作シェル方式**（ユーザ選択）。`_DOCKER_BASE_INIT_TEMPLATE` が build/run 2 モードで動く。`firecracker_setup.py` に `_build_docker_base_rootfs()`（Debian bookworm + docker-ce + compose plugin を `docker run`→`docker export`→ext4 変換）、`_build_docker_base_init_script()`、`_register_docker_base_asset()` を追加。`ensure_default_vm_assets` から独立 try で呼ぶ（失敗しても OS イメージ運用に影響しない）。
+- `models.DefaultRootfsAsset.kind`（`os`/`docker-base`）を追加＋マイグレーション。docker-base は `kind='docker-base'` で登録。
+- iptables は legacy 固定、daemon.json は `storage-driver=overlay2` + `containerd-snapshotter:false`。build モードの dockerd は `--iptables=false --bridge=none --userland-proxy=false`（ネットワーク不使用でカーネル netfilter 依存を回避）。run モードは `--iptables=true`。
+- **実機で判明し修正した統合バグ（各ログで特定）**:
+  1. `mkfs.ext4 -d` が大きい Debian ツリーで `Directory block checksum does not match` → `convert_tar_to_ext4` に `-O ^metadata_csum` を追加（loop マウントは CAP_SYS_ADMIN が無く使えないため）。
+  2. `--storage-driver` を CLI と daemon.json で二重指定 → dockerd 起動拒否。CLI から除去。
+  3. `userland-proxy-path not set` 検証エラー → `--userland-proxy=false`。
+  4. PID1 が PATH を継承せず `containerd not found in $PATH` → init 冒頭で `export PATH=...`。
+- **エンドツーエンド検証**: docker-base を一時 docker.sock で構築（2.0GB, ~5分）→ nginx compose + `docker save` した `images.tar` の scratch を作成 → `run_build_vm(docker-base, scratch, hb_build=1)` を実行。**status=0・10秒で自己 poweroff・正常終了**。scratch から `compose.json`（正規化済み・公開ポート 80 入り）/`images.list`/`loaded.list` を回収＝**Phase 4+5 パイプライン成立**。DB に kind=docker-base 資産が登録されたことを確認。検証後 docker.sock 無しの安全構成へ復帰。
+- 残: `tools/build-docker-base.sh`（管理者がホストで再現ビルドする手順スクリプト）と admin UI の docker-base 登録タブは Phase 7（UI）とあわせて対応予定。初回自動ビルド（`ensure_default_vm_assets`）は実装済み。
 
 **docker-base の中身**
 - Debian + systemd（`/sbin/init`）

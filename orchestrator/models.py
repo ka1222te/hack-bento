@@ -148,6 +148,8 @@ class DefaultRootfsAsset(Base):
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String(128), nullable=False)
     file_path = Column(String(512), nullable=False)
+    # "os": 通常のゲスト rootfs。"docker-base": Compose バンドル用の共通土台。
+    kind = Column(String(16), nullable=False, default="os")
     is_active = Column(Boolean, default=True, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
