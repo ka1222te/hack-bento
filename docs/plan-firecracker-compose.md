@@ -97,9 +97,17 @@
 
 ---
 
-## フェーズ 2: TAP の IP/MAC 制限（nftables）
+## フェーズ 2: TAP の IP/MAC 制限（nftables）✅ 実装完了（要実機検証）
 
 **目的**: VM が割り当て外の IP/MAC を名乗る・ARP/DHCP なりすまし・社内への無差別アクセスを、ホスト側で封じる。compose で特権コンテナや dind を許す前提なので、ここは早期に必須。
+
+**実施メモ**:
+- VM ごとに bridge family の専用テーブル `hb_<id8>` を作成（`prerouting` フック, priority -300）。`iif != tap accept` で自 TAP 以外は素通し、`ether saddr`/`arp saddr ip`/`ip saddr` が割り当て値と異なるフレームを drop。テーブル単位で `nft delete table` でき後始末が単純。
+- `create_tap(vm_id, ip)` にシグネチャ変更（MAC は `ip_to_mac` で導出。smolvm の `_ip_to_mac` と同一規則を network.py に複製し循環 import を回避）。`delete_tap` が anti-spoof テーブルも除去。
+- `cleanup_orphaned_vms` に `cleanup_orphaned_antispoof` を追加（起動時に残留 `hb_*` テーブルを一掃）。
+- Dockerfile に `nftables` を追加。nft 不在/失敗時は警告にとどめ VM 起動はブロックしない（多層防御の方針）。
+- nft ルールのグラマは host の `nft -c` でパース検証済み（netlink 実行は root=コンテナ内 NET_ADMIN で行われる）。**未実施**: 実機で spoof フレームが実際に drop されること・正規 IP での SSH 到達の確認。
+- （未対応・将来）VM→外向きの許可リスト化、VM 間通信ポリシーは F 項として別途検討。
 
 **設計**
 - TAP ごとに nftables（bridge family）で ingress フィルタを適用。

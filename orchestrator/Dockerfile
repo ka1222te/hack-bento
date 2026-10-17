@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openssl \
       iproute2 \
       iptables \
+      nftables \
       curl \
       e2fsprogs \
     && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz \

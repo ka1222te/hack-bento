@@ -428,7 +428,8 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
 
     try:
         # TAP インターフェースを作成してゲストのネットワークに使用
-        tap = await create_tap(vm_id)
+        # （ip を渡して、割り当て IP/MAC 以外を名乗るフレームをホスト側で遮断する）
+        tap = await create_tap(vm_id, ip)
 
         # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
         _create_vm_cgroup(vm_id, cpu, memory_mb)
@@ -631,6 +632,11 @@ async def cleanup_orphaned_vms() -> None:
     状態を突き合わせ、不整合を解消する。
     """
     _cleanup_stale_vm_cgroups()
+
+    # 起動直後は稼働中の VM は存在しないため、残っている anti-spoof テーブル
+    # （bridge hb_*）は全て前回の残骸とみなして掃除する。
+    from services.network import cleanup_orphaned_antispoof
+    await cleanup_orphaned_antispoof(active_vm_ids=set())
 
     from database import AsyncSessionLocal
     from models import Environment, EnvStatus
