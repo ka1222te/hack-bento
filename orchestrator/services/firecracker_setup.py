@@ -561,8 +561,6 @@ async def ensure_attack_machine_assets() -> None:
     """Attack Machine 用 rootfs を準備し、Image テンプレートを DB に登録する。"""
     global attack_rootfs_build_status, attack_rootfs_build_error
 
-    if settings.VM_BACKEND != "bridge":
-        return
     if not settings.ATTACK_MACHINE_ENABLED:
         return
     if not os.path.exists("/dev/kvm"):
@@ -584,7 +582,7 @@ async def ensure_attack_machine_assets() -> None:
 async def _register_attack_machine_image() -> None:
     """システム提供の Attack Machine テンプレート（Image）を作成・更新する。"""
     from database import AsyncSessionLocal
-    from models import Image, Backend, Visibility
+    from models import Image, Visibility
     from sqlalchemy import select
 
     async with AsyncSessionLocal() as db:
@@ -599,7 +597,6 @@ async def _register_attack_machine_image() -> None:
                 name=ATTACK_MACHINE_NAME,
                 slug=ATTACK_MACHINE_SLUG,
                 description="Kali Linux ベースの攻撃用 VM（GUI / VNC）",
-                backend=Backend.bridge,
                 kernel_path=DEFAULT_KERNEL_PATH,
                 rootfs_path=ATTACK_ROOTFS_PATH,
                 cpu_limit=settings.ATTACK_MACHINE_CPU_LIMIT,
@@ -618,13 +615,11 @@ async def _register_attack_machine_image() -> None:
 
 
 async def ensure_default_vm_assets() -> None:
-    """bridge バックエンド用のデフォルトゲストカーネル・rootfs を準備する（無ければ生成）。
+    """デフォルトゲストカーネル・rootfs を準備する（無ければ生成）。
 
     プロジェクト登録時に「デフォルトのカーネル/rootfsを使う」を選択した場合に
     参照される共通ファイル。失敗してもアプリ起動はブロックしない。
     """
-    if settings.VM_BACKEND != "bridge":
-        return
     if not os.path.exists("/dev/kvm"):
         logger.warning("/dev/kvm が見つからないため、デフォルトVMアセットの準備をスキップします。")
         return

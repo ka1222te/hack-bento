@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from database import get_db
-from models import Environment, EnvStatus, Image, Backend, User, UserRole, RootfsConversionStatus
+from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
@@ -94,13 +94,6 @@ async def start_env(
     from routers.images import _can_see
     if not await _can_see(image, user, db):
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
-
-    host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
-    if image.backend != host_backend:
-        raise HTTPException(
-            status_code=400,
-            detail=f"このホストでは backend={host_backend.value} のプロジェクトのみ起動できます",
-        )
 
     if image.rootfs_conversion_status in (RootfsConversionStatus.pending.value, RootfsConversionStatus.converting.value):
         raise HTTPException(

@@ -135,7 +135,6 @@
 
         <hr class="np-divider" />
 
-        {% if settings.VM_BACKEND == "bridge" %}
         <!-- Firecracker kernel / rootfs（変更任意・確認ダイアログあり） -->
         <div class="np-field">
           <div class="np-toggle-header">
@@ -219,43 +218,6 @@
             <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します（tar の場合は自動的に ext4 へ変換されます）</p>
           </div>
         </div>
-        {% else %}
-        <!-- Docker image（変更任意・確認ダイアログあり） -->
-        <div class="np-field">
-          <label class="np-label">
-            Docker イメージ変更
-            <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
-          </label>
-          <div class="np-toggle-header" style="margin-bottom:.5rem">
-            <span></span>
-            <div class="np-toggle-group" id="img-toggle">
-              <button type="button" class="np-toggle-btn active" data-target="img-file">File</button>
-              <button type="button" class="np-toggle-btn"        data-target="img-link">Link</button>
-            </div>
-          </div>
-          <div id="img-file-panel">
-            <div class="np-upload-area" id="image-upload-area">
-              <input type="file" name="file" id="image-file-input"
-                     accept=".tar,.tar.gz,.tgz,.tar.zst,.oci" class="file-input-hidden" />
-              <div id="image-upload-placeholder" class="np-upload-ph">
-                <span class="np-upload-icon">🐳</span>
-                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
-                <span class="np-upload-sub">.tar / .tar.gz / .tgz / .oci</span>
-              </div>
-              <div id="image-upload-selected" class="np-upload-selected hidden">
-                <span class="np-upload-icon">✅</span>
-                <span id="image-filename" class="np-upload-text"></span>
-                <span id="image-filesize" class="np-upload-sub"></span>
-              </div>
-            </div>
-          </div>
-          <div id="img-link-panel" class="hidden">
-            <input class="np-input" name="image_url" id="image-url-input"
-                   placeholder="例: docker.io/library/ubuntu:22.04" autocomplete="off" />
-            <p class="np-hint" style="margin:.3rem 0 0">対応: docker.io / ghcr.io / quay.io / gcr.io</p>
-          </div>
-        </div>
-        {% endif %}
 
         <!-- README 変更 -->
         <div class="np-field">
@@ -455,7 +417,7 @@ function setupToggle(groupId, panels) {
     });
   });
 }
-const isBridge = {{ 'true' if settings.VM_BACKEND == 'bridge' else 'false' }};
+const isBridge = true;
 if (!isBridge) {
   setupToggle('img-toggle', [{ id:'img-file-panel', key:'img-file' },{ id:'img-link-panel', key:'img-link' }]);
 } else {

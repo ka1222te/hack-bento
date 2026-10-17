@@ -10,9 +10,8 @@ from typing import Optional
 from datetime import datetime
 
 from database import get_db
-from models import Image, Backend, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
-from deps import get_current_user, require_admin, require_username_set
-from services.smolvm import docker_load
+from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
+from deps import get_current_user, require_username_set
 from services.firecracker_setup import DEFAULTS_DIR, _detect_archive_kind
 from models import RootfsConversionStatus
 from config import settings
@@ -22,7 +21,6 @@ router = APIRouter(prefix="/api/images", tags=["images"])
 UPLOAD_DIR = "/data/images/uploads"
 README_DIR = "/data/images/readmes"
 VM_DIR = "/data/images/vm"
-ALLOWED_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.zst", ".oci")
 ALLOWED_README   = (".md", ".txt")
 _ALLOWED_DIRS    = (UPLOAD_DIR, README_DIR, VM_DIR)
 
@@ -49,7 +47,6 @@ def _safe_remove(path: Optional[str]) -> None:
     except OSError:
         pass
 _VALID_SLUG      = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
-TRUSTED_REGISTRIES = ("docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.hub.docker.com")
 ALLOWED_CATEGORIES = frozenset({
     "Web", "Pwn", "Crypto", "Reversing", "Forensics", "OSINT", "Misc",
     "CVE", "Privilege Escalation", "RCE", "LFI/RFI", "SQL Injection", "XSS", "SSRF",
@@ -64,8 +61,6 @@ class ImageResponse(BaseModel):
     slug: str
     description: Optional[str]
     readme: Optional[str] = None
-    backend: str
-    oci_ref: str
     has_kernel: bool = False
     has_rootfs: bool = False
     is_default_kernel: bool = False
@@ -85,52 +80,8 @@ class ImageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _allowed_image(filename: str) -> bool:
-    return any(filename.endswith(s) for s in ALLOWED_SUFFIXES)
-
 def _allowed_readme(filename: str) -> bool:
     return any(filename.lower().endswith(s) for s in ALLOWED_README)
-
-_VALID_IMAGE_REF = re.compile(r'^[a-zA-Z0-9._:/@-]+$')
-
-def _validate_image_ref(ref: str) -> None:
-    """Docker image reference のレジストリホストが許可リストに含まれるか検証する。
-
-    Docker image reference の形式:
-      [registry-host[:port]/]name[:tag][@digest]
-
-    レジストリ未指定（例: ubuntu:22.04）は Docker Hub として扱い許可する。
-    IP アドレスや許可外ホスト、許可外文字を含む場合は ValueError を送出する。
-    """
-    if not _VALID_IMAGE_REF.match(ref):
-        raise ValueError("イメージ参照に使用できない文字が含まれています")
-
-    # name 部分（タグ・ダイジェストを除いたパス）を取り出す
-    name_part = ref.split("@")[0].split(":")[0]
-    segments = name_part.split("/")
-
-    # 先頭セグメントにドット・コロンが含まれるか localhost の場合はレジストリホストと判定
-    # （Docker の規則に準拠: ドットまたはコロンを含む先頭セグメントはホスト名とみなす）
-    first = segments[0]
-    is_registry = ("." in first or ":" in first or first == "localhost")
-
-    if not is_registry:
-        # レジストリ未指定 → Docker Hub (docker.io) として扱い許可
-        return
-
-    # IP アドレスを拒否（IPv4・IPv6）
-    host = first.split(":")[0]
-    ipv4_pattern = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-    if ipv4_pattern.match(host) or host == "localhost" or host.startswith("["):
-        raise ValueError(f"レジストリに IP アドレス・localhost は使用できません: {host}")
-
-    # ホストが許可リストのいずれかと一致するか、そのサブドメインか確認
-    if not any(host == d or host.endswith(f".{d}") for d in TRUSTED_REGISTRIES):
-        raise ValueError(
-            f"許可されていないレジストリです: {host}  "
-            f"（許可: {', '.join(TRUSTED_REGISTRIES)}）"
-        )
-
 
 async def _can_see(image: Image, user: Optional[User], db: AsyncSession) -> bool:
     """閲覧権限チェック。
@@ -190,8 +141,6 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         slug=image.slug,
         description=image.description,
         readme=readme,
-        backend=image.backend.value,
-        oci_ref=image.oci_ref,
         has_kernel=bool(image.kernel_path),
         has_rootfs=bool(image.rootfs_path),
         is_default_kernel=(image.default_kernel_asset_id is not None),
@@ -209,39 +158,6 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         created_at=image.created_at,
     )
 
-
-async def _docker_pull(ref: str) -> tuple[str, str]:
-    """docker pull してアーカイブに保存し、(oci_ref, save_path) を返す。"""
-    import logging
-    _log = logging.getLogger(__name__)
-    _validate_image_ref(ref)
-    # pull
-    pull = await asyncio.create_subprocess_exec(
-        "docker", "pull", ref,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await asyncio.wait_for(pull.communicate(), timeout=300)
-    if pull.returncode != 0:
-        _log.error(f"docker pull failed: {stderr.decode().strip()}")
-        raise RuntimeError("docker pull に失敗しました")
-
-    # save（ファイルと同じ保存先に tar として保存）
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.tar")
-    save = await asyncio.create_subprocess_exec(
-        "docker", "save", "-o", save_path, ref,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await asyncio.wait_for(save.communicate(), timeout=300)
-    if save.returncode != 0:
-        if os.path.exists(save_path):
-            os.remove(save_path)
-        _log.error(f"docker save failed: {stderr.decode().strip()}")
-        raise RuntimeError("docker save に失敗しました")
-
-    return ref, save_path
 
 
 def _validate_download_url(url: str) -> None:
@@ -438,12 +354,9 @@ async def _get_optional_user(request: Request, db: AsyncSession) -> Optional[Use
 @router.get("/", response_model=list[ImageResponse])
 async def list_images(request: Request, db: AsyncSession = Depends(get_db)):
     user = await _get_optional_user(request, db)
-    # ホストの VM_BACKEND に対応する backend のプロジェクトのみを提示する
-    # （macvlan ホストでは bridge プロジェクトを起動できないため、AND 条件で絞り込む）
-    host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
     result = await db.execute(
         select(Image)
-        .where(Image.is_active == True, Image.backend == host_backend, Image.is_attack_machine == False)
+        .where(Image.is_active == True, Image.is_attack_machine == False)
         .order_by(Image.name)
     )
     out = []
@@ -483,8 +396,6 @@ async def get_readme(image_id: int, request: Request, db: AsyncSession = Depends
 
 @router.post("/upload", response_model=ImageResponse, status_code=status.HTTP_201_CREATED)
 async def upload_image(
-    file: Optional[UploadFile] = File(None),
-    image_url: Optional[str] = Form(None),
     kernel: Optional[UploadFile] = File(None),
     rootfs: Optional[UploadFile] = File(None),
     kernel_mode: str = Form("file"),
@@ -498,7 +409,6 @@ async def upload_image(
     name: str = Form(...),
     slug: str = Form(...),
     description: Optional[str] = Form(None),
-    backend: Optional[Backend] = Form(None),
     difficulty: Difficulty = Form(Difficulty.none),
     category: Optional[str] = Form(None),
     timeout_minutes: Optional[int] = Form(None),
@@ -529,13 +439,6 @@ async def upload_image(
     if category and category not in ALLOWED_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"無効なカテゴリです: {category}")
 
-    # ホストの VM_BACKEND によって扱うバックエンドが固定される
-    # （macvlan/bridge は明確に分離されており、同一ホストで両方を起動することはない）
-    host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
-    if backend is not None and backend != host_backend:
-        raise HTTPException(status_code=400, detail=f"このホストでは backend={host_backend.value} のプロジェクトのみ作成できます")
-    backend = host_backend
-
     image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
     readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
 
@@ -553,8 +456,6 @@ async def upload_image(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="このslugは既に使用されています")
 
-    oci_ref = ""
-    save_path = None
     kernel_path = None
     rootfs_path = None
     kernel_asset_id: Optional[int] = None
@@ -562,91 +463,38 @@ async def upload_image(
     rootfs_conversion_status: str = RootfsConversionStatus.ready.value
     rootfs_source_archive_path: Optional[str] = None
 
-    if backend == Backend.macvlan:
-        # Docker イメージ: ファイルと URL のどちらかが必須（両方あればファイル優先）
-        has_file = bool(file and file.filename and file.size and file.size > 0)
-        has_url  = bool(image_url and image_url.strip())
-        if not has_file and not has_url:
-            raise HTTPException(status_code=400, detail="Docker イメージファイルまたはイメージ URL を指定してください")
+    # ゲストカーネル・rootfs は default/file/link のいずれかで指定
+    if kernel_mode not in ("default", "file", "link"):
+        raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
+    if rootfs_mode not in ("default", "file", "link"):
+        raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
 
-        if has_file and not _allowed_image(file.filename or ""):
-            raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
-
-        # Docker イメージ取得（ファイル優先、なければ URL から pull）
-        if has_file:
-            os.makedirs(UPLOAD_DIR, exist_ok=True)
-            ext = next(s for s in ALLOWED_SUFFIXES if (file.filename or "").endswith(s))
-            save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{ext}")
-            try:
-                written = 0
-                with open(save_path, "wb") as f:
-                    while chunk := await file.read(1024 * 1024):
-                        written += len(chunk)
-                        if written > image_max_bytes:
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
-                            )
-                        f.write(chunk)
-            except HTTPException:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-                raise
-            except Exception:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-                raise HTTPException(status_code=500, detail="ファイル保存に失敗しました")
-            try:
-                oci_ref = await docker_load(save_path)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"docker load failed: {e}")
-                os.remove(save_path)
-                raise HTTPException(status_code=500, detail="イメージ処理に失敗しました")
-        else:
-            # URL から docker pull → docker save でアーカイブ保存
-            ref = image_url.strip()
-            try:
-                oci_ref, save_path = await _docker_pull(ref)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"docker pull failed: {e}")
-                raise HTTPException(status_code=500, detail="イメージ取得に失敗しました")
-    else:
-        # bridge バックエンド: ゲストカーネル・rootfs は default/file/link のいずれかで指定
-        if kernel_mode not in ("default", "file", "link"):
-            raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
-        if rootfs_mode not in ("default", "file", "link"):
-            raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
-
-        new_kernel_path: Optional[str] = None
-        new_rootfs_path: Optional[str] = None
-        rootfs_conversion: Optional[dict] = None
-        try:
-            new_kernel_path, kernel_asset_id, _ = await _resolve_vm_asset(
-                kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
-                asset_id=default_kernel_asset_id, db=db,
-            )
-            new_rootfs_path, rootfs_asset_id, rootfs_conversion = await _resolve_vm_asset(
-                kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
-                asset_id=default_rootfs_asset_id, db=db,
-            )
-        except HTTPException:
-            if new_kernel_path and kernel_mode != "default" and os.path.exists(new_kernel_path):
-                os.remove(new_kernel_path)
-            # rootfs: tar変換待ちの場合は変換元アーカイブが実体（ext4の方は未生成）
-            rootfs_cleanup_path = (rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
-            if rootfs_cleanup_path and rootfs_mode != "default" and os.path.exists(rootfs_cleanup_path):
-                os.remove(rootfs_cleanup_path)
-            raise
-        kernel_path = new_kernel_path
-        rootfs_path = new_rootfs_path
-        rootfs_conversion_status = (
-            RootfsConversionStatus.pending.value if rootfs_conversion else RootfsConversionStatus.ready.value
+    new_kernel_path: Optional[str] = None
+    new_rootfs_path: Optional[str] = None
+    rootfs_conversion: Optional[dict] = None
+    try:
+        new_kernel_path, kernel_asset_id, _ = await _resolve_vm_asset(
+            kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
+            asset_id=default_kernel_asset_id, db=db,
         )
-        rootfs_source_archive_path = (rootfs_conversion or {}).get("source_archive_path")
+        new_rootfs_path, rootfs_asset_id, rootfs_conversion = await _resolve_vm_asset(
+            kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
+            asset_id=default_rootfs_asset_id, db=db,
+        )
+    except HTTPException:
+        if new_kernel_path and kernel_mode != "default" and os.path.exists(new_kernel_path):
+            os.remove(new_kernel_path)
+        # rootfs: tar変換待ちの場合は変換元アーカイブが実体（ext4の方は未生成）
+        rootfs_cleanup_path = (rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
+        if rootfs_cleanup_path and rootfs_mode != "default" and os.path.exists(rootfs_cleanup_path):
+            os.remove(rootfs_cleanup_path)
+        raise
+    kernel_path = new_kernel_path
+    rootfs_path = new_rootfs_path
+    rootfs_conversion_status = (
+        RootfsConversionStatus.pending.value if rootfs_conversion else RootfsConversionStatus.ready.value
+    )
+    rootfs_source_archive_path = (rootfs_conversion or {}).get("source_archive_path")
 
     # README 保存（ファイル優先、なければテキスト入力）
     readme_path = None
@@ -690,9 +538,6 @@ async def upload_image(
         name=name,
         slug=slug,
         description=description,
-        backend=backend,
-        oci_ref=oci_ref,
-        archive_path=save_path,
         kernel_path=kernel_path,
         rootfs_path=rootfs_path,
         default_kernel_asset_id=kernel_asset_id,
@@ -709,30 +554,6 @@ async def upload_image(
         created_by=current_user.id,
     )
     db.add(image)
-    await db.commit()
-    await db.refresh(image)
-    return await _build_response(image, db)
-
-
-@router.post("/{image_id}/reload", response_model=ImageResponse)
-async def reload_image(
-    image_id: int,
-    _: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))
-    image = result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(status_code=404, detail="イメージが見つかりません")
-    if image.backend != Backend.macvlan:
-        raise HTTPException(status_code=400, detail="reload は macvlan バックエンドのプロジェクトのみ対応しています")
-    if not image.archive_path or not os.path.exists(image.archive_path):
-        raise HTTPException(status_code=400, detail="アーカイブが見つかりません")
-    try:
-        oci_ref = await docker_load(image.archive_path)
-    except Exception:
-        raise HTTPException(status_code=500, detail="docker load に失敗しました")
-    image.oci_ref = oci_ref
     await db.commit()
     await db.refresh(image)
     return await _build_response(image, db)
@@ -765,8 +586,6 @@ async def update_image(
     category: Optional[str] = Form(None),
     timeout_minutes: Optional[int] = Form(None),
     visibility: Optional[Visibility] = Form(None),
-    file: Optional[UploadFile] = File(None),
-    image_url: Optional[str] = Form(None),
     kernel: Optional[UploadFile] = File(None),
     rootfs: Optional[UploadFile] = File(None),
     kernel_mode: Optional[str] = Form(None),
@@ -799,40 +618,33 @@ async def update_image(
         if not collab.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="権限がありません")
 
-    # イメージ/カーネル・rootfs 変更が伴う場合: 起動中VMを先に停止
-    has_new_file = bool(file and file.filename and file.size and file.size > 0)
-    has_new_url  = bool(image_url and image_url.strip())
+    # カーネル・rootfs 変更が伴う場合: 起動中VMを先に停止
     has_new_kernel = bool(kernel and kernel.filename and kernel.size and kernel.size > 0)
     has_new_rootfs = bool(rootfs and rootfs.filename and rootfs.size and rootfs.size > 0)
-    image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
 
-    # bridge バックエンド: モード未指定なら現状維持（変更なし）として扱う
+    # モード未指定なら現状維持（変更なし）として扱う
     kernel_changing = False
     rootfs_changing = False
-    if image.backend == Backend.bridge:
-        if kernel_mode is not None:
-            if kernel_mode not in ("default", "file", "link"):
-                raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
-            if kernel_mode == "default":
-                kernel_changing = default_kernel_asset_id != image.default_kernel_asset_id
-            elif kernel_mode == "file":
-                kernel_changing = has_new_kernel
-            else:  # link
-                kernel_changing = bool(kernel_url and kernel_url.strip())
-        if rootfs_mode is not None:
-            if rootfs_mode not in ("default", "file", "link"):
-                raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
-            if rootfs_mode == "default":
-                rootfs_changing = default_rootfs_asset_id != image.default_rootfs_asset_id
-            elif rootfs_mode == "file":
-                rootfs_changing = has_new_rootfs
-            else:  # link
-                rootfs_changing = bool(rootfs_url and rootfs_url.strip())
+    if kernel_mode is not None:
+        if kernel_mode not in ("default", "file", "link"):
+            raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
+        if kernel_mode == "default":
+            kernel_changing = default_kernel_asset_id != image.default_kernel_asset_id
+        elif kernel_mode == "file":
+            kernel_changing = has_new_kernel
+        else:  # link
+            kernel_changing = bool(kernel_url and kernel_url.strip())
+    if rootfs_mode is not None:
+        if rootfs_mode not in ("default", "file", "link"):
+            raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
+        if rootfs_mode == "default":
+            rootfs_changing = default_rootfs_asset_id != image.default_rootfs_asset_id
+        elif rootfs_mode == "file":
+            rootfs_changing = has_new_rootfs
+        else:  # link
+            rootfs_changing = bool(rootfs_url and rootfs_url.strip())
 
-    needs_vm_stop = (
-        (image.backend == Backend.macvlan and (has_new_file or has_new_url))
-        or (image.backend == Backend.bridge and (kernel_changing or rootfs_changing))
-    )
+    needs_vm_stop = kernel_changing or rootfs_changing
     if needs_vm_stop:
         from models import Environment, EnvStatus
         from services.watchdog import destroy_env, claim_env_for_stop
@@ -853,99 +665,50 @@ async def update_image(
         if env_ids:
             await db.flush()
 
-    if image.backend == Backend.macvlan:
-        # 新しい Docker イメージを取得・保存
-        if has_new_file:
-            if not _allowed_image(file.filename or ""):
-                raise HTTPException(status_code=400, detail=f"対応拡張子: {', '.join(ALLOWED_SUFFIXES)}")
-            os.makedirs(UPLOAD_DIR, exist_ok=True)
-            ext = next(s for s in ALLOWED_SUFFIXES if (file.filename or "").endswith(s))
-            save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{ext}")
-            try:
-                written = 0
-                with open(save_path, "wb") as f:
-                    while chunk := await file.read(1024 * 1024):
-                        written += len(chunk)
-                        if written > image_max_bytes:
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"ファイルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
-                            )
-                        f.write(chunk)
-                new_oci_ref = await docker_load(save_path)
-                old_path = image.archive_path
-                image.archive_path = save_path
-                image.oci_ref = new_oci_ref
-                if old_path and old_path != save_path:
-                    _safe_remove(old_path)
-            except HTTPException:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-                raise
-            except Exception:
-                if os.path.exists(save_path):
-                    os.remove(save_path)
-                raise HTTPException(status_code=500, detail="イメージ更新に失敗しました")
-        elif has_new_url:
-            ref = image_url.strip()
-            try:
-                new_oci_ref, save_path = await _docker_pull(ref)
-                old_path = image.archive_path
-                image.oci_ref = new_oci_ref
-                image.archive_path = save_path
-                if old_path and old_path != save_path:
-                    _safe_remove(old_path)
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"docker pull failed (update): {e}")
-                raise HTTPException(status_code=500, detail="イメージ取得に失敗しました")
-    else:
-        # bridge バックエンド: ゲストカーネル・rootfs の差し替え（変更がある場合のみ）
-        if kernel_changing:
-            new_kernel_path, new_kernel_asset_id, _ = await _resolve_vm_asset(
-                kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
-                asset_id=default_kernel_asset_id, db=db,
-            )
-            try:
-                old_kernel = image.kernel_path
-                image.kernel_path = new_kernel_path
-                image.default_kernel_asset_id = new_kernel_asset_id
-                if old_kernel and old_kernel != new_kernel_path:
-                    _safe_remove(old_kernel)
-            except Exception:
-                if kernel_mode != "default" and os.path.exists(new_kernel_path):
-                    os.remove(new_kernel_path)
-                raise
+    # ゲストカーネル・rootfs の差し替え（変更がある場合のみ）
+    if kernel_changing:
+        new_kernel_path, new_kernel_asset_id, _ = await _resolve_vm_asset(
+            kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
+            asset_id=default_kernel_asset_id, db=db,
+        )
+        try:
+            old_kernel = image.kernel_path
+            image.kernel_path = new_kernel_path
+            image.default_kernel_asset_id = new_kernel_asset_id
+            if old_kernel and old_kernel != new_kernel_path:
+                _safe_remove(old_kernel)
+        except Exception:
+            if kernel_mode != "default" and os.path.exists(new_kernel_path):
+                os.remove(new_kernel_path)
+            raise
 
-        if rootfs_changing:
-            new_rootfs_path, new_rootfs_asset_id, new_rootfs_conversion = await _resolve_vm_asset(
-                kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
-                asset_id=default_rootfs_asset_id, db=db,
-            )
-            new_rootfs_cleanup_path = (new_rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
-            try:
-                old_rootfs = image.rootfs_path
-                old_source_archive = image.rootfs_source_archive_path
-                image.rootfs_path = new_rootfs_path
-                image.default_rootfs_asset_id = new_rootfs_asset_id
-                if new_rootfs_conversion:
-                    image.rootfs_conversion_status = RootfsConversionStatus.pending.value
-                    image.rootfs_conversion_error = None
-                    image.rootfs_source_archive_path = new_rootfs_conversion["source_archive_path"]
-                else:
-                    image.rootfs_conversion_status = RootfsConversionStatus.ready.value
-                    image.rootfs_conversion_error = None
-                    image.rootfs_source_archive_path = None
-                if old_rootfs and old_rootfs != new_rootfs_path:
-                    _safe_remove(old_rootfs)
-                if old_source_archive and old_source_archive != image.rootfs_source_archive_path:
-                    _safe_remove(old_source_archive)
-            except Exception:
-                if rootfs_mode != "default" and new_rootfs_cleanup_path and os.path.exists(new_rootfs_cleanup_path):
-                    os.remove(new_rootfs_cleanup_path)
-                raise
+    if rootfs_changing:
+        new_rootfs_path, new_rootfs_asset_id, new_rootfs_conversion = await _resolve_vm_asset(
+            kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
+            asset_id=default_rootfs_asset_id, db=db,
+        )
+        new_rootfs_cleanup_path = (new_rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
+        try:
+            old_rootfs = image.rootfs_path
+            old_source_archive = image.rootfs_source_archive_path
+            image.rootfs_path = new_rootfs_path
+            image.default_rootfs_asset_id = new_rootfs_asset_id
+            if new_rootfs_conversion:
+                image.rootfs_conversion_status = RootfsConversionStatus.pending.value
+                image.rootfs_conversion_error = None
+                image.rootfs_source_archive_path = new_rootfs_conversion["source_archive_path"]
+            else:
+                image.rootfs_conversion_status = RootfsConversionStatus.ready.value
+                image.rootfs_conversion_error = None
+                image.rootfs_source_archive_path = None
+            if old_rootfs and old_rootfs != new_rootfs_path:
+                _safe_remove(old_rootfs)
+            if old_source_archive and old_source_archive != image.rootfs_source_archive_path:
+                _safe_remove(old_source_archive)
+        except Exception:
+            if rootfs_mode != "default" and new_rootfs_cleanup_path and os.path.exists(new_rootfs_cleanup_path):
+                os.remove(new_rootfs_cleanup_path)
+            raise
 
     # メタデータ更新
     if name is not None:

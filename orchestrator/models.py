@@ -55,11 +55,6 @@ class CollaboratorRole(str, PyEnum):
     read_write = "read_write"  # 閲覧・起動・編集
 
 
-class Backend(str, PyEnum):
-    macvlan = "macvlan"  # Docker コンテナ + macvlan（OCIイメージを保持）
-    bridge = "bridge"    # Firecracker microVM + bridge（カーネル・rootfsを保持）
-
-
 class User(Base):
     __tablename__ = "users"
 
@@ -89,11 +84,12 @@ class Image(Base):
     name = Column(String(128), nullable=False, index=True)
     slug = Column(String(128), nullable=False)
     description = Column(Text, nullable=True)
-    backend = Column(Enum(Backend), default=Backend.macvlan, nullable=False)
-    # macvlan バックエンド: Docker OCI イメージ
+    # 後方互換のための旧 macvlan 用カラム（Firecracker 一本化後は未使用。
+    # 既存 DB では NOT NULL のため、新規行でも既定値を入れて挿入エラーを避ける）。
+    backend = Column(String(16), nullable=False, default="bridge")
     oci_ref = Column(String(512), nullable=False, default="")
     archive_path = Column(String(512), nullable=True)
-    # bridge バックエンド: Firecracker ゲストカーネル・rootfs
+    # Firecracker ゲストカーネル・rootfs
     kernel_path = Column(String(512), nullable=True)
     rootfs_path = Column(String(512), nullable=True)
     # rootfs としてファイルシステム tar がアップロード/リンクされた場合、ext4への変換が

@@ -141,30 +141,7 @@ class VMStartResult:
         self.ip = ip
 
 
-async def docker_load(archive_path: str) -> str:
-    cmd = ["docker", "load", "--input", archive_path]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-        if proc.returncode != 0:
-            logger.error(f"docker load failed: {stderr.decode().strip()}")
-            raise RuntimeError("docker load に失敗しました")
-        for line in stdout.decode().splitlines():
-            if line.startswith("Loaded image:"):
-                return line.split("Loaded image:", 1)[1].strip()
-            if line.startswith("Loaded image ID:"):
-                return line.split("Loaded image ID:", 1)[1].strip()
-        logger.error(f"docker load: unexpected output: {stdout.decode()!r}")
-        raise RuntimeError("docker load の出力からイメージ名を取得できませんでした")
-    except FileNotFoundError:
-        raise RuntimeError("docker コマンドが見つかりません。")
-
-
-# ---- Docker + macvlan バックエンド ----
+# ---- Firecracker (bridge) バックエンド ----
 
 _FALLBACK_GUEST_NETMASK = "255.255.240.0"  # /20 (ホストブリッジの subnet が取得できない場合のフォールバック。元のハードコード値を踏襲)
 
@@ -201,51 +178,6 @@ def _validate_ip(ip: str) -> None:
         raise ValueError(f"Invalid IP address: {ip}")
     if ip not in _ip_pool():
         raise ValueError(f"IP address not in pool: {ip}")
-
-
-async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
-    _validate_ip(ip)
-    vm_id = str(uuid.uuid4())
-    logger.info(f"docker run: oci_ref={repr(oci_ref)} ip={ip}")
-
-    cmd = [
-        "docker", "run", "-d",
-        "--name", vm_id,
-        "--network", settings.MACVLAN_NETWORK,
-        "--ip", ip,
-        "--cpus", str(cpu),
-        "--memory", f"{memory_mb}m",
-        "--memory-swap", f"{memory_mb}m",
-        "--storage-opt", f"size={settings.VM_DISK_LIMIT_GB}g",
-        "--pids-limit", str(settings.VM_PIDS_LIMIT),
-        "--ulimit", "nofile=1024:1024",
-        "--ulimit", f"nproc={settings.VM_PIDS_LIMIT}:{settings.VM_PIDS_LIMIT}",
-        "--restart", "no",
-        oci_ref,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode != 0:
-        logger.error(f"docker run failed: {stderr.decode().strip()}")
-        raise RuntimeError("コンテナの起動に失敗しました")
-
-    container_id = stdout.decode().strip()
-    logger.info(f"Container started: {container_id[:12]} image={oci_ref} ip={ip}")
-    return VMStartResult(vm_id=container_id, ip=ip)
-
-
-async def _stop_docker(vm_id: str) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "rm", "-f", vm_id,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await asyncio.wait_for(proc.communicate(), timeout=30)
-    logger.info(f"Container removed: {vm_id[:12]}")
 
 
 # ---- Firecracker バックエンド（KVM必須）----
@@ -691,79 +623,13 @@ def _find_orphan_fc_pid(vm_id: str) -> int | None:
     return None
 
 
-async def _get_macvlan_container_ids() -> set[str]:
-    """hackbento-vm（macvlan）ネットワークに接続中のコンテナIDを取得する。"""
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "ps", "-aq", "--filter", f"network={settings.MACVLAN_NETWORK}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return set()
-    if proc.returncode != 0:
-        return set()
-    return {line.strip() for line in stdout.decode().splitlines() if line.strip()}
-
-
-async def _cleanup_orphaned_docker_vms() -> None:
-    """オーケストレータ起動時に、前回プロセスが残した Docker コンテナ・DBレコードを後始末する。
-
-    双方向で突き合わせる:
-      1. DB が starting/running のままだが対応コンテナが実在しない → 異常終了とみなし stopped にする
-      2. macvlan ネットワーク上にコンテナは実在するが DB に対応する有効な Environment が無い
-         → IP・リソースを占有し続ける孤児として強制削除する（docker rm -f）
-    """
-    from database import AsyncSessionLocal
-    from models import Environment, EnvStatus
-    from sqlalchemy import select
-
-    container_ids = await _get_macvlan_container_ids()
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            # stopping は前回プロセスが停止処理の途中でクラッシュした場合に残り得るため、
-            # starting/running と同様に後始末の対象に含める（孤児化防止）。
-            select(Environment).where(Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]))
-        )
-        stale = result.scalars().all()
-
-        tracked_ids: set[str] = set()
-        for env in stale:
-            vm_id = env.vm_id
-            if vm_id and vm_id in container_ids:
-                tracked_ids.add(vm_id)
-                continue
-            # DB 上は起動中だが対応するコンテナが存在しない（異常終了）
-            logger.warning(f"対応コンテナが見つからない孤立環境を後始末します: env_id={env.id} vm_id={(vm_id or '')[:12]}")
-            env.status = EnvStatus.stopped
-        if stale:
-            await db.commit()
-
-    # DB に追跡されていないが macvlan 上に残っているコンテナを削除する
-    # （IPプールやリソース上限を圧迫するゾンビコンテナのため）
-    orphan_ids = container_ids - tracked_ids
-    for cid in orphan_ids:
-        logger.warning(f"DBに記録の無い孤立コンテナを削除します: container={cid[:12]}")
-        try:
-            await _stop_docker(cid)
-        except Exception as e:
-            logger.error(f"孤立コンテナの削除に失敗しました: container={cid[:12]}: {e}")
-
-
 async def cleanup_orphaned_vms() -> None:
-    """オーケストレータ起動時に、前回プロセスが残した VM・コンテナ・TAP・DBレコードを後始末する。
+    """オーケストレータ起動時に、前回プロセスが残した VM・TAP・DBレコードを後始末する。
 
     プロセス再起動でメモリ上の状態（_fc_pids など）は失われるため、
-    DB 上 starting/running のまま残っている Environment と実際の VM/コンテナの
+    DB 上 starting/running のまま残っている Environment と実際の VM の
     状態を突き合わせ、不整合を解消する。
     """
-    if settings.VM_BACKEND != "bridge":
-        await _cleanup_orphaned_docker_vms()
-        return
-
     _cleanup_stale_vm_cgroups()
 
     from database import AsyncSessionLocal
@@ -822,18 +688,10 @@ def _ip_to_mac(ip: str) -> str:
 
 async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024) -> VMStartResult:
     """
-    Image レコードの backend に応じて必要なデータ（oci_ref または kernel/rootfs）を
-    取り出し、ホストの VM_BACKEND に対応する実行パスへ渡す。
-
-    backend と VM_BACKEND は本来一致している前提（ホストは一方のモードのみで運用）。
+    Image レコードのゲストカーネル・rootfs を Firecracker microVM として起動する。
     """
-    if settings.VM_BACKEND == "bridge":
-        return await _start_firecracker(image.kernel_path, image.rootfs_path, ip, cpu, memory_mb)
-    return await _start_docker(image.oci_ref, ip, cpu, memory_mb)
+    return await _start_firecracker(image.kernel_path, image.rootfs_path, ip, cpu, memory_mb)
 
 
 async def stop_vm(vm_id: str) -> None:
-    if settings.VM_BACKEND == "bridge":
-        await _stop_firecracker(vm_id)
-    else:
-        await _stop_docker(vm_id)
+    await _stop_firecracker(vm_id)
