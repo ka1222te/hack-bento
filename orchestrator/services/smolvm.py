@@ -638,6 +638,14 @@ async def cleanup_orphaned_vms() -> None:
     from services.network import cleanup_orphaned_antispoof
     await cleanup_orphaned_antispoof(active_vm_ids=set())
 
+    # 前回のビルド VM が残した作業ディレクトリ（rootfs コピー等）を掃除する。
+    # ビルド用 cgroup（build-*）は _cleanup_stale_vm_cgroups が空 leaf として回収する。
+    try:
+        from services.image_build import cleanup_stale_build_work
+        cleanup_stale_build_work()
+    except Exception as e:
+        logger.warning(f"ビルド作業ディレクトリの掃除に失敗しました（続行）: {e}")
+
     from database import AsyncSessionLocal
     from models import Environment, EnvStatus
     from sqlalchemy import select

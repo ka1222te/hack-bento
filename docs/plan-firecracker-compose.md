@@ -168,9 +168,18 @@
 
 ---
 
-## フェーズ 4: ビルド用 VM 基盤
+## フェーズ 4: ビルド用 VM 基盤 ✅ 実装・実機検証完了
 
 **目的**: 信用できない入力（tar）を、ホスト上ではなくネットワークなしの使い捨て Firecracker VM 内で展開・組み立てる共通基盤を作る。フェーズ 6 の前提。
+
+**実施メモ**:
+- 新規 `services/image_build.py` に `run_build_vm(kernel, base_rootfs, scratch, cpu, memory_mb, timeout_s, boot_marker)` を実装。`_start_firecracker`（検証済みの本番パス）は改変せず、別系統の軽量ランチャーとして smolvm の低レベルヘルパ（`_create_vm_cgroup`/`_attach_pid_to_cgroup`/`_remove_vm_cgroup`/`_fc_api`/`_fc_wait_socket`/`_terminate_pid`/`_pid_alive`/`_fc_pids`）を再利用。
+- ネットワークなし（TAP・network-interface を作らない）。IP プール非消費・Environment レコード非作成（本番と枠を奪い合わない＝A 項）。
+- 2 本目ドライブ `scratch`（/dev/vdb）でバンドル投入・結果回収。ゲストは `hb_build=1` を cmdline で受けてビルドモードに入る。
+- ゲストの自己電源断（poweroff/reboot）= `fc_proc` 終了を検知して正常完了。必ずハードタイムアウト（既定 900s）を課し、超過時は kill して `BuildVMError`。
+- 同時ビルド数を `asyncio.Semaphore(MAX_CONCURRENT_BUILDS=1)` で直列化。build cgroup は `build-` 前缀で本番 vm_id（UUID）と衝突せず、空 leaf は既存 `_cleanup_stale_vm_cgroups` が回収。起動時に `cleanup_stale_build_work()` で作業ディレクトリ残骸を一掃（`cleanup_orphaned_vms` から呼ぶ）。
+- **実機検証（コンテナ内）**: (1) ネットワークなし 2 ドライブ起動成功・ハードタイムアウト（15s）で正常に kill、(2) Alpine rootfs に `/sbin/init` を debugfs で差し替えたゲストが scratch(/dev/vdb) をマウントして `result.txt` を書き戻し、ホストから `debugfs -R cat` で `BUILD_OK` を回収＝**データ往復を確認**、(3) いずれの経路でも build-work・build cgroup・firecracker プロセスの残骸ゼロを確認。
+  - 注: happy-path テストの自作 init は `poweroff` が実際には halt せずタイムアウトしたが、scratch への書き戻しは成功。実 halt は Phase 5 の docker-base init（正しい poweroff）で担保する。プロセス終了検知自体は timeout テストで実証済み。
 
 **設計**
 - `_start_firecracker` を汎用化し、以下を可能にする:
