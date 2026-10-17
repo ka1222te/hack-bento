@@ -238,9 +238,9 @@ table bridge {table} {{
     chain input {{
         type filter hook prerouting priority -300; policy accept;
         iifname != "{tap}" accept
-        ether saddr != {mac} drop
-        arp saddr ip != {ip} drop
-        ip saddr != {ip} drop
+        ether saddr != {mac} counter drop
+        arp saddr ip != {ip} counter drop
+        ip saddr != {ip} counter drop
     }}
 }}
 """
