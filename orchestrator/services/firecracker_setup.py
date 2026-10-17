@@ -129,6 +129,16 @@ tar -cf /rootfs.tar -C / --exclude=./proc --exclude=./sys --exclude=./dev --excl
 """
 
 
+# ホストの Docker ソケット（デフォルト資産・Attack Machine の rootfs 構築にのみ使用）。
+# セキュリティ上、定常運用では docker-compose.yml のマウントを外せるようにしており、
+# 外した場合は資産ビルドだけが無効化され、既存資産での VM 起動には影響しない。
+_DOCKER_SOCK = "/var/run/docker.sock"
+
+
+def _docker_available() -> bool:
+    return os.path.exists(_DOCKER_SOCK)
+
+
 async def _run(cmd: list[str], timeout: int = 600) -> None:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -237,6 +247,12 @@ async def _build_default_rootfs() -> None:
     if os.path.exists(DEFAULT_ROOTFS_PATH):
         logger.info(f"デフォルト rootfs は既に存在します: {DEFAULT_ROOTFS_PATH}")
         return
+    if not _docker_available():
+        raise RuntimeError(
+            "デフォルト rootfs の構築には Docker (docker.sock) が必要ですが、"
+            f"{_DOCKER_SOCK} が見つかりません。資産ビルド時のみ docker-compose.yml の "
+            "docker.sock マウントを有効にするか、rootfs を手動でアップロードしてください。"
+        )
     logger.info("デフォルト rootfs を構築中...")
 
     # オーケストレータは Docker-in-Docker (ホストの docker.sock を共有) で動作しており、
@@ -518,6 +534,14 @@ async def _build_attack_rootfs() -> None:
     if os.path.exists(ATTACK_ROOTFS_PATH):
         logger.info(f"Attack Machine 用 rootfs は既に存在します: {ATTACK_ROOTFS_PATH}")
         attack_rootfs_build_status = "ready"
+        return
+    if not _docker_available():
+        attack_rootfs_build_status = "failed"
+        attack_rootfs_build_error = (
+            f"Attack Machine の rootfs 構築には Docker (docker.sock) が必要ですが、"
+            f"{_DOCKER_SOCK} が見つかりません。資産ビルド時のみ docker.sock マウントを有効にしてください。"
+        )
+        logger.warning(attack_rootfs_build_error)
         return
     logger.info("Attack Machine 用 rootfs (Kali) を構築中...")
     attack_rootfs_build_status = "building"

@@ -9,7 +9,12 @@ services:
     volumes:
       - ./orchestrator:/app
       - ./data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 注意: ホストの docker.sock は意図的にマウントしていない。
+      # docker.sock はコンテナからホスト Docker デーモン＝実質ホスト root へ到達でき、
+      # Firecracker 脱出等の際の被害を大きくするため、定常運用では外す。
+      # 用途はデフォルト/Attack Machine rootfs の初回自動ビルドのみ（既存資産があれば不要）。
+      # 自動ビルドが必要な初回だけ、下行のコメントを外して資産生成後に再度外すこと:
+      #   - /var/run/docker.sock:/var/run/docker.sock
     network_mode: host
     restart: unless-stopped
     healthcheck:

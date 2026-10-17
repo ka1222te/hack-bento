@@ -134,7 +134,21 @@
 
 ---
 
-## フェーズ 3: jailer による Firecracker 封じ込め
+## フェーズ 3: Firecracker 脱出時の被害極小化（jailer は不採用 → docker.sock 隔離）✅ 実装・実機検証完了
+
+**結論の変更**: jailer は**この環境では採用しない**。jailer v1.16 は起動時に必ず mount namespace を `unshare(CLONE_NEWNS)` し、これに `CAP_SYS_ADMIN` が必要。orchestrator コンテナは `CAP_SYS_ADMIN` を持たず（実機で `Failed to unshare into new mount namespace: EPERM` を確認）、付与すると `cgroup: host` + host networking と相まってコンテナがほぼホスト root 相当になり、jailer の保護目的（ホストへの被害抑制）を上回って逆効果。ユーザ判断で「jailer 見送り・docker.sock 隔離を優先」を選択。
+
+**代わりに実施した被害極小化**:
+- **docker.sock マウントを撤去**（`docker-compose.yml`）。orchestrator はホスト Docker デーモン（＝実質ホスト root）へ到達できなくなり、Firecracker 脱出や orchestrator 侵害時の被害が大幅に縮小。実機で「コンテナ内から `docker ps` 不可・`/var/run/docker.sock` 不在」を確認。
+- docker.sock の唯一の用途は**デフォルト/Attack Machine rootfs の初回自動ビルド**（`firecracker_setup._build_default_rootfs`/`_build_attack_rootfs`）。資産が既に存在すれば未使用のため、定常運用でマウント不要。`_docker_available()` ガードを追加し、ソケット不在時はビルドのみ明確なメッセージで失敗（VM 起動には影響しない）。初回だけマウントを有効化して資産生成後に外す運用を compose にコメントで明記。
+- **Firecracker の既定 seccomp フィルタは有効**（`--no-seccomp` を付けていない）。jailer 無しでも FC プロセスのシステムコールは制限される。これが FC 脱出に対する実効的な緩和。
+- 実機検証: docker.sock 無しで orchestrator が正常起動（資産存在のため build 未実行・エラーなし）・`/health` OK・Phase2 anti-spoof と VM 起動パスに退行なし。
+
+**将来（Phase 4-6 で解消）**: rootfs ビルドはビルド用 VM へ移行し、docker.sock を恒久的に不要化する。それまでは初回のみ一時マウントで対応。
+
+---
+
+## （旧）フェーズ 3: jailer による Firecracker 封じ込め（不採用・記録として保持）
 
 **目的**: 万一 VM から脱出されても、Firecracker プロセスの権限を最小化し、ホスト（特に docker.sock）への到達を断つ。
 
