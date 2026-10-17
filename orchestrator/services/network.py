@@ -237,7 +237,7 @@ async def _apply_tap_antispoof(vm_id: str, tap: str, ip: str) -> None:
 table bridge {table} {{
     chain input {{
         type filter hook prerouting priority -300; policy accept;
-        iif != "{tap}" accept
+        iifname != "{tap}" accept
         ether saddr != {mac} drop
         arp saddr ip != {ip} drop
         ip saddr != {ip} drop

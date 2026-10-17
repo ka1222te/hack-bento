@@ -106,7 +106,14 @@
 - `create_tap(vm_id, ip)` にシグネチャ変更（MAC は `ip_to_mac` で導出。smolvm の `_ip_to_mac` と同一規則を network.py に複製し循環 import を回避）。`delete_tap` が anti-spoof テーブルも除去。
 - `cleanup_orphaned_vms` に `cleanup_orphaned_antispoof` を追加（起動時に残留 `hb_*` テーブルを一掃）。
 - Dockerfile に `nftables` を追加。nft 不在/失敗時は警告にとどめ VM 起動はブロックしない（多層防御の方針）。
-- nft ルールのグラマは host の `nft -c` でパース検証済み（netlink 実行は root=コンテナ内 NET_ADMIN で行われる）。**未実施**: 実機で spoof フレームが実際に drop されること・正規 IP での SSH 到達の確認。
+- nft ルールのグラマは host の `nft -c` でパース検証済み（netlink 実行は root=コンテナ内 NET_ADMIN で行われる）。
+- `iif "name"`（挿入時に ifindex 解決・TAP 不在だと失敗）を `iifname "name"`（パケット毎の名前照合）へ変更。TAP 作成前後の順序依存と ifindex 再利用レースを回避。
+
+**実機検証済み（コンテナ内・commit で反映）**:
+- Phase 1/2 を載せた orchestrator イメージを再ビルド（`nftables` 入り確認）→ 起動ログ正常（macvlan 経路なし・IP プール検証 OK・lifespan の anti-spoof sweep がエラーなく実行）。`/health` OK、nft がコンテナ内で動作（NET_ADMIN）。
+- `create_tap(vm_id, ip)` → TAP 作成＋`bridge hb_<id8>` テーブル生成（規則内容を確認）→ `delete_tap` で TAP・テーブルとも除去を確認。
+- `cleanup_orphaned_antispoof`: 複数の残留テーブルを作り、active 指定したものだけ残し他を削除／空 active で全削除、を確認。
+- **未実施（実 VM が要る範囲）**: 実ゲストから spoof フレームを送って実際に drop されること・正規 IP での SSH 到達の確認（API ログインに管理者資格が要るため、サービス層で代替検証した）。
 - （未対応・将来）VM→外向きの許可リスト化、VM 間通信ポリシーは F 項として別途検討。
 
 **設計**
