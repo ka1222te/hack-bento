@@ -69,6 +69,8 @@ class ImageResponse(BaseModel):
     default_rootfs_asset_id: Optional[int] = None
     rootfs_conversion_status: str = RootfsConversionStatus.ready.value
     rootfs_conversion_error: Optional[str] = None
+    rootfs_kind: str = "os"
+    compose_summary: Optional[dict] = None
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -128,6 +130,17 @@ def _read_readme(path: Optional[str]) -> Optional[str]:
     return None
 
 
+def _parse_compose_summary(raw: Optional[str]) -> Optional[dict]:
+    """Image.compose_summary(JSON文字列) を dict に復元する（UI 表示用）。"""
+    if not raw:
+        return None
+    try:
+        import json
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
 async def _build_response(image: Image, db: AsyncSession, include_readme: bool = False) -> ImageResponse:
     owner_username = None
     if image.owner_id:
@@ -149,6 +162,8 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         default_rootfs_asset_id=image.default_rootfs_asset_id,
         rootfs_conversion_status=image.rootfs_conversion_status,
         rootfs_conversion_error=image.rootfs_conversion_error,
+        rootfs_kind=getattr(image, "rootfs_kind", "os") or "os",
+        compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -220,6 +235,43 @@ _VM_ASSET_KINDS = {
     "kernel": {"suffix": "vmlinux", "model": None, "label": "ゲストカーネル"},
     "rootfs": {"suffix": "rootfs.ext4", "model": None, "label": "rootfs"},
 }
+
+
+async def _resolve_default_kernel(db: AsyncSession) -> tuple[str, Optional[int]]:
+    """Compose バンドル用のカーネル（共有デフォルト）を解決する。"""
+    from models import DefaultKernelAsset
+    result = await db.execute(
+        select(DefaultKernelAsset).where(DefaultKernelAsset.is_active == True).order_by(DefaultKernelAsset.id).limit(1)
+    )
+    asset = result.scalar_one_or_none()
+    if asset is None or not os.path.exists(asset.file_path):
+        raise HTTPException(
+            status_code=400,
+            detail="デフォルトゲストカーネルが見つかりません（管理者に初期セットアップを依頼してください）",
+        )
+    return asset.file_path, asset.id
+
+
+async def _resolve_docker_base_asset(base_rootfs_asset_id: Optional[int], db: AsyncSession) -> int:
+    """Compose バンドルの土台に使う docker-base 資産 id を解決する。未指定なら有効な既定を使う。"""
+    from models import DefaultRootfsAsset
+    if base_rootfs_asset_id is not None:
+        asset = await db.get(DefaultRootfsAsset, base_rootfs_asset_id)
+        if asset is None or asset.kind != "docker-base" or not asset.is_active:
+            raise HTTPException(status_code=400, detail="指定された docker-base 資産が見つかりません")
+        return asset.id
+    result = await db.execute(
+        select(DefaultRootfsAsset).where(
+            DefaultRootfsAsset.kind == "docker-base", DefaultRootfsAsset.is_active == True
+        ).order_by(DefaultRootfsAsset.id).limit(1)
+    )
+    asset = result.scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(
+            status_code=400,
+            detail="docker-base 資産が未登録です（管理者がデフォルトVM資産に docker-base を登録してください）",
+        )
+    return asset.id
 
 
 async def _resolve_vm_asset(
@@ -404,6 +456,10 @@ async def upload_image(
     default_rootfs_asset_id: Optional[int] = Form(None),
     kernel_url: Optional[str] = Form(None),
     rootfs_url: Optional[str] = Form(None),
+    # Compose バンドル経路
+    rootfs_kind: str = Form("os"),
+    bundle: Optional[UploadFile] = File(None),
+    base_rootfs_asset_id: Optional[int] = Form(None),
     readme: Optional[UploadFile] = File(None),
     readme_text: Optional[str] = Form(None),
     name: str = Form(...),
@@ -456,45 +512,90 @@ async def upload_image(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="このslugは既に使用されています")
 
+    if rootfs_kind not in ("os", "compose"):
+        raise HTTPException(status_code=400, detail="rootfs_kind は os または compose を指定してください")
+
     kernel_path = None
     rootfs_path = None
     kernel_asset_id: Optional[int] = None
     rootfs_asset_id: Optional[int] = None
+    base_asset_id: Optional[int] = None
     rootfs_conversion_status: str = RootfsConversionStatus.ready.value
     rootfs_source_archive_path: Optional[str] = None
 
-    # ゲストカーネル・rootfs は default/file/link のいずれかで指定
-    if kernel_mode not in ("default", "file", "link"):
-        raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
-    if rootfs_mode not in ("default", "file", "link"):
-        raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
+    if rootfs_kind == "compose":
+        # Compose バンドル経路: カーネルは共有デフォルト、rootfs はビルド用 VM が組み立てる。
+        # バンドル tar を保存して pending にし、services.bundle_build が処理する。
+        kernel_path, kernel_asset_id = await _resolve_default_kernel(db)
+        base_asset_id = await _resolve_docker_base_asset(base_rootfs_asset_id, db)
+        if not (bundle and bundle.filename and (bundle.size or 0) > 0):
+            raise HTTPException(status_code=400, detail="Compose バンドル（.tar）をアップロードしてください")
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        bundle_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.bundle.tar")
+        try:
+            written = 0
+            with open(bundle_path, "wb") as f:
+                while chunk := await bundle.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > image_max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"バンドルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                        )
+                    f.write(chunk)
+        except HTTPException:
+            if os.path.exists(bundle_path):
+                os.remove(bundle_path)
+            raise
+        except Exception:
+            if os.path.exists(bundle_path):
+                os.remove(bundle_path)
+            raise HTTPException(status_code=500, detail="バンドル保存に失敗しました")
+        # 中身が Compose バンドルか軽く確認（詳細検査はビルドワーカーが行う）
+        if _detect_archive_kind(bundle_path) != "compose-bundle":
+            os.remove(bundle_path)
+            raise HTTPException(
+                status_code=400,
+                detail="Compose バンドル形式ではありません（hackbento-pack --bundle で作成したファイルをアップロードしてください）",
+            )
+        # ビルド成果物（本番 rootfs）の出力先を採番
+        os.makedirs(VM_DIR, exist_ok=True)
+        rootfs_path = os.path.join(VM_DIR, f"compose-{uuid.uuid4()}.ext4")
+        rootfs_source_archive_path = bundle_path
+        rootfs_conversion_status = RootfsConversionStatus.pending.value
+    else:
+        # ゲストカーネル・rootfs は default/file/link のいずれかで指定
+        if kernel_mode not in ("default", "file", "link"):
+            raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
+        if rootfs_mode not in ("default", "file", "link"):
+            raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
 
-    new_kernel_path: Optional[str] = None
-    new_rootfs_path: Optional[str] = None
-    rootfs_conversion: Optional[dict] = None
-    try:
-        new_kernel_path, kernel_asset_id, _ = await _resolve_vm_asset(
-            kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
-            asset_id=default_kernel_asset_id, db=db,
+        new_kernel_path: Optional[str] = None
+        new_rootfs_path: Optional[str] = None
+        rootfs_conversion: Optional[dict] = None
+        try:
+            new_kernel_path, kernel_asset_id, _ = await _resolve_vm_asset(
+                kind="kernel", mode=kernel_mode, upload=kernel, url=kernel_url,
+                asset_id=default_kernel_asset_id, db=db,
+            )
+            new_rootfs_path, rootfs_asset_id, rootfs_conversion = await _resolve_vm_asset(
+                kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
+                asset_id=default_rootfs_asset_id, db=db,
+            )
+        except HTTPException:
+            if new_kernel_path and kernel_mode != "default" and os.path.exists(new_kernel_path):
+                os.remove(new_kernel_path)
+            # rootfs: tar変換待ちの場合は変換元アーカイブが実体（ext4の方は未生成）
+            rootfs_cleanup_path = (rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
+            if rootfs_cleanup_path and rootfs_mode != "default" and os.path.exists(rootfs_cleanup_path):
+                os.remove(rootfs_cleanup_path)
+            raise
+        kernel_path = new_kernel_path
+        rootfs_path = new_rootfs_path
+        rootfs_conversion_status = (
+            RootfsConversionStatus.pending.value if rootfs_conversion else RootfsConversionStatus.ready.value
         )
-        new_rootfs_path, rootfs_asset_id, rootfs_conversion = await _resolve_vm_asset(
-            kind="rootfs", mode=rootfs_mode, upload=rootfs, url=rootfs_url,
-            asset_id=default_rootfs_asset_id, db=db,
-        )
-    except HTTPException:
-        if new_kernel_path and kernel_mode != "default" and os.path.exists(new_kernel_path):
-            os.remove(new_kernel_path)
-        # rootfs: tar変換待ちの場合は変換元アーカイブが実体（ext4の方は未生成）
-        rootfs_cleanup_path = (rootfs_conversion or {}).get("source_archive_path") or new_rootfs_path
-        if rootfs_cleanup_path and rootfs_mode != "default" and os.path.exists(rootfs_cleanup_path):
-            os.remove(rootfs_cleanup_path)
-        raise
-    kernel_path = new_kernel_path
-    rootfs_path = new_rootfs_path
-    rootfs_conversion_status = (
-        RootfsConversionStatus.pending.value if rootfs_conversion else RootfsConversionStatus.ready.value
-    )
-    rootfs_source_archive_path = (rootfs_conversion or {}).get("source_archive_path")
+        rootfs_source_archive_path = (rootfs_conversion or {}).get("source_archive_path")
 
     # README 保存（ファイル優先、なければテキスト入力）
     readme_path = None
@@ -540,6 +641,8 @@ async def upload_image(
         description=description,
         kernel_path=kernel_path,
         rootfs_path=rootfs_path,
+        rootfs_kind=rootfs_kind,
+        base_rootfs_asset_id=base_asset_id,
         default_kernel_asset_id=kernel_asset_id,
         default_rootfs_asset_id=rootfs_asset_id,
         rootfs_conversion_status=rootfs_conversion_status,

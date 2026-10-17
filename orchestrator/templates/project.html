@@ -59,6 +59,12 @@
         <!-- 説明 -->
         <div class="project-readme" id="project-desc"></div>
 
+        <!-- Compose 構成（バンドルの場合） -->
+        <div id="compose-info" class="hidden" style="margin-top:1rem">
+          <h3 style="margin:0 0 .4rem;font-size:.95rem">Compose 構成</h3>
+          <div id="compose-info-body" style="font-size:.9rem"></div>
+        </div>
+
         <!-- README -->
         <div id="readme-section" class="hidden">
           <div class="readme-header">
@@ -202,6 +208,19 @@ async function init() {
   // 説明
   document.getElementById('project-desc').textContent = imageData.description || '';
 
+  // Compose 構成（バンドルの場合はサービス・公開ポートを表示）
+  if (imageData.rootfs_kind === 'compose' && imageData.compose_summary) {
+    const cs = imageData.compose_summary;
+    const svcRows = (cs.services || []).map(s =>
+      `<li><code>${escHtml(s.name)}</code> → ${escHtml(s.image || '')}${(s.ports && s.ports.length) ? ` <span class="cat-badge">:${s.ports.map(escHtml).join(', :')}</span>` : ''}</li>`
+    ).join('');
+    const ports = (cs.published_ports || []);
+    document.getElementById('compose-info-body').innerHTML =
+      `<div style="margin-bottom:.3rem">公開ポート: ${ports.length ? ports.map(p => `<span class="cat-badge">${escHtml(p)}</span>`).join(' ') : '（なし）'}</div>`
+      + `<ul style="margin:.2rem 0 0;padding-left:1.2rem">${svcRows}</ul>`;
+    document.getElementById('compose-info').classList.remove('hidden');
+  }
+
   // aside
   document.getElementById('aside-diff').innerHTML = imageData.difficulty !== 'none'
     ? `<span class="diff-badge diff-${imageData.difficulty}">${diffLabel[imageData.difficulty]}</span>`
@@ -255,8 +274,13 @@ function renderLaunchPanel() {
   const running = myEnvs.find(e => e.image_id === imageData.id);
   const atLimit = myEnvs.length >= MAX_ENVS;
 
-  const _ROOTFS_CONVERSION_LABELS = { pending: 'rootfs を変換待ちです', converting: 'rootfs を ext4 へ変換中です', failed: 'rootfs の変換に失敗しました' };
-  const _ROOTFS_CONVERSION_BADGE_LABELS = { pending: '変換待ち', converting: '変換中...', failed: '変換失敗' };
+  const _isCompose = imageData.rootfs_kind === 'compose';
+  const _ROOTFS_CONVERSION_LABELS = _isCompose
+    ? { pending: 'Compose バンドルのビルド待ちです', converting: 'Compose バンドルをビルド中です', failed: 'Compose バンドルのビルドに失敗しました' }
+    : { pending: 'rootfs を変換待ちです', converting: 'rootfs を ext4 へ変換中です', failed: 'rootfs の変換に失敗しました' };
+  const _ROOTFS_CONVERSION_BADGE_LABELS = _isCompose
+    ? { pending: 'ビルド待ち', converting: 'ビルド中...', failed: 'ビルド失敗' }
+    : { pending: '変換待ち', converting: '変換中...', failed: '変換失敗' };
   const convStatus = imageData.rootfs_conversion_status;
   if (!running && convStatus && convStatus !== 'ready') {
     panel.innerHTML = `

@@ -298,9 +298,17 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 
 ---
 
-## フェーズ 7: UI（入力形式の分岐・状態表示）
+## フェーズ 7: UI（入力形式の分岐・状態表示）✅ 実装・実機検証完了
 
 **目的**: 作成者の導線を「OS イメージ」と「Compose バンドル」に分ける。
+
+**実施メモ**:
+- アップロードルータ `upload_image` に `rootfs_kind`(os/compose)・`bundle`・`base_rootfs_asset_id` を追加。compose 経路では共有デフォルトカーネルを解決（`_resolve_default_kernel`）、docker-base 資産を解決（`_resolve_docker_base_asset`）、バンドル tar を保存して `_detect_archive_kind == "compose-bundle"` を確認、成果物 rootfs パスを採番し `pending`+`rootfs_kind='compose'` で Image 作成（＝Phase 6 ワーカーが処理）。
+- `ImageResponse`/`_build_response` に `rootfs_kind`・`compose_summary`（JSON→dict）を追加。
+- `new_project.html`: 「登録する形式」トグル（OS イメージ / Compose バンドル）を追加し、`os-fields`/`compose-fields` を出し分け。バンドルアップロード欄・送信時のフィールド整理（compose 時は kernel/rootfs 系を送らない、os 時は bundle を送らない）。残っていた macvlan 時代の `isBridge` 分岐・`img-toggle` 参照を除去。
+- `project.html`: 変換ステータスのラベルを compose 用（ビルド待ち/ビルド中/ビルド失敗）に出し分け。pending/converting 中は起動ボタンを無効化（既存ロジック流用）。「Compose 構成」セクションで `compose_summary` のサービス・公開ポートをバッジ表示。
+- **実機エンドツーエンド（実 HTTP API）**: 自前発行の JWT で `POST /api/images/upload`（rootfs_kind=compose + bundle）→ Image 作成（pending・compose・default kernel 解決）→ bundle_build worker が claim → converting → **ready を ~15 秒で確認**。API 応答の `compose_summary` に `project=mytest, web→nginx:1.27-alpine, published_ports=[8080]` が入ることを確認（project.html の表示データ）。検証後にテスト行・成果物を削除し docker.sock 無しの安全構成へ復帰。
+- 残（Phase 8）: `hackbento-pack`（手元でバンドル/ext4 を作るツール）と rootfs 作成手順ページ。admin UI の docker-base 登録タブ（Phase 5 からの繰り越し）。
 
 **変更箇所**
 - [ ] `new_project.html`: 「登録する形式」ラジオ（OS イメージ / Compose バンドル）。選択で入力欄を出し分け。
