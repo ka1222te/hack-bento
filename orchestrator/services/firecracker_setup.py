@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import tarfile
 import tempfile
 import shutil
 
@@ -324,6 +325,106 @@ async def _run_to_file(cmd: list[str], dest_path: str, timeout: int = 600) -> No
         raise RuntimeError(f"{' '.join(cmd)}: {stderr.decode().strip()}")
 
 
+def _resolve_within(dest_real: str, norm_path: str) -> str:
+    """dest_real（展開先の実パス）を基準に norm_path を1階層ずつ解決し、実パスを返す。
+
+    途中の階層が既存のシンボリックリンクであれば os.path.realpath と同様に解決するが、
+    「解決結果が dest_real の外に出た時点で例外を上げる」点が os.path.realpath と異なる
+    （realpath は外に出ても黙って解決してしまい、呼び出し後に文字列比較するしかない。
+    ここでは1階層ごとに検証するため、最終コンポーネント自身がシンボリックリンクで
+    外を指す場合も確実に捕まえる）。
+    """
+    current = dest_real
+    parts = [p for p in norm_path.split(os.sep) if p not in ("", ".")]
+    for part in parts:
+        candidate = os.path.join(current, part)
+        if os.path.islink(candidate):
+            link_target = os.readlink(candidate)
+            if os.path.isabs(link_target):
+                resolved = os.path.normpath(link_target)
+            else:
+                resolved = os.path.normpath(os.path.join(current, link_target))
+            # リンク先自体がさらにリンクの場合に備え realpath で完全解決する。
+            # ただし起点は必ず current（展開先内の既知の位置）に固定しているため、
+            # ホスト上の無関係な絶対パスへは、リンク先が展開先の中を指す限り出ない。
+            resolved = os.path.realpath(resolved) if os.path.exists(resolved) else resolved
+            if not (resolved == dest_real or resolved.startswith(dest_real + os.sep)):
+                raise tarfile.TarError(f"展開先の外を指すシンボリックリンクです: {part} -> {link_target}")
+            current = resolved
+        else:
+            current = candidate
+    return current
+
+
+def _safe_extract_tar(tar_path: str, dest_dir: str) -> None:
+    """信用できない tar を安全に展開する（ブロッキングI/O・executor経由で呼ぶこと）。
+
+    方針: シンボリックリンクの *作成* 自体は許可する（リンク先がどこを指す文字列であれ、
+    作成時点では何も読み書きしないため無害）。Alpine/Debian 等の実在の rootfs は
+    `/bin/ls -> /bin/busybox` のような絶対パスのシンボリックリンクを標準的に含むため、
+    tarfile の filter="data" のように絶対パスリンクを一律拒否すると正当な rootfs の
+    変換そのものが壊れる。
+    その代わり、通常ファイル/ディレクトリを書き込む *直前* に、その書き込み先の親ディレクトリを
+    1階層ずつ解決し、既存のシンボリックリンクを経由して展開先ディレクトリの外に出ていないかを
+    検証する（symlink traversal 対策）。エントリ名自体の絶対パス・親参照（../）は常に拒否する。
+    """
+    dest_real = os.path.realpath(dest_dir)
+    os.makedirs(dest_real, exist_ok=True)
+
+    with tarfile.open(tar_path) as tf:
+        for m in tf.getmembers():
+            norm = os.path.normpath(m.name)
+            if m.name.startswith("/") or os.path.isabs(norm) or norm.startswith(".."):
+                raise tarfile.TarError(f"不正なパスを含むエントリです: {m.name}")
+            if m.isdev() or m.ischr() or m.isblk() or m.isfifo():
+                raise tarfile.TarError(f"デバイス/FIFOファイルを含むエントリです: {m.name}")
+
+            parent_norm = os.path.dirname(norm)
+            # 親ディレクトリを1階層ずつ解決し、途中の symlink が外を指していないか検証する。
+            # （エントリ自身の名前がまだ存在しない通常のケースなので、親までを検証すれば十分）
+            parent_real = _resolve_within(dest_real, parent_norm) if parent_norm else dest_real
+            target_path = os.path.join(parent_real, os.path.basename(norm))
+
+            if m.issym():
+                # シンボリックリンクの作成自体は許可する（中身はリンク先の文字列のみで、
+                # 作成時点では何も読み書きしない）。既存の同名パスがあれば削除してから作る。
+                os.makedirs(parent_real, exist_ok=True)
+                if os.path.lexists(target_path):
+                    os.remove(target_path)
+                os.symlink(m.linkname, target_path)
+                continue
+            if m.islnk():
+                # ハードリンクは tar 内の別エントリを指す。リンク先が展開先の内側にあるかのみ検証。
+                link_norm = os.path.normpath(m.linkname)
+                if os.path.isabs(m.linkname) or link_norm.startswith(".."):
+                    raise tarfile.TarError(f"展開先の外を指すハードリンクです: {m.name} -> {m.linkname}")
+                link_target_real = _resolve_within(dest_real, link_norm)
+                if not os.path.exists(link_target_real):
+                    raise tarfile.TarError(f"ハードリンクの参照先が見つかりません: {m.name} -> {m.linkname}")
+                os.makedirs(parent_real, exist_ok=True)
+                if os.path.lexists(target_path):
+                    os.remove(target_path)
+                os.link(link_target_real, target_path)
+                continue
+
+            if m.isdir():
+                os.makedirs(target_path, exist_ok=True)
+                continue
+
+            # 通常ファイル等。tarfile に実体の書き込みを任せるが、展開先は検証済みの実パスにする。
+            os.makedirs(parent_real, exist_ok=True)
+            if os.path.lexists(target_path) and not os.path.isdir(target_path):
+                os.remove(target_path)
+            m_copy = tarfile.TarInfo(name=os.path.basename(norm))
+            m_copy.type, m_copy.mode, m_copy.size = m.type, m.mode, m.size
+            m_copy.mtime, m_copy.uid, m_copy.gid = m.mtime, m.uid, m.gid
+            if m.isfile():
+                with tf.extractfile(m) as src, open(target_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                os.chmod(target_path, m.mode & 0o7777)
+            # isfile 以外（ソケット等）は無視する（ゲスト rootfs に不要かつ扱いが煩雑なため）
+
+
 async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB) -> None:
     """単純なファイルシステム tar を ext4 イメージへ変換し、dest_path へ os.replace する。
 
@@ -334,7 +435,14 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
     try:
         rootfs_root = os.path.join(tmpdir, "rootfs")
         os.makedirs(rootfs_root, exist_ok=True)
-        await _run(["tar", "-xf", tar_path, "-C", rootfs_root])
+        # tar 展開はブロッキングI/O（数百MB規模になり得る）のため event loop を専有しないよう
+        # executor で実行する。かつ filter="data" で展開先の外への書き込みを防ぐ。
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, _safe_extract_tar, tar_path, rootfs_root
+            )
+        except tarfile.TarError as e:
+            raise RuntimeError(f"rootfs tar の展開に失敗しました（不正な構造の可能性があります): {e}")
         for d in ("proc", "sys", "dev", "tmp"):
             os.makedirs(os.path.join(rootfs_root, d), exist_ok=True)
 

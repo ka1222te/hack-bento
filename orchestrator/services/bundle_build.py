@@ -39,6 +39,15 @@ MAX_BUNDLE_EXTRACTED_BYTES = 12 * 1024 * 1024 * 1024  # 展開後合計 12GiB
 # compose が禁止する構成（別 IP を名乗る等）。ビルド用 VM が出力した正規化 JSON に対して判定する。
 # （compose 自体はビルド用 VM の中の docker compose に正規化させる＝ホストで独自パースしない）
 
+# overlay/ で上書きされると docker-base の起動の仕組みそのものが壊れるパス
+# （/sbin/init が無いとゲストカーネルが起動できない・daemon.json を壊すと dockerd が
+# 起動しない等）。ビルド用 VM の中で "cp -a overlay/. /" として展開されるため、
+# ホストには影響しないが、VM 自体が起動できなくなる事故を受付検査で未然に防ぐ。
+_PROTECTED_OVERLAY_PATHS = (
+    "sbin/init",
+    "etc/docker/daemon.json",
+)
+
 
 class BundleError(RuntimeError):
     pass
@@ -76,10 +85,20 @@ def _validate_bundle_tar(tar_path: str) -> dict:
                 # 展開先の外を指すリンクを拒否（絶対・親参照）
                 if target.startswith("/") or os.path.normpath(os.path.join(os.path.dirname(norm), target)).startswith(".."):
                     raise BundleError(f"バンドルに外部を指すリンクが含まれています: {name} -> {target}")
+            cleaned = norm.lstrip("./")
+            # overlay/ はビルド用 VM 内で "/" に直接上書きコピーされる。
+            # /sbin/init 等の起動の仕組みそのものを上書きされると VM が起動できなくなるため、
+            # 受付検査（展開前）で拒否する。
+            if cleaned.startswith("overlay/"):
+                overlay_rel = cleaned[len("overlay/"):]
+                if overlay_rel in _PROTECTED_OVERLAY_PATHS:
+                    raise BundleError(
+                        f"overlay/{overlay_rel} は起動の仕組みに関わるため上書きできません"
+                    )
             total += max(m.size, 0)
             if total > MAX_BUNDLE_EXTRACTED_BYTES:
                 raise BundleError(f"展開後サイズが大きすぎます（上限 {MAX_BUNDLE_EXTRACTED_BYTES // (1024**3)}GiB）")
-            names.add(norm.lstrip("./"))
+            names.add(cleaned)
 
     if "hackbento-bundle.json" not in names:
         raise BundleError("Compose バンドルではありません（hackbento-bundle.json が見つかりません）")

@@ -281,7 +281,7 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 | macvlan/ipvlan ネットワーク、`ipv4_address`/`ipv6_address`、`external` ネットワーク | 拒否 |
 | 参照イメージが images.tar に不在（かつ対応する build 成果物も無い） | 拒否（不足イメージ名を表示） |
 | `privileged` / `network_mode: host` / docker.sock マウント | 許可（影響は VM 内に閉じる） |
-| overlay が `/sbin/init`・起動サービスを上書き | 拒否 or 警告 |
+| overlay が `/sbin/init`・`/etc/docker/daemon.json` を上書き | ✅ **拒否**（実装済み・受付検査段階）。`_PROTECTED_OVERLAY_PATHS` に列挙したパスを `overlay/` 配下に含むバンドルは `_validate_bundle_tar` の時点で `BundleError` を上げ、ビルド用 VM を起動する前に拒否する。`overlay/root/flag.txt` 等の通常用途は許可されることを実機確認済み |
 | 公開ポート一覧 | 保存（UI 表示用） |
 
 **変更箇所**
@@ -292,7 +292,8 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 - [ ] zstd 対応が必要なら受付検査・展開を拡張（現 `tarfile` は zstd 非対応）。
 
 **（並行）既存 OS イメージ経路の tar 展開もビルド用 VM に寄せる**
-- [ ] `convert_tar_to_ext4`（ホスト上 `tar -xf`、[firecracker_setup.py:159-190](../orchestrator/services/firecracker_setup.py#L159)）を、ビルド用 VM 経由に移行。信用できない tar をホストで展開しない方針に統一。移行までの暫定として、`--no-absolute-names` 等の防御を先に入れてもよい。
+- [x]（暫定対応・実施済み）`convert_tar_to_ext4` のホスト上 `tar -xf` を Python 製の安全な展開（`_safe_extract_tar`）に置き換えた。symlink の*作成*は許可（Alpine/Debian 系 rootfs が標準で持つ `/bin/sh -> /bin/busybox` 等の絶対パス symlink を壊さないため、`tarfile` の `filter="data"` は不採用）、通常ファイル/ディレクトリの書き込み直前に親パスを1階層ずつ解決し、既存 symlink 経由で展開先の外に出ていないかを検証（symlink traversal 対策）。絶対パス・`../` を含むエントリ名は従来通り拒否。実機で (1) 絶対パス symlink を含む正当な rootfs が変換後も中身を保持して展開できること、(2) 絶対パス/相対パスいずれの symlink traversal 攻撃も `TarError` で検知されホスト側に書き込みが発生しないこと、を確認済み。
+- [ ]（本対応・未実施）`convert_tar_to_ext4` 自体をビルド用 VM 経由に移行し、信用できない tar をホストで展開しない方針に完全統一する。
 
 **検証**: web+db+lb の3コンテナ構成バンドルを ready にし、起動 → ポートごとに各コンテナへ到達することを確認。overlay のフラグが VM の `/root` に存在することを確認。
 
