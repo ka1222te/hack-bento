@@ -221,24 +221,24 @@
 
         <!-- 追加カーネル起動引数 -->
         <input type="hidden" name="extra_boot_args" id="extra-boot-args-input" value="" />
-        <div class="np-field">
-          <label class="np-label">追加カーネル起動引数 <span class="np-optional">optional</span></label>
-          <p class="np-hint" style="margin:0 0 .5rem">
-            カーネル exploit 問題で防御を外す場合に選択します。
-          </p>
-          <div id="boot-args-checkboxes">
-            <label class="np-checkbox-label"><input type="checkbox" value="nokaslr"> <code>nokaslr</code> — KASLR（カーネルアドレスのランダム化）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="nosmep"> <code>nosmep</code> — SMEP（ユーザ空間コードの実行防止）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="nosmap"> <code>nosmap</code> — SMAP（ユーザ空間データへの直接アクセス防止）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="kpti=0"> <code>kpti=0</code> — KPTI（Meltdown対策のページテーブル分離）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="mitigations=off"> <code>mitigations=off</code> — Spectre/Meltdown系の緩和策を一括無効化</label>
+        <details class="np-details">
+          <summary>詳細設定</summary>
+          <div class="np-details-body">
+            <div class="np-field">
+              <label class="np-label">カーネルの防御機能 <span class="np-optional">optional</span></label>
+              <p class="np-hint" style="margin:0 0 .6rem">
+                権限昇格などカーネルの脆弱性を題材にする場合、挑戦者が取り組みやすくなるようここで防御機能を外せます。
+              </p>
+              <div class="np-chip-group" id="boot-args-checkboxes">
+                <label class="np-chip-checkbox"><input type="checkbox" value="nokaslr">アドレスのランダム化を外す（nokaslr）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmep">実行権限の保護を外す（nosmep）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmap">メモリ保護を外す（nosmap）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="kpti=0">Meltdown対策を外す（kpti=0）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="mitigations=off">全ての緩和策を外す（mitigations=off）</label>
+              </div>
+            </div>
           </div>
-          <p class="np-hint" style="margin:.5rem 0 0">
-            ip= / init= / console= / root= など HackBento が管理する引数はここに無く、選択しても無視されます。<br>
-            <strong>AF_ALG など機能の有効化はここでは行えません</strong>（起動引数ではなくカーネルのビルド設定で決まるため）。
-            該当する CVE を再現する場合は、その機能を有効にしてビルドしたカーネルを「ゲストカーネル」欄にアップロードしてください。
-          </p>
-        </div>
+        </details>
 
         <!-- README 変更 -->
         <div class="np-field">
@@ -355,16 +355,20 @@ async function init() {
   const _currentBootArgs = (imageData.extra_boot_args || '').split(/\s+/).filter(Boolean);
   document.querySelectorAll('#boot-args-checkboxes input[type="checkbox"]').forEach(cb => {
     cb.checked = _currentBootArgs.includes(cb.value);
+    cb.closest('.np-chip-checkbox').classList.toggle('active', cb.checked);
   });
   document.getElementById('extra-boot-args-input').value = _currentBootArgs.join(' ');
-  if (isBridge) {
-    await Promise.all([
-      initAssetToggle('kernel', imageData.default_kernel_asset_id),
-      initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
-    ]);
-    renderRootfsConversionBadge(imageData);
-    _maybeStartRootfsConversionPolling(imageData);
+  // 既存の起動引数があれば詳細設定を開いた状態にする
+  if (_currentBootArgs.length > 0) {
+    const details = document.getElementById('boot-args-checkboxes').closest('details');
+    if (details) details.open = true;
   }
+  await Promise.all([
+    initAssetToggle('kernel', imageData.default_kernel_asset_id),
+    initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
+  ]);
+  renderRootfsConversionBadge(imageData);
+  _maybeStartRootfsConversionPolling(imageData);
 
   // visibility
   document.querySelectorAll('input[name="visibility"]').forEach(r => {
@@ -444,21 +448,16 @@ function setupToggle(groupId, panels) {
     });
   });
 }
-const isBridge = true;
-if (!isBridge) {
-  setupToggle('img-toggle', [{ id:'img-file-panel', key:'img-file' },{ id:'img-link-panel', key:'img-link' }]);
-} else {
-  setupToggle('kernel-toggle', [
-    { id: 'kernel-default-panel', key: 'kernel-default' },
-    { id: 'kernel-file-panel',    key: 'kernel-file' },
-    { id: 'kernel-link-panel',    key: 'kernel-link' },
-  ]);
-  setupToggle('rootfs-toggle', [
-    { id: 'rootfs-default-panel', key: 'rootfs-default' },
-    { id: 'rootfs-file-panel',    key: 'rootfs-file' },
-    { id: 'rootfs-link-panel',    key: 'rootfs-link' },
-  ]);
-}
+setupToggle('kernel-toggle', [
+  { id: 'kernel-default-panel', key: 'kernel-default' },
+  { id: 'kernel-file-panel',    key: 'kernel-file' },
+  { id: 'kernel-link-panel',    key: 'kernel-link' },
+]);
+setupToggle('rootfs-toggle', [
+  { id: 'rootfs-default-panel', key: 'rootfs-default' },
+  { id: 'rootfs-file-panel',    key: 'rootfs-file' },
+  { id: 'rootfs-link-panel',    key: 'rootfs-link' },
+]);
 setupToggle('readme-toggle', [{ id:'readme-file-panel', key:'readme-file' },{ id:'readme-text-panel', key:'readme-text' }]);
 
 // ファイル選択
@@ -476,47 +475,47 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
     document.getElementById(fsId).textContent = unit === 'MB' ? (f.size/1024/1024).toFixed(1)+' MB' : (f.size/1024).toFixed(1)+' KB';
   }
 }
-if (isBridge) {
-  setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
-  setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
+setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
+setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
 
-  // デフォルト資産の選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
-  window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) {
-    const select = document.getElementById(`${prefix}-default-select`);
-    const hint = document.getElementById(`${prefix}-default-empty-hint`);
-    let assets = [];
-    try {
-      const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      assets = res.ok ? await res.json() : [];
-    } catch {}
-    select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
-    select.disabled = assets.length === 0;
-    hint.hidden = assets.length > 0;
+// デフォルト資産の選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
+window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) {
+  const select = document.getElementById(`${prefix}-default-select`);
+  const hint = document.getElementById(`${prefix}-default-empty-hint`);
+  let assets = [];
+  try {
+    const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    assets = res.ok ? await res.json() : [];
+  } catch {}
+  select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+  select.disabled = assets.length === 0;
+  hint.hidden = assets.length > 0;
 
-    const toggleGroupId = `${prefix}-toggle`;
-    let initialTarget;
-    if (currentAssetId) {
-      select.value = String(currentAssetId);
-      initialTarget = `${prefix}-default`;
-    } else {
-      initialTarget = `${prefix}-file`;
-    }
-    const targetBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target="${initialTarget}"]`);
-    if (targetBtn) targetBtn.click();
-  };
-} else {
-  setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
-}
+  const toggleGroupId = `${prefix}-toggle`;
+  let initialTarget;
+  if (currentAssetId) {
+    select.value = String(currentAssetId);
+    initialTarget = `${prefix}-default`;
+  } else {
+    initialTarget = `${prefix}-file`;
+  }
+  const targetBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target="${initialTarget}"]`);
+  if (targetBtn) targetBtn.click();
+};
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
 
-// 追加カーネル起動引数: チェックボックスの選択を隠しフィールドへスペース区切りで集約する
+// 追加カーネル起動引数: チップ型チェックボックスの選択を隠しフィールドへスペース区切りで集約する
 (function setupBootArgsCheckboxes() {
   const container = document.getElementById('boot-args-checkboxes');
   const hidden = document.getElementById('extra-boot-args-input');
   function sync() {
-    const values = Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+    const values = [];
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.closest('.np-chip-checkbox').classList.toggle('active', cb.checked);
+      if (cb.checked) values.push(cb.value);
+    });
     hidden.value = values.join(' ');
   }
   container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));
@@ -648,39 +647,17 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
 
   let needsConfirm = false;
   let kernelChanged = false, rootfsChanged = false;
-  if (isBridge) {
-    kernelChanged = isAssetChanged('kernel', imageData.default_kernel_asset_id);
-    rootfsChanged = isAssetChanged('rootfs', imageData.default_rootfs_asset_id);
-    needsConfirm = kernelChanged || rootfsChanged;
-    if (needsConfirm) {
-      const ok = confirm(
-        '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
-        'このプロジェクトで起動中の環境は全て停止されます。\n' +
-        '他のユーザの作業が中断される可能性があります。\n\n' +
-        '続行しますか？'
-      );
-      if (!ok) return;
-    }
-  } else {
-    const imgMode = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
-    // アクティブでない側をクリア
-    if (imgMode === 'img-link') document.getElementById('image-file-input').value = '';
-    else document.getElementById('image-url-input').value = '';
-
-    const hasNewFile = !!document.getElementById('image-file-input').files[0];
-    const hasNewUrl  = !!document.getElementById('image-url-input').value.trim();
-    needsConfirm = hasNewFile || hasNewUrl;
-
-    // Dockerイメージ変更時は確認ダイアログ
-    if (needsConfirm) {
-      const ok = confirm(
-        '⚠ Dockerイメージを変更します。\n\n' +
-        'このプロジェクトで起動中の環境は全て停止されます。\n' +
-        '他のユーザの作業が中断される可能性があります。\n\n' +
-        '続行しますか？'
-      );
-      if (!ok) return;
-    }
+  kernelChanged = isAssetChanged('kernel', imageData.default_kernel_asset_id);
+  rootfsChanged = isAssetChanged('rootfs', imageData.default_rootfs_asset_id);
+  needsConfirm = kernelChanged || rootfsChanged;
+  if (needsConfirm) {
+    const ok = confirm(
+      '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
+      'このプロジェクトで起動中の環境は全て停止されます。\n' +
+      '他のユーザの作業が中断される可能性があります。\n\n' +
+      '続行しますか？'
+    );
+    if (!ok) return;
   }
 
   const btn = document.getElementById('submit-btn');
@@ -693,30 +670,28 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
   pw.classList.remove('hidden'); pb.style.width = '0%';
 
   const fd = new FormData(e.target);
-  if (isBridge) {
-    // 変更があった資産のみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
-    function applyAssetIfChanged(prefix, changed, modeFieldName, selectFieldName, fileFieldName, fileInputId, urlFieldName) {
-      if (!changed) {
-        fd.delete(modeFieldName);
-        fd.delete(selectFieldName);
-        fd.delete(fileFieldName);
-        fd.delete(urlFieldName);
-        return;
-      }
-      const mode = document.querySelector(`#${prefix}-toggle .np-toggle-btn.active`).dataset.target.split('-')[1];
-      fd.set(modeFieldName, mode);
-      if (mode !== 'default') fd.delete(selectFieldName);
-      if (mode !== 'file') {
-        fd.delete(fileFieldName);
-        document.getElementById(fileInputId).value = '';
-      }
-      if (mode !== 'link') fd.delete(urlFieldName);
+  // 変更があった資産のみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
+  function applyAssetIfChanged(prefix, changed, modeFieldName, selectFieldName, fileFieldName, fileInputId, urlFieldName) {
+    if (!changed) {
+      fd.delete(modeFieldName);
+      fd.delete(selectFieldName);
+      fd.delete(fileFieldName);
+      fd.delete(urlFieldName);
+      return;
     }
-    applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
-    applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
-    if (!kernelChanged) fd.delete('kernel');
-    if (!rootfsChanged) fd.delete('rootfs');
+    const mode = document.querySelector(`#${prefix}-toggle .np-toggle-btn.active`).dataset.target.split('-')[1];
+    fd.set(modeFieldName, mode);
+    if (mode !== 'default') fd.delete(selectFieldName);
+    if (mode !== 'file') {
+      fd.delete(fileFieldName);
+      document.getElementById(fileInputId).value = '';
+    }
+    if (mode !== 'link') fd.delete(urlFieldName);
   }
+  applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
+  applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
+  if (!kernelChanged) fd.delete('kernel');
+  if (!rootfsChanged) fd.delete('rootfs');
 
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -727,9 +702,7 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
         const pct = Math.round(ev.loaded / ev.total * 100);
         pb.style.width = pct + '%';
         if (pct >= 100) {
-          pl.textContent = isBridge
-            ? 'アップロードされたファイルを保存しています...'
-            : 'アップロードされたファイルを元にイメージを構築しています...';
+          pl.textContent = 'アップロードされたファイルを保存しています...';
         } else {
           pl.textContent = `更新中... ${pct}%`;
         }

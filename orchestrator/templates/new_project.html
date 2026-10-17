@@ -261,24 +261,24 @@
 
         <!-- 追加カーネル引数（任意・カーネル exploit 問題向け） -->
         <input type="hidden" name="extra_boot_args" id="extra-boot-args-input" value="" />
-        <div class="np-field">
-          <label class="np-label">追加カーネル起動引数 <span class="np-optional">optional</span></label>
-          <p class="np-hint" style="margin:0 0 .5rem">
-            カーネル exploit 問題で防御を外す場合に選択します。
-          </p>
-          <div id="boot-args-checkboxes">
-            <label class="np-checkbox-label"><input type="checkbox" value="nokaslr"> <code>nokaslr</code> — KASLR（カーネルアドレスのランダム化）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="nosmep"> <code>nosmep</code> — SMEP（ユーザ空間コードの実行防止）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="nosmap"> <code>nosmap</code> — SMAP（ユーザ空間データへの直接アクセス防止）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="kpti=0"> <code>kpti=0</code> — KPTI（Meltdown対策のページテーブル分離）を無効化</label>
-            <label class="np-checkbox-label"><input type="checkbox" value="mitigations=off"> <code>mitigations=off</code> — Spectre/Meltdown系の緩和策を一括無効化</label>
+        <details class="np-details">
+          <summary>詳細設定</summary>
+          <div class="np-details-body">
+            <div class="np-field">
+              <label class="np-label">カーネルの防御機能 <span class="np-optional">optional</span></label>
+              <p class="np-hint" style="margin:0 0 .6rem">
+                権限昇格などカーネルの脆弱性を題材にする場合、挑戦者が取り組みやすくなるようここで防御機能を外せます。
+              </p>
+              <div class="np-chip-group" id="boot-args-checkboxes">
+                <label class="np-chip-checkbox"><input type="checkbox" value="nokaslr">アドレスのランダム化を外す（nokaslr）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmep">実行権限の保護を外す（nosmep）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmap">メモリ保護を外す（nosmap）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="kpti=0">Meltdown対策を外す（kpti=0）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="mitigations=off">全ての緩和策を外す（mitigations=off）</label>
+              </div>
+            </div>
           </div>
-          <p class="np-hint" style="margin:.5rem 0 0">
-            ip= / init= / console= / root= など HackBento が管理する引数はここに無く、選択しても無視されます。<br>
-            <strong>AF_ALG など機能の有効化はここでは行えません</strong>（起動引数ではなくカーネルのビルド設定で決まるため）。
-            該当する CVE を再現する場合は、その機能を有効にしてビルドしたカーネルを「ゲストカーネル」欄にアップロードしてください。
-          </p>
-        </div>
+        </details>
         </div><!-- /os-fields -->
 
         <hr class="np-divider" />
@@ -465,12 +465,16 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
 setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placeholder','bundle-upload-selected','bundle-filename','bundle-filesize','MB');
 
-// 追加カーネル起動引数: チェックボックスの選択を隠しフィールドへスペース区切りで集約する
+// 追加カーネル起動引数: チップ型チェックボックスの選択を隠しフィールドへスペース区切りで集約する
 (function setupBootArgsCheckboxes() {
   const container = document.getElementById('boot-args-checkboxes');
   const hidden = document.getElementById('extra-boot-args-input');
   function sync() {
-    const values = Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+    const values = [];
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.closest('.np-chip-checkbox').classList.toggle('active', cb.checked);
+      if (cb.checked) values.push(cb.value);
+    });
     hidden.value = values.join(' ');
   }
   container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));

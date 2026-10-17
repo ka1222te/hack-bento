@@ -1302,6 +1302,53 @@ textarea { resize: vertical; min-height: 70px; }
 .np-checkbox-label input[type="checkbox"] {
   cursor: pointer;
 }
+
+/* 押しやすいチップ型チェックボックス（複数選択・np-toggle-btnと見た目を揃える） */
+.np-chip-group {
+  display: flex; flex-wrap: wrap; gap: 0.5rem;
+}
+.np-chip-checkbox {
+  display: inline-flex; align-items: center;
+  padding: 0.5rem 0.9rem;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.85rem; font-weight: 500; color: var(--text2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.np-chip-checkbox input[type="checkbox"] {
+  position: absolute; opacity: 0; pointer-events: none;
+}
+.np-chip-checkbox:hover { color: var(--text); background: var(--bg4); }
+.np-chip-checkbox.active {
+  background: var(--accent2);
+  color: #fff;
+  border-color: var(--accent2);
+  font-weight: 600;
+}
+
+/* 詳細設定（details/summary）の折りたたみ */
+.np-details {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.9rem;
+}
+.np-details summary {
+  padding: 0.6rem 0;
+  font-size: 0.85rem; font-weight: 500; color: var(--text2);
+  cursor: pointer;
+  list-style: none;
+}
+.np-details summary::-webkit-details-marker { display: none; }
+.np-details summary::before {
+  content: "▸"; display: inline-block; margin-right: 0.5rem;
+  transition: transform 0.15s;
+}
+.np-details[open] summary::before { transform: rotate(90deg); }
+.np-details-body { padding: 0 0 0.9rem; }
 .np-upload-ph, .np-upload-selected {
   display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
 }
