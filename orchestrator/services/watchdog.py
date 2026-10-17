@@ -5,12 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import AsyncSessionLocal
 from models import Environment, EnvStatus
-from services.smolvm import stop_vm
+from services.smolvm import stop_vm, vm_is_alive
 from services.network import release_ip
 
 logger = logging.getLogger(__name__)
 
 _STARTING_TIMEOUT_MINUTES = 5
+# running 遷移直後の一時的な未登録・計測誤差で誤検知しないための猶予
+_CRASH_GRACE_SECONDS = 20
 
 
 async def claim_env_for_stop(db: AsyncSession, env_id: int) -> Environment | None:
@@ -92,6 +94,31 @@ async def run_watchdog() -> None:
                         await db.commit()
                     except Exception as e:
                         logger.error(f"Failed to cleanup stuck env_id={env_id}: {e}")
+                        await db.rollback()
+
+                # クラッシュ検知: DB 上 running だが VM プロセスが死んでいる環境を回収する。
+                # カーネルパニック（exploit 失敗）やゲストの自発 poweroff で Firecracker が
+                # 終了した場合、放置すると IP と同時起動枠を占有し続けるため停止・解放する。
+                # running 遷移直後の誤検知を避けるため started_at に猶予を設ける。
+                crash_threshold = now - timedelta(seconds=_CRASH_GRACE_SECONDS)
+                running_result = await db.execute(
+                    select(Environment.id, Environment.vm_id).where(
+                        Environment.status == EnvStatus.running,
+                        Environment.started_at <= crash_threshold,
+                    )
+                )
+                for env_id, vm_id in running_result.all():
+                    if not vm_id or vm_is_alive(vm_id):
+                        continue
+                    try:
+                        env = await claim_env_for_stop(db, env_id)
+                        if env is None:
+                            continue
+                        logger.warning(f"Crashed VM detected (process gone): env_id={env.id} vm_id={vm_id[:8]}")
+                        await destroy_env(env)
+                        await db.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to reap crashed env_id={env_id}: {e}")
                         await db.rollback()
         except Exception as e:
             logger.error(f"Watchdog error: {e}")

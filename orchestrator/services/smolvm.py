@@ -60,8 +60,12 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
     path = _vm_cgroup_path(vm_id)
     try:
         os.makedirs(path, exist_ok=True)
+        # memory.max はゲストメモリ + Firecracker 自身のオーバーヘッド分の余裕を持たせる。
+        # ゲストメモリちょうどに設定すると、ゲストが使い切った際に VMM(Firecracker)側の
+        # アロケーションが cgroup 上限に当たり、VM ごと OOM kill される恐れがあるため。
+        _MEM_OVERHEAD_MB = 128
         with open(os.path.join(path, "memory.max"), "w") as f:
-            f.write(str(memory_mb * 1024 * 1024))
+            f.write(str((memory_mb + _MEM_OVERHEAD_MB) * 1024 * 1024))
         with open(os.path.join(path, "pids.max"), "w") as f:
             f.write(str(settings.VM_PIDS_LIMIT))
         # cpu.max: "<quota> <period>" 。1コアあたり period=100000us とし、
@@ -335,6 +339,31 @@ def _write_resolv_conf(rootfs_path: str) -> None:
                 pass
 
 
+def _ensure_free_space_for(rootfs_path: str) -> None:
+    """rootfs の writable コピー先に十分な空き容量があるか確認する。
+
+    コピー元 rootfs と同等サイズ + マージンを要求する。不足時は RuntimeError を上げ、
+    ディスクフルによるホスト全体への波及を未然に防ぐ。
+    """
+    try:
+        need = os.path.getsize(rootfs_path)
+    except OSError:
+        return  # サイズ取得不可なら確認をスキップ（起動は試みる）
+    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
+    try:
+        st = os.statvfs(FC_ROOTFS_DIR)
+    except OSError:
+        return
+    free = st.f_bavail * st.f_frsize
+    margin = 512 * 1024 * 1024  # 512MiB の余裕
+    if free < need + margin:
+        need_mb, free_mb = need // (1024 * 1024), free // (1024 * 1024)
+        raise RuntimeError(
+            f"ホストのディスク空き容量が不足しています（必要 約{need_mb}MiB+余裕、空き {free_mb}MiB）。"
+            " 停止済み環境の整理や不要な rootfs の削除を行ってください。"
+        )
+
+
 def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     """VM 専用の writable rootfs を作る。
 
@@ -414,6 +443,10 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         raise RuntimeError(f"rootfs が見つかりません: {rootfs_path}")
     if not os.path.exists("/dev/kvm"):
         raise RuntimeError("/dev/kvm が存在しません。KVM が有効か確認してください。")
+
+    # rootfs の writable コピーを作る前に、出力先の空き容量を確認する。
+    # コピー先が枯渇するとディスクフル状態でホスト全体に波及するため、起動前に弾く。
+    _ensure_free_space_for(rootfs_path)
 
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
@@ -561,14 +594,45 @@ async def _stop_firecracker(vm_id: str) -> None:
     logger.info(f"Firecracker VM stopped: vm_id={vm_id[:8]}")
 
 
+def _pid_is_zombie(pid: int) -> bool:
+    """PID が zombie（defunct・終了済みだが未 reap）状態かを /proc から判定する。"""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+        # "<pid> (comm) <state> ..." の state 文字。comm に空白/括弧があり得るため
+        # 最後の ')' 以降を見る。
+        rparen = data.rfind(b")")
+        if rparen == -1:
+            return False
+        state = data[rparen + 2:rparen + 3]
+        return state == b"Z"
+    except OSError:
+        return False
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    # プロセステーブルに存在しても zombie（終了済み）は「生きていない」とみなす
+    return not _pid_is_zombie(pid)
+
+
+def vm_is_alive(vm_id: str) -> bool:
+    """vm_id の Firecracker プロセスが実際に生きているか判定する。
+
+    メモリ上の _fc_pids を優先し、見つからなければ /proc 走査（_find_orphan_fc_pid）で
+    フォールバックする。watchdog が「DB 上 running なのに VM が死んでいる」状態
+    （カーネルパニック・ゲストの自発 poweroff 等）を検知するために使う。
+    """
+    pid = _fc_pids.get(vm_id)
+    if pid is not None:
+        return _pid_alive(pid)
+    # メモリ上に記録が無い場合でも、/proc 上に該当プロセスがあれば生存とみなす
+    return _find_orphan_fc_pid(vm_id) is not None
 
 
 async def _terminate_pid(pid: int | None, vm_id: str, grace_seconds: float = 3.0) -> None:

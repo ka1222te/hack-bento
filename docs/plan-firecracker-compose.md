@@ -351,17 +351,18 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 
 ---
 
-## フェーズ 9: 堅牢化・運用（残りの守りの穴）
+## フェーズ 9: 堅牢化・運用（残りの守りの穴）🟡 優先3項目を実装・実機検証（残りは任意）
 
 既出の「守りの穴」のうち未対応分を仕上げる。優先度順。
 
-- [ ] **クラッシュ検知**: watchdog に Firecracker プロセス/コンテナの生存確認を追加。死亡時は停止・IP/枠解放。カーネル CVE 問題（意図的 panic）で特に重要。
-- [ ] **プロジェクト別の起動引数**: `Image` に追加。`ip=`/`init=`/`console=` 等は上書き不可にホスト側で制限。カーネル exploit 問題用（nokaslr 等）。
-- [ ] **プロジェクト別 CPU/メモリ上書き**: 現在ホスト共通。compose/Windows 代替等で不足するため、Image 単位で上限内上書き。
-- [ ] **容量制御**: rootfs サイズ上限（展開後）、起動前のホスト空き容量確認、reflink での高速コピー検討。
-- [ ] **cgroup memory.max の余裕**: ゲストメモリ + オーバーヘッド（+64MB 等）に。Firecracker 自体の OOM を防ぐ。
-- [ ] **起動後ヘルスチェック**: 公開ポートの応答確認を状態表示に反映（任意）。
-- [ ] **I/O・帯域制限**: TAP に tc、cgroup io コントローラ委譲（任意）。
+- [x] **クラッシュ検知**（✅ 実装・検証）: watchdog に crash-detection パスを追加。`running` だが Firecracker プロセスが死んでいる環境（カーネルパニック・自発 poweroff）を `started_at` に 20s 猶予を設けて検知し `destroy_env` で停止・IP/枠解放。smolvm に `vm_is_alive(vm_id)` を追加（`_fc_pids`→`/proc` フォールバック）。**zombie（defunct）を「死」と正しく判定**するよう `_pid_alive` を `/proc/<pid>/stat` の state=Z チェックで補強。実機で起動→kill→`vm_is_alive`=False→残骸ゼロを確認。
+- [x] **cgroup memory.max の余裕**（✅ 実装・検証）: `_create_vm_cgroup` で `memory.max = (guest + 128MiB)`。Firecracker 自体の OOM kill を防ぐ。実機で guest 512→memory.max 671088640(=640MiB) を確認。
+- [x] **容量制御（空き容量確認）**（✅ 実装）: `_start_firecracker` 前に `_ensure_free_space_for`（コピー元サイズ + 512MiB マージンの空きを要求、不足なら明確なエラー）。ディスクフルのホスト波及を未然に防ぐ。
+- [ ] **プロジェクト別の起動引数**（未・任意）: `Image` に追加。`ip=`/`init=`/`console=` 等は上書き不可にホスト側で制限。カーネル exploit 問題用（nokaslr 等）。
+- [ ] **プロジェクト別 CPU/メモリ上書き**（未・任意）: 現在ホスト共通。Image 単位で上限内上書き。
+- [ ] **rootfs サイズ上限（展開後）・reflink 高速コピー**（未・任意）。
+- [ ] **起動後ヘルスチェック**（未・任意）: 公開ポートの応答確認を状態表示に反映。
+- [ ] **I/O・帯域制限**（未・任意）: TAP に tc、cgroup io コントローラ委譲。
 
 ---
 
