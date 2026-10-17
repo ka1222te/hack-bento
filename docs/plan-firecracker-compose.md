@@ -67,9 +67,11 @@
 
 ---
 
-## フェーズ 1: macvlan 完全削除
+## フェーズ 1: macvlan 完全削除 ✅ 完了（commit 9d75f31）
 
 **目的**: `VM_BACKEND` 分岐を廃し、Firecracker 専用に単純化する。コードの見通しを良くしてから機能追加する。
+
+**実施メモ**: `backend`/`oci_ref`/`archive_path` はマイグレーションで drop せず、後方互換の未使用カラムとして温存した（既存 DB の NOT NULL 制約を壊さないため。model 側は `backend` を plain String・既定 `bridge` に変更し enum を撤去）。既存 DB は macvlan プロジェクト0件・起動中環境0件を確認済み。
 
 **変更箇所**
 - [ ] `services/smolvm.py`
