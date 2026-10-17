@@ -422,7 +422,28 @@ def _cleanup_writable_rootfs(vm_id: str) -> None:
         pass
 
 
-async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
+_MANAGED_BOOT_ARG_PREFIXES = ("ip=", "init=", "console=", "root=", "reboot=", "panic=", "rw", "ro")
+
+
+def _sanitize_extra_boot_args(extra: str | None) -> str:
+    """プロジェクト指定の追加カーネル引数から、HackBento が管理する引数を除去する。
+
+    ip=/init=/console=/root=/reboot=/panic=/rw/ro を上書きさせない（ネットワーク・起動の
+    整合性を壊さないため）。それ以外（nokaslr, nosmep, nosmap, kpti=0 等）は許可する。
+    """
+    if not extra:
+        return ""
+    tokens = []
+    for tok in extra.split():
+        if any(tok == p or tok.startswith(p) for p in _MANAGED_BOOT_ARG_PREFIXES):
+            logger.warning(f"管理対象のカーネル引数を無視しました: {tok}")
+            continue
+        tokens.append(tok)
+    return " ".join(tokens)
+
+
+async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int,
+                             extra_boot_args: str | None = None) -> VMStartResult:
     """
     Firecracker microVM を起動する。
 
@@ -486,13 +507,17 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         # ip= フォーマット: <client>:<server>:<gw>:<mask>::<iface>:<autoconf>
         gw = settings.FC_GUEST_GATEWAY
         netmask = await _guest_netmask()
+        _extra = _sanitize_extra_boot_args(extra_boot_args)
+        boot_args = (
+            f"console=ttyS0 reboot=k panic=1 pci=off "
+            f"ip={ip}::{gw}:{netmask}::eth0:off "
+            "rw"
+        )
+        if _extra:
+            boot_args = f"{boot_args} {_extra}"
         await _fc_api(socket_path, "PUT", "/boot-source", {
             "kernel_image_path": kernel_path,
-            "boot_args": (
-                f"console=ttyS0 reboot=k panic=1 pci=off "
-                f"ip={ip}::{gw}:{netmask}::eth0:off "
-                "rw"
-            ),
+            "boot_args": boot_args,
         })
 
         # rootfs（VM ごとの writable copy を使用）
@@ -768,7 +793,10 @@ async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024) -> VMSta
     """
     Image レコードのゲストカーネル・rootfs を Firecracker microVM として起動する。
     """
-    return await _start_firecracker(image.kernel_path, image.rootfs_path, ip, cpu, memory_mb)
+    return await _start_firecracker(
+        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb,
+        extra_boot_args=getattr(image, "extra_boot_args", None),
+    )
 
 
 async def stop_vm(vm_id: str) -> None:

@@ -59,6 +59,7 @@ async def _migrate(conn):
         ("images", "rootfs_kind", "ALTER TABLE images ADD COLUMN rootfs_kind VARCHAR(16) NOT NULL DEFAULT 'os'"),
         ("images", "base_rootfs_asset_id", "ALTER TABLE images ADD COLUMN base_rootfs_asset_id INTEGER REFERENCES default_rootfs_assets(id)"),
         ("images", "compose_summary", "ALTER TABLE images ADD COLUMN compose_summary TEXT"),
+        ("images", "extra_boot_args", "ALTER TABLE images ADD COLUMN extra_boot_args VARCHAR(512)"),
         ("images", "rootfs_conversion_status", "ALTER TABLE images ADD COLUMN rootfs_conversion_status VARCHAR(16) NOT NULL DEFAULT 'ready'"),
         ("images", "rootfs_conversion_error", "ALTER TABLE images ADD COLUMN rootfs_conversion_error VARCHAR(512)"),
         ("images", "rootfs_source_archive_path", "ALTER TABLE images ADD COLUMN rootfs_source_archive_path VARCHAR(512)"),

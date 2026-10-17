@@ -71,6 +71,7 @@ class ImageResponse(BaseModel):
     rootfs_conversion_error: Optional[str] = None
     rootfs_kind: str = "os"
     compose_summary: Optional[dict] = None
+    extra_boot_args: Optional[str] = None
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -164,6 +165,7 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         rootfs_conversion_error=image.rootfs_conversion_error,
         rootfs_kind=getattr(image, "rootfs_kind", "os") or "os",
         compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
+        extra_boot_args=getattr(image, "extra_boot_args", None),
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -470,6 +472,7 @@ async def upload_image(
     timeout_minutes: Optional[int] = Form(None),
     cpu_limit: Optional[int] = Form(None),
     memory_limit_mb: Optional[int] = Form(None),
+    extra_boot_args: Optional[str] = Form(None),
     visibility: Visibility = Form(Visibility.protected),
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
@@ -494,6 +497,8 @@ async def upload_image(
         raise HTTPException(status_code=400, detail="description は 512 文字以内で指定してください")
     if category and category not in ALLOWED_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"無効なカテゴリです: {category}")
+    if extra_boot_args and len(extra_boot_args) > 512:
+        raise HTTPException(status_code=400, detail="extra_boot_args は 512 文字以内で指定してください")
 
     image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
     readme_max_bytes = settings.UPLOAD_README_MAX_MB * 1024 * 1024
@@ -647,6 +652,7 @@ async def upload_image(
         default_rootfs_asset_id=rootfs_asset_id,
         rootfs_conversion_status=rootfs_conversion_status,
         rootfs_source_archive_path=rootfs_source_archive_path,
+        extra_boot_args=(extra_boot_args.strip() if extra_boot_args and extra_boot_args.strip() else None),
         readme_path=readme_path,
         difficulty=difficulty,
         category=category,
@@ -688,6 +694,7 @@ async def update_image(
     difficulty: Optional[Difficulty] = Form(None),
     category: Optional[str] = Form(None),
     timeout_minutes: Optional[int] = Form(None),
+    extra_boot_args: Optional[str] = Form(None),
     visibility: Optional[Visibility] = Form(None),
     kernel: Optional[UploadFile] = File(None),
     rootfs: Optional[UploadFile] = File(None),
@@ -832,6 +839,10 @@ async def update_image(
         if timeout_minutes < 1 or timeout_minutes > 1440:
             raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
         image.timeout_minutes = timeout_minutes
+    if extra_boot_args is not None:
+        if len(extra_boot_args) > 512:
+            raise HTTPException(status_code=400, detail="extra_boot_args は 512 文字以内で指定してください")
+        image.extra_boot_args = extra_boot_args.strip() or None
     if visibility is not None and is_owner:
         image.visibility = visibility
 

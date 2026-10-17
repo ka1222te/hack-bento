@@ -258,6 +258,17 @@
             <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します（tar の場合は自動的に ext4 へ変換されます）</p>
           </div>
         </div>
+
+        <!-- 追加カーネル引数（任意・カーネル exploit 問題向け） -->
+        <div class="np-field">
+          <label class="np-label">追加カーネル起動引数 <span class="np-optional">optional</span></label>
+          <input class="np-input" name="extra_boot_args" id="extra-boot-args-input"
+                 placeholder="例: nokaslr nosmep nosmap" autocomplete="off" />
+          <p class="np-hint" style="margin:.3rem 0 0">
+            カーネル exploit 問題で防御を外す場合に指定します（nokaslr 等）。
+            ip= / init= / console= / root= など HackBento が管理する引数は無視されます。
+          </p>
+        </div>
         </div><!-- /os-fields -->
 
         <hr class="np-divider" />
@@ -522,7 +533,7 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   const fd = new FormData(e.target);
   if (currentKind === 'compose') {
     // OS イメージ用フィールドは送らない（バンドルのみ）
-    ['kernel','rootfs','kernel_url','rootfs_url','default_kernel_asset_id','default_rootfs_asset_id'].forEach(k => fd.delete(k));
+    ['kernel','rootfs','kernel_url','rootfs_url','default_kernel_asset_id','default_rootfs_asset_id','extra_boot_args'].forEach(k => fd.delete(k));
   } else {
     // バンドルフィールドは送らない
     fd.delete('bundle');
