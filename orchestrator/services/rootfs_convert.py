@@ -43,9 +43,14 @@ async def _claim_pending() -> tuple[dict, int, str, str] | None:
         for target in _TARGETS:
             model = target["model"]
             status_col = getattr(model, target["status_col"])
+            conds = [status_col == RootfsConversionStatus.pending.value]
+            # Image の Compose バンドル行（rootfs_kind='compose'）は bundle_build ワーカーが
+            # 専用処理するため、tar→ext4 変換ワーカーは拾わない。
+            if model is Image:
+                conds.append(Image.rootfs_kind != "compose")
             result = await db.execute(
                 select(model)
-                .where(status_col == RootfsConversionStatus.pending.value)
+                .where(*conds)
                 .with_for_update()
                 .limit(1)
             )

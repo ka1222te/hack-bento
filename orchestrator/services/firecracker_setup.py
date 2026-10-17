@@ -374,6 +374,7 @@ def _detect_archive_kind(path: str) -> str:
 
     戻り値: "ext4"（変換不要・そのまま利用可能） / "tar"（単純なファイルシステムtar・変換対象）
             / "docker-save"（複数レイヤーのOCIアーカイブ・非対応）
+            / "compose-bundle"（hackbento-pack の Compose バンドル・ビルド用VMで組み立て）
     """
     import struct
     import tarfile
@@ -393,6 +394,10 @@ def _detect_archive_kind(path: str) -> str:
                 names = {os.path.normpath(n).lstrip("./") for n in tf.getnames()}
         except tarfile.TarError:
             return "tar"
+        # Compose バンドル（目印: hackbento-bundle.json + images.tar + app/）
+        if "hackbento-bundle.json" in names and "images.tar" in names \
+           and any(n == "app" or n.startswith("app/") for n in names):
+            return "compose-bundle"
         if "manifest.json" in names and "repositories" in names:
             return "docker-save"
         return "tar"

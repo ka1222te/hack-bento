@@ -99,6 +99,7 @@ async def run_build_vm(
     memory_mb: int = 1024,
     timeout_s: int = DEFAULT_BUILD_TIMEOUT_S,
     boot_marker: str = "hb_build=1",
+    result_rootfs_path: str | None = None,
 ) -> None:
     """ネットワークなしのビルド VM を起動し、ゲストが電源を落とすまで待つ。
 
@@ -108,6 +109,9 @@ async def run_build_vm(
                          VM からは /dev/vdb として見える。呼び出し側が事前に用意し、後で読む。
     - timeout_s        : ハードタイムアウト。超過したら VM を強制終了して BuildVMError を送出。
     - boot_marker      : ゲスト init に「ビルドモード」を伝えるカーネル引数。
+    - result_rootfs_path: 指定すると、正常終了後にビルド済み rootfs コピー（docker-base に
+                         バンドルを焼き込んだもの）をこのパスへ移動して残す。Compose バンドルの
+                         成果物（本番用 rootfs）を回収するために使う。未指定なら破棄する。
 
     正常終了（ゲストが自分で poweroff/reboot）した場合は None を返す。
     異常（タイムアウト・起動失敗）時は BuildVMError。
@@ -187,6 +191,16 @@ async def run_build_vm(
             if fc_proc.returncode not in (0, None):
                 logger.warning(f"ビルド VM の終了コードが非ゼロ: bid={bid} rc={fc_proc.returncode}")
             logger.info(f"ビルド VM 正常終了: bid={bid}")
+
+            # 成果物（ビルド済み rootfs）を残す場合はここで回収する。
+            # VM は既に終了しているためファイルは安定している。
+            if result_rootfs_path is not None:
+                os.makedirs(os.path.dirname(result_rootfs_path), exist_ok=True)
+                tmp = result_rootfs_path + ".tmp"
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                await loop.run_in_executor(None, shutil.move, rootfs_copy, tmp)
+                os.replace(tmp, result_rootfs_path)
 
         finally:
             pid = smolvm._fc_pids.pop(bid, None)

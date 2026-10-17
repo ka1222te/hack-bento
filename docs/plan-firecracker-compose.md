@@ -232,9 +232,19 @@
 
 ---
 
-## フェーズ 6: Compose バンドル取り込み
+## フェーズ 6: Compose バンドル取り込み ✅ バックエンド実装・実機検証完了（UI は Phase 7）
 
 **目的**: バンドル tar を受け取り、ビルド用 VM で ext4 を組み立て、`ready` にするパイプライン。
+
+**実施メモ**:
+- 新規 `services/bundle_build.py`（`run_bundle_build_worker`）。rootfs_convert と同じ行ロック状態機械を `Image` 行で共有し、`rootfs_kind='compose'` かつ `pending` の行だけを claim。rootfs_convert 側は `Image.rootfs_kind != 'compose'` を除外（二重処理防止）。`main.py` lifespan に worker 追加。
+- `Image` に `rootfs_kind`(os/compose)・`base_rootfs_asset_id`・`compose_summary`(JSON) を追加＋マイグレーション。
+- `image_build.run_build_vm` に `result_rootfs_path` を追加（正常終了後にビルド済み rootfs を成果物として回収）。
+- パイプライン: ①受付検査（tar を**展開せず**メタデータのみ: サイズ上限・`hackbento-bundle.json`/`images.tar`/`app/` の存在・絶対パス/`../`/デバイス/外向き symlink の拒否・format 検証）→ ②scratch ext4 構築（`mkfs.ext4 -d -O ^metadata_csum`、loop マウント不要）→ ③ビルド用 VM で docker-base にバンドルを焼き込み成果物を回収 → ④scratch から `status`/`compose.json`/`loaded.list` を debugfs で回収し検査。
+- 検査（ホスト側ルール、VM が正規化した JSON に対して）: macvlan/ipvlan ネットワーク・`external` ネット・固定 IP・`image` 無し(build のみ)・images.tar 未収録イメージを拒否。公開ポート/サービス一覧を `compose_summary` に保存。
+- `_detect_archive_kind` に `compose-bundle` 判定を追加（目印: `hackbento-bundle.json`+`images.tar`+`app/`）。
+- **実機エンドツーエンド検証（docker.sock 無しの安全構成）**: nginx compose + overlay(flag) バンドルを作成 → 全段通過。detect=compose-bundle、受付検査 OK、scratch 283MB、build VM 10s・成果物 2048MB 回収、status=0、compose_summary=`{project:mytest, web→nginx:1.27-alpine, ports:[8080]}`、**overlay の `/root/flag.txt` がビルド済み rootfs に焼き込まれたことを確認**。禁止構成（macvlan/固定IP/build のみ/未収録イメージ）が各々正しく拒否されることも確認。両 worker がクリーン起動。
+- 残（Phase 7）: アップロードルータで bundle 受領→`rootfs_kind='compose'`+`pending` で Image 作成、本番起動時に compose プロジェクト名でカウントする導線、UI。
 
 **バンドル仕様（format 1）**
 ```
