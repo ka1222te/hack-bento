@@ -1,0 +1,1 @@
+FLAG{example-flag-on-guest-os}

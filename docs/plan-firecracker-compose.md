@@ -322,9 +322,17 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 
 ---
 
-## フェーズ 8: hackbento-pack とドキュメントページ
+## フェーズ 8: hackbento-pack とドキュメントページ ✅ 実装・実機検証完了
 
 **目的**: 作成者が手元でバンドル（または ext4）を作れるツールと、手順ページを提供。
+
+**実施メモ**:
+- `tools/hackbento-pack`（bash, root 不要）: `--bundle <dir>` で compose プロジェクト → バンドル tar を生成。`docker compose config --format json` を検査（サーバ側 `_validate_compose` と同等: macvlan/ipvlan・固定 IP・`image:` 無しを拒否）→ `build`/`pull` → `docker save $(... --images)` で `images.tar` → `app/`/`images.tar`/`overlay/`/`hackbento-bundle.json` を tar 化。プロジェクト名を固定しサーバ側の `/opt/app` 展開でも `build:` のイメージ名解決が一致。
+- `tools/sample-bundle/`（nginx 公開 + redis 内部 + overlay フラグ）と `tools/README.md` を同梱。
+- ヘルプページ `/docs/rootfs`（`templates/rootfs_help.html`, 要ログイン）: Compose バンドル / OS イメージの作り方・注意点・選び方。new_project.html の形式トグルから導線リンク。
+- 管理 API `GET /api/admin/default-assets/rootfs` の応答に `kind`(os/docker-base) を追加（admin が土台資産を識別できる）。
+- **実機検証**: ホストで `hackbento-pack --bundle` を実行 → 検証通過・build/pull・docker save・37M バンドル生成。生成物をサーバの `_detect_archive_kind`→`compose-bundle`、`_validate_bundle_tar`→`project_name/has_overlay` で受理確認（ツールとサーバのフォーマット往復一致）。`/docs/rootfs` が HTTP 200 で描画。管理 API が docker-base/os を区別して返すことを確認。
+- 残（小・任意）: admin.html に docker-base を視覚的に区別表示するタブ装飾（API は対応済み・自動登録で機能は充足）。`tools/build-docker-base.sh`（管理者がホストで再現ビルドする手順。現状は初回自動ビルドで代替）。
 
 **ツール `tools/hackbento-pack`（bash）**
 - `hackbento-pack --bundle <dir>`: root 不要。`docker compose config` 検査 → `docker compose build/pull` → `docker save $(... --images)` → `app/`/`images.tar`/`overlay/`/`hackbento-bundle.json` を tar 化。`project_name` 固定。

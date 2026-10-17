@@ -1,0 +1,8 @@
+# HackBento Compose バンドルのサンプル。
+# tools/hackbento-pack --bundle tools/sample-bundle -o sample.bundle.tar でバンドル化できる。
+services:
+  web:
+    image: nginx:1.27-alpine
+    ports: ["80:80"]          # 192.168.181.x:80 で待ち受け
+  db:
+    image: redis:7-alpine     # ports を書かない → VM 内部からのみ到達（横展開の題材に）

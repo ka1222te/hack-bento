@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# hackbento-pack — Compose プロジェクトを HackBento 用のバンドル tar にまとめる。
+#
+# 使い方:
+#   hackbento-pack --bundle [プロジェクトディレクトリ] [-o 出力.tar] [--name プロジェクト名]
+#
+# 生成物（tar の中身）:
+#   hackbento-bundle.json   {"format":1,"project_name":"<name>"}
+#   app/                    compose プロジェクト一式（compose.yml や相対マウント元を含む）
+#   images.tar              docker save $(docker compose config --images) の出力
+#   overlay/                （任意）ゲスト OS の / に重ねるファイル（フラグ・設定ミス等）
+#
+# 要件: docker, docker compose（手元で `docker compose up` が通る状態）, tar。root 不要。
+#
+# このスクリプトはサーバ側（services/bundle_build.py）と同じ検査を手元で行い、
+# アップロード前に問題（別IPを名乗る構成・イメージ不足など）に気づけるようにする。
+
+set -euo pipefail
+
+die()  { echo "エラー: $*" >&2; exit 1; }
+info() { echo "[hackbento-pack] $*" >&2; }
+
+MODE=""
+PROJ_DIR="."
+OUT=""
+NAME=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bundle) MODE="bundle"; shift ;;
+        -o|--output) OUT="${2:-}"; shift 2 ;;
+        --name) NAME="${2:-}"; shift 2 ;;
+        -h|--help)
+            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) die "不明なオプション: $1" ;;
+        *) PROJ_DIR="$1"; shift ;;
+    esac
+done
+
+[[ "$MODE" == "bundle" ]] || die "モードを指定してください（--bundle）"
+command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
+docker compose version >/dev/null 2>&1 || die "docker compose（v2）が見つかりません"
+[[ -d "$PROJ_DIR" ]] || die "ディレクトリがありません: $PROJ_DIR"
+
+PROJ_DIR="$(cd "$PROJ_DIR" && pwd)"
+
+# compose ファイルの存在確認
+COMPOSE_FILE=""
+for f in compose.yml compose.yaml docker-compose.yml docker-compose.yaml; do
+    [[ -f "$PROJ_DIR/$f" ]] && { COMPOSE_FILE="$f"; break; }
+done
+[[ -n "$COMPOSE_FILE" ]] || die "$PROJ_DIR に compose ファイルが見つかりません"
+
+# プロジェクト名（未指定ならディレクトリ名）。サーバ側で /opt/app に置かれても
+# このプロジェクト名でビルド・起動されるため、build: のイメージ名解決が一致する。
+[[ -n "$NAME" ]] || NAME="$(basename "$PROJ_DIR")"
+
+[[ -n "$OUT" ]] || OUT="$(pwd)/${NAME}.bundle.tar"
+
+info "プロジェクト: $PROJ_DIR (compose=$COMPOSE_FILE, name=$NAME)"
+
+# ---- 検査（サーバ側 bundle_build._validate_compose と同等）----
+info "compose 設定を検証中..."
+CONFIG_JSON="$(cd "$PROJ_DIR" && docker compose -p "$NAME" config --format json)" \
+    || die "docker compose config に失敗しました（compose ファイルを確認してください）"
+
+# Python があれば厳密に検査（禁止構成・イメージ不足）。無ければ簡易チェックのみ。
+if command -v python3 >/dev/null 2>&1; then
+    # 検査プログラムは一時ファイルに書き出す（JSON は引数で渡す）。
+    VALIDATOR="$(mktemp)"
+    cat > "$VALIDATOR" <<'PYEOF'
+import sys, json
+data = json.loads(sys.argv[1])
+errs = []
+for nname, ncfg in (data.get("networks") or {}).items():
+    ncfg = ncfg or {}
+    if ncfg.get("driver") in ("macvlan", "ipvlan"):
+        errs.append(f"ネットワーク '{nname}' のドライバ {ncfg.get('driver')} は使用できません")
+    if ncfg.get("external"):
+        errs.append(f"外部ネットワーク '{nname}' は使用できません")
+for sname, scfg in (data.get("services") or {}).items():
+    scfg = scfg or {}
+    for net in (scfg.get("networks") or {}).values():
+        if isinstance(net, dict) and (net.get("ipv4_address") or net.get("ipv6_address")):
+            errs.append(f"サービス '{sname}' が固定 IP を指定しています（使用できません）")
+    if not scfg.get("image"):
+        errs.append(f"サービス '{sname}' に image がありません（build のみはバンドル非対応。image: を指定してください）")
+if errs:
+    sys.stderr.write("検査でエラーが見つかりました:\n")
+    for e in errs:
+        sys.stderr.write("  - " + e + "\n")
+    sys.exit(1)
+PYEOF
+    if ! python3 "$VALIDATOR" "$CONFIG_JSON"; then
+        rm -f "$VALIDATOR"
+        die "compose 構成の検査に失敗しました（上記を修正してください）"
+    fi
+    rm -f "$VALIDATOR"
+fi
+
+# ---- イメージの用意（build & pull）----
+info "イメージを build / pull 中..."
+( cd "$PROJ_DIR" && docker compose -p "$NAME" build ) || die "docker compose build に失敗しました"
+( cd "$PROJ_DIR" && docker compose -p "$NAME" pull --ignore-buildable 2>/dev/null ) || true
+
+IMAGES="$(cd "$PROJ_DIR" && docker compose -p "$NAME" config --images | sort -u)"
+[[ -n "$IMAGES" ]] || die "compose が参照するイメージがありません"
+info "対象イメージ:"; echo "$IMAGES" | sed 's/^/  /' >&2
+
+# ---- バンドル組み立て ----
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/app"
+
+# app/ に compose プロジェクトをコピー（.git やバンドル自身は除外）
+tar -C "$PROJ_DIR" --exclude='.git' --exclude='*.bundle.tar' -cf - . | tar -C "$WORK/app" -xf -
+
+# overlay/ があれば取り込む（プロジェクト直下の overlay/ を使う慣習）
+if [[ -d "$PROJ_DIR/overlay" ]]; then
+    info "overlay/ を取り込みます（ゲスト OS の / に重ねられます）"
+    rm -rf "$WORK/app/overlay"   # app 側に混ぜない
+    mkdir -p "$WORK/overlay"
+    tar -C "$PROJ_DIR/overlay" -cf - . | tar -C "$WORK/overlay" -xf -
+fi
+
+# images.tar（複数イメージをまとめて save。共通レイヤーは共有される）
+info "docker save 中..."
+# shellcheck disable=SC2086
+docker save $IMAGES -o "$WORK/images.tar" || die "docker save に失敗しました"
+
+# マニフェスト
+printf '{"format":1,"project_name":"%s"}\n' "$NAME" > "$WORK/hackbento-bundle.json"
+
+# tar 化（hackbento-bundle.json を先頭に）
+info "バンドルを作成中: $OUT"
+tar -C "$WORK" -cf "$OUT" hackbento-bundle.json app images.tar $( [[ -d "$WORK/overlay" ]] && echo overlay )
+
+SZ=$(du -h "$OUT" | cut -f1)
+info "完了: $OUT ($SZ)"
+info "HackBento の新規プロジェクト作成で「Compose バンドル」を選んでアップロードしてください。"

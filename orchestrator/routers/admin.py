@@ -39,6 +39,9 @@ class DefaultAssetResponse(BaseModel):
     created_at: datetime
     conversion_status: str = RootfsConversionStatus.ready.value
     conversion_error: Optional[str] = None
+    # rootfs の種別: "os"（通常のゲスト rootfs）/ "docker-base"（Compose バンドル用土台）。
+    # kernel 資産や kind 未設定の行は "os" 扱い。
+    kind: str = "os"
 
     model_config = {"from_attributes": True}
 
