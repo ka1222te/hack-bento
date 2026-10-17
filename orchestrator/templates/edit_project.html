@@ -219,6 +219,27 @@
           </div>
         </div>
 
+        <!-- 追加カーネル起動引数 -->
+        <input type="hidden" name="extra_boot_args" id="extra-boot-args-input" value="" />
+        <div class="np-field">
+          <label class="np-label">追加カーネル起動引数 <span class="np-optional">optional</span></label>
+          <p class="np-hint" style="margin:0 0 .5rem">
+            カーネル exploit 問題で防御を外す場合に選択します。
+          </p>
+          <div id="boot-args-checkboxes">
+            <label class="np-checkbox-label"><input type="checkbox" value="nokaslr"> <code>nokaslr</code> — KASLR（カーネルアドレスのランダム化）を無効化</label>
+            <label class="np-checkbox-label"><input type="checkbox" value="nosmep"> <code>nosmep</code> — SMEP（ユーザ空間コードの実行防止）を無効化</label>
+            <label class="np-checkbox-label"><input type="checkbox" value="nosmap"> <code>nosmap</code> — SMAP（ユーザ空間データへの直接アクセス防止）を無効化</label>
+            <label class="np-checkbox-label"><input type="checkbox" value="kpti=0"> <code>kpti=0</code> — KPTI（Meltdown対策のページテーブル分離）を無効化</label>
+            <label class="np-checkbox-label"><input type="checkbox" value="mitigations=off"> <code>mitigations=off</code> — Spectre/Meltdown系の緩和策を一括無効化</label>
+          </div>
+          <p class="np-hint" style="margin:.5rem 0 0">
+            ip= / init= / console= / root= など HackBento が管理する引数はここに無く、選択しても無視されます。<br>
+            <strong>AF_ALG など機能の有効化はここでは行えません</strong>（起動引数ではなくカーネルのビルド設定で決まるため）。
+            該当する CVE を再現する場合は、その機能を有効にしてビルドしたカーネルを「ゲストカーネル」欄にアップロードしてください。
+          </p>
+        </div>
+
         <!-- README 変更 -->
         <div class="np-field">
           <label class="np-label">
@@ -330,6 +351,12 @@ async function init() {
   document.getElementById('proj-difficulty').value  = imageData.difficulty || 'none';
   document.getElementById('proj-timeout').value     = String(imageData.timeout_minutes || 60);
   if (imageData.category) document.getElementById('proj-category').value = imageData.category;
+  // 既存の追加カーネル起動引数をチェックボックスに反映
+  const _currentBootArgs = (imageData.extra_boot_args || '').split(/\s+/).filter(Boolean);
+  document.querySelectorAll('#boot-args-checkboxes input[type="checkbox"]').forEach(cb => {
+    cb.checked = _currentBootArgs.includes(cb.value);
+  });
+  document.getElementById('extra-boot-args-input').value = _currentBootArgs.join(' ');
   if (isBridge) {
     await Promise.all([
       initAssetToggle('kernel', imageData.default_kernel_asset_id),
@@ -483,6 +510,17 @@ if (isBridge) {
   setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
 }
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
+
+// 追加カーネル起動引数: チェックボックスの選択を隠しフィールドへスペース区切りで集約する
+(function setupBootArgsCheckboxes() {
+  const container = document.getElementById('boot-args-checkboxes');
+  const hidden = document.getElementById('extra-boot-args-input');
+  function sync() {
+    const values = Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+    hidden.value = values.join(' ');
+  }
+  container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));
+})();
 
 // コラボレーター
 async function loadCollaborators() {
