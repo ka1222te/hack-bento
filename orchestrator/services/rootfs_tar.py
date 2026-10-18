@@ -327,7 +327,7 @@ def detect_archive_kind(path: str) -> str:
 
     戻り値: "ext4"（変換不要・そのまま利用可能） / "tar"（単純なファイルシステムtar・変換対象）
             / "docker-save"（複数レイヤーのOCIアーカイブ・非対応）
-            / "compose-bundle"（hackbento-pack の Compose バンドル・ビルド用VMで組み立て）
+            / "compose-bundle"（bento-pack の Compose バンドル・ビルド用VMで組み立て）
     """
     import struct
 

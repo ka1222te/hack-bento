@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# hackbento-pack — Compose プロジェクトを HackBento 用のバンドル tar にまとめる。
+# bento-pack — Compose プロジェクトを HackBento 用のバンドル tar にまとめる。
 #
 # 使い方:
-#   hackbento-pack --bundle [プロジェクトディレクトリ] [-o 出力.tar] [--name プロジェクト名]
+#   bento-pack --bundle [プロジェクトディレクトリ] [-o 出力.tar] [--name プロジェクト名]
 #
 # 生成物（tar の中身）:
 #   hackbento-bundle.json   {"format":1,"project_name":"<name>"}
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 die()  { echo "エラー: $*" >&2; exit 1; }
-info() { echo "[hackbento-pack] $*" >&2; }
+info() { echo "[bento-pack] $*" >&2; }
 
 MODE=""
 PROJ_DIR="."

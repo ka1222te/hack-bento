@@ -562,7 +562,7 @@ async def upload_image(
             os.remove(bundle_path)
             raise HTTPException(
                 status_code=400,
-                detail="Compose バンドル形式ではありません（hackbento-pack --bundle で作成したファイルをアップロードしてください）",
+                detail="Compose バンドル形式ではありません（bento-pack --bundle で作成したファイルをアップロードしてください）",
             )
         # ビルド成果物（本番 rootfs）の出力先を採番
         os.makedirs(VM_DIR, exist_ok=True)
