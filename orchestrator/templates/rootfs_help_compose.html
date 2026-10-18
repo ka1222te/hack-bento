@@ -70,6 +70,8 @@ chmod +x bento-pack
 
 {% block scripts %}
 <script>
+initNavbar();
+
 if (typeof hljs !== 'undefined') {
   if (typeof hljs.addPlugin === 'function' && typeof CopyButtonPlugin !== 'undefined') {
     hljs.addPlugin(new CopyButtonPlugin());
