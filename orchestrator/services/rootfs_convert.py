@@ -48,6 +48,12 @@ async def _claim_pending() -> tuple[dict, int, str, str] | None:
             # 専用処理するため、tar→ext4 変換ワーカーは拾わない。
             if model is Image:
                 conds.append(Image.rootfs_kind != "compose")
+            # DefaultRootfsAsset の docker-base 行（管理者が /admin からビルド依頼した資産。
+            # source_archive_path を持たず base_image からビルドする）は
+            # services.docker_base_assets.run_docker_base_build_worker が専用処理するため、
+            # tar→ext4 変換ワーカーは拾わない。
+            if model is DefaultRootfsAsset:
+                conds.append(DefaultRootfsAsset.kind != "docker-base")
             result = await db.execute(
                 select(model)
                 .where(*conds)

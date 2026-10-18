@@ -4,6 +4,7 @@ services/firecracker_setup.py から分離した責務のひとつ。Debian + Do
 含み、/sbin/init が build/run の2モードで動く rootfs を Debian コンテナ内で構築し、
 docker export で取り出して ext4 へ変換する。
 """
+import asyncio
 import logging
 import os
 import shutil
@@ -19,6 +20,16 @@ from services.vm_assets import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 管理者が /admin から docker-base をビルドする際に選べるベースイメージ。
+# _DOCKER_BASE_BUILD_SCRIPT が apt-get + docker-ce 公式リポジトリ（Debian系専用）を
+# 前提にしているため、現時点では Debian 系のみを許可する（UI の先駆けとして用意し、
+# 対応系統を増やす場合はビルドスクリプト自体を OS 系統ごとに分岐させる必要がある）。
+ALLOWED_DOCKER_BASE_IMAGES = {
+    "debian:bookworm-slim": "Debian (bookworm-slim)",
+}
+
+_POLL_INTERVAL_SECONDS = 10
 
 # docker-base の /sbin/init。
 #   build モード (カーネル引数に hb_build): scratch(/dev/vdb) のバンドルを docker load /
@@ -176,27 +187,33 @@ tar -cf /rootfs.tar -C / --exclude=./proc --exclude=./sys --exclude=./dev --excl
 """
 
 
-async def build_docker_base_rootfs() -> None:
-    """Compose バンドル用の docker-base rootfs（Debian + Docker + compose）を構築する。
+async def build_docker_base_rootfs_at(dest_path: str, base_image: str = DOCKER_BASE_DEBIAN_IMAGE) -> None:
+    """docker-base rootfs（Debian 系 + Docker + compose）を dest_path に構築する。
 
-    Debian コンテナ内で docker-ce 一式を導入し、2 モード init を仕込んで docker export で
-    取り出し、ext4 へ変換する。dockerd はこのビルドコンテナ内では起動しない
-    （インストールのみ）。実際に dockerd が動くのはビルド用/本番用 VM の中。
+    base_image は apt 系・docker-ce 公式リポジトリに対応したイメージである必要がある
+    （_DOCKER_BASE_BUILD_SCRIPT が apt-get/docker-ce 公式リポジトリ前提のため、
+    現時点では実質 Debian 系のみ対応）。dest_path に既にファイルがあれば再構築しない。
+
+    Debian コンテナ内で docker-ce 一式を導入し、2 モード init を強制的に埋め込んで
+    docker export で取り出し、ext4 へ変換する。dockerd はこのビルドコンテナ内では
+    起動しない（インストールのみ）。実際に dockerd が動くのはビルド用/本番用 VM の中。
     """
-    if os.path.exists(DOCKER_BASE_ROOTFS_PATH):
-        logger.info(f"docker-base rootfs は既に存在します: {DOCKER_BASE_ROOTFS_PATH}")
+    if os.path.exists(dest_path):
+        logger.info(f"docker-base rootfs は既に存在します: {dest_path}")
         return
     if not docker_available():
         raise RuntimeError(
             "docker-base rootfs の構築には Docker (docker.sock) が必要ですが、"
             "/var/run/docker.sock が見つかりません。資産ビルド時のみ docker.sock マウントを有効にしてください。"
         )
-    logger.info("docker-base rootfs を構築中...（数分かかる場合があります）")
+    logger.info(f"docker-base rootfs を構築中...（数分かかる場合があります）base_image={base_image}")
 
     tmpdir = tempfile.mkdtemp(prefix="hackbento-docker-base-")
     container_name = f"hackbento-docker-base-build-{os.path.basename(tmpdir)}"
     try:
         # daemon.json の { } を含むため str.format は使わず置換で init を差し込む
+        # （init の build/run 2モードはサーバ側の約束事であり、ユーザ/管理者が選べる
+        #  base_image の違いに関わらず常にこのスクリプトで強制的に埋め込む）
         build_script = _DOCKER_BASE_BUILD_SCRIPT.replace("__INIT_SCRIPT__", _build_docker_base_init_script())
         try:
             await _run(["docker", "rm", "-f", container_name])
@@ -204,21 +221,26 @@ async def build_docker_base_rootfs() -> None:
             pass
         await _run([
             "docker", "run", "--name", container_name,
-            DOCKER_BASE_DEBIAN_IMAGE,
+            base_image,
             "bash", "-c", build_script,
         ], timeout=1800)
 
         tar_path = os.path.join(tmpdir, "rootfs.tar")
         # docker export でホスト側に直接ストリーミング（大きいためメモリに載せない）
         await _run_to_file(["docker", "export", container_name], tar_path, timeout=900)
-        await convert_tar_to_ext4(tar_path, DOCKER_BASE_ROOTFS_PATH, size_mb=DOCKER_BASE_ROOTFS_SIZE_MB)
-        logger.info(f"docker-base rootfs を保存しました: {DOCKER_BASE_ROOTFS_PATH}")
+        await convert_tar_to_ext4(tar_path, dest_path, size_mb=DOCKER_BASE_ROOTFS_SIZE_MB)
+        logger.info(f"docker-base rootfs を保存しました: {dest_path}")
     finally:
         try:
             await _run(["docker", "rm", "-f", container_name])
         except Exception:
             pass
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def build_docker_base_rootfs() -> None:
+    """起動時オーケストレーション用: 既定パス・既定ベースイメージで docker-base rootfs を構築する。"""
+    await build_docker_base_rootfs_at(DOCKER_BASE_ROOTFS_PATH, DOCKER_BASE_DEBIAN_IMAGE)
 
 
 async def register_docker_base_asset() -> None:
@@ -243,3 +265,70 @@ async def register_docker_base_asset() -> None:
             asset.label = DOCKER_BASE_LABEL
             asset.kind = "docker-base"
         await db.commit()
+
+
+# ---- 管理者が /admin から追加登録する docker-base 資産のビルドワーカー ----
+# rootfs_convert.py と同じ「pending を行ロックで claim → 処理 → ready/failed」パターン。
+# 対象は DefaultRootfsAsset(kind="docker-base") のうち base_image が設定されている行のみ
+# （起動時に ensure_default_vm_assets が用意する既定の docker-base 資産は base_image 不要で
+#  このワーカーの対象にはならない）。
+
+async def _claim_pending_docker_base() -> tuple[int, str, str] | None:
+    from database import AsyncSessionLocal
+    from models import DefaultRootfsAsset, RootfsConversionStatus
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DefaultRootfsAsset)
+            .where(
+                DefaultRootfsAsset.kind == "docker-base",
+                DefaultRootfsAsset.conversion_status == RootfsConversionStatus.pending.value,
+                DefaultRootfsAsset.base_image.isnot(None),
+            )
+            .with_for_update()
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        row.conversion_status = RootfsConversionStatus.converting.value
+        await db.flush()
+        row_id, base_image, dest_path = row.id, row.base_image, row.file_path
+        await db.commit()
+        return row_id, base_image, dest_path
+
+
+async def _finish_docker_base(row_id: int, status: str, error: str | None) -> None:
+    from database import AsyncSessionLocal
+    from models import DefaultRootfsAsset
+
+    async with AsyncSessionLocal() as db:
+        row = await db.get(DefaultRootfsAsset, row_id)
+        if row is not None:
+            row.conversion_status = status
+            row.conversion_error = error
+            await db.commit()
+
+
+async def run_docker_base_build_worker() -> None:
+    """管理者が登録した docker-base 資産（pending）を順次ビルドするバックグラウンドループ。"""
+    logger.info("docker-base build worker started")
+    while True:
+        try:
+            claimed = await _claim_pending_docker_base()
+            if claimed is not None:
+                row_id, base_image, dest_path = claimed
+                from models import RootfsConversionStatus
+                try:
+                    await build_docker_base_rootfs_at(dest_path, base_image)
+                    await _finish_docker_base(row_id, RootfsConversionStatus.ready.value, None)
+                    logger.info(f"docker-base 資産のビルドが完了しました: id={row_id} -> {dest_path}")
+                except Exception as e:
+                    message = str(e).strip()[:512]
+                    await _finish_docker_base(row_id, RootfsConversionStatus.failed.value, message)
+                    logger.error(f"docker-base 資産のビルドに失敗しました: id={row_id}: {e}")
+                continue
+        except Exception as e:
+            logger.error(f"docker-base build worker error: {e}")
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)

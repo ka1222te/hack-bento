@@ -137,4 +137,3 @@ tar -C "$WORK" -cf "$OUT" hackbento-bundle.json app images.tar $( [[ -d "$WORK/o
 
 SZ=$(du -h "$OUT" | cut -f1)
 info "完了: $OUT ($SZ)"
-info "HackBento の新規プロジェクト作成で「Compose バンドル」を選んでアップロードしてください。"

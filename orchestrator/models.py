@@ -167,6 +167,11 @@ class DefaultRootfsAsset(Base):
     conversion_status = Column(String(16), default=RootfsConversionStatus.ready.value, nullable=False)
     conversion_error = Column(String(512), nullable=True)
     source_archive_path = Column(String(512), nullable=True)
+    # kind="docker-base" をサーバ側でビルドして登録した場合のみ設定される
+    # Docker イメージ参照（例: "debian:bookworm-slim"）。ビルドワーカー
+    # （services.docker_base_assets.run_docker_base_build_worker）がこれを見て
+    # pending 行を処理する。アップロードで直接登録した資産（os 種別含む）では未設定。
+    base_image = Column(String(256), nullable=True)
 
 
 class ImageCollaborator(Base):

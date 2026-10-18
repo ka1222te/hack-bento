@@ -22,6 +22,7 @@ from services.network import ensure_vm_network
 from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_machine_assets
 from services.rootfs_convert import run_rootfs_conversion_worker
 from services.bundle_build import run_bundle_build_worker
+from services.docker_base_assets import run_docker_base_build_worker
 from services.smolvm import cleanup_orphaned_vms
 from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
@@ -44,13 +45,15 @@ async def lifespan(app: FastAPI):
     rootfs_convert_task = asyncio.create_task(run_rootfs_conversion_worker())
     bundle_build_task = asyncio.create_task(run_bundle_build_worker())
     attack_machine_task = asyncio.create_task(ensure_attack_machine_assets())
+    docker_base_build_task = asyncio.create_task(run_docker_base_build_worker())
     yield
     task.cancel()
     vm_assets_task.cancel()
     rootfs_convert_task.cancel()
     bundle_build_task.cancel()
     attack_machine_task.cancel()
-    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task):
+    docker_base_build_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -369,15 +372,6 @@ async def new_project_page(request: Request):
     if not user or user.needs_username_setup:
         return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
-
-
-@app.get("/docs/rootfs", response_class=HTMLResponse)
-async def rootfs_help_page(request: Request):
-    """rootfs / Compose バンドルの作り方の索引ページ（形式ごとに詳細ページへ振り分け）。"""
-    user = await _get_request_user(request)
-    if not user or user.needs_username_setup:
-        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
-    return templates.TemplateResponse("rootfs_help.html", {"request": request, "settings": settings})
 
 
 @app.get("/docs/rootfs/compose", response_class=HTMLResponse)

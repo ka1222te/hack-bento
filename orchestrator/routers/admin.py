@@ -265,6 +265,24 @@ async def force_stop_env(
     return {"message": "強制停止しました"}
 
 
+@router.get("/default-assets/docker-base", response_model=list[DefaultAssetResponse])
+async def list_docker_base_assets(
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """docker-base（Compose バンドル用土台）種別の資産一覧。
+
+    GET /default-assets/{kind} より前に登録すること（FastAPI はルート登録順に評価するため、
+    後ろにすると {kind}="docker-base" として動的ルートに吸われてしまう）。
+    """
+    result = await db.execute(
+        select(DefaultRootfsAsset)
+        .where(DefaultRootfsAsset.kind == "docker-base")
+        .order_by(DefaultRootfsAsset.created_at.desc())
+    )
+    return result.scalars().all()
+
+
 @router.get("/default-assets/{kind}", response_model=list[DefaultAssetResponse])
 async def list_default_assets(
     kind: str,
@@ -274,7 +292,12 @@ async def list_default_assets(
     info = _DEFAULT_ASSET_KINDS.get(kind)
     if not info:
         raise HTTPException(status_code=400, detail="kind は kernels または rootfs を指定してください")
-    result = await db.execute(select(info["model"]).order_by(info["model"].created_at.desc()))
+    query = select(info["model"])
+    if kind == "rootfs":
+        # docker-base 種別は専用セクション（/default-assets/docker-base）で一覧表示するため、
+        # こちらは通常の OS イメージ用 rootfs のみを返す。
+        query = query.where(DefaultRootfsAsset.kind != "docker-base")
+    result = await db.execute(query.order_by(info["model"].created_at.desc()))
     return result.scalars().all()
 
 
@@ -350,6 +373,52 @@ async def create_default_asset(
     return asset
 
 
+@router.get("/default-assets/docker-base/base-images")
+async def list_docker_base_base_images(_: User = Depends(require_admin)):
+    """docker-base ビルド時に選べるベースイメージの一覧（現時点では Debian 系のみ）。"""
+    from services.docker_base_assets import ALLOWED_DOCKER_BASE_IMAGES
+
+    return [{"image": k, "label": v} for k, v in ALLOWED_DOCKER_BASE_IMAGES.items()]
+
+
+@router.post("/default-assets/docker-base/build", response_model=DefaultAssetResponse, status_code=status.HTTP_201_CREATED)
+async def build_docker_base_asset(
+    label: str = Form(...),
+    base_image: str = Form(...),
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """docker-base rootfs をサーバ側でビルドして資産登録する（アップロードではなくビルド）。
+
+    docker-base は build/run 2モードで動く専用 init を強制的に埋め込む必要があるため、
+    ユーザ/管理者が任意の ext4・tar をそのまま docker-base として登録することは許可しない
+    （services/docker_base_assets.py の仕組みを参照）。ここではベースイメージの参照のみを
+    受け取り、実際のビルドはバックグラウンドワーカー（run_docker_base_build_worker）が行う。
+    """
+    from services.docker_base_assets import ALLOWED_DOCKER_BASE_IMAGES
+
+    label = label.strip()
+    if not label or len(label) > 128:
+        raise HTTPException(status_code=400, detail="label は 1〜128 文字で指定してください")
+    if base_image not in ALLOWED_DOCKER_BASE_IMAGES:
+        raise HTTPException(status_code=400, detail="指定されたベースイメージは対応していません")
+
+    os.makedirs(DEFAULTS_DIR, exist_ok=True)
+    dest_path = os.path.join(DEFAULTS_DIR, f"{uuid.uuid4()}-docker-base.ext4")
+    asset = DefaultRootfsAsset(
+        label=label,
+        file_path=dest_path,
+        kind="docker-base",
+        created_by=current_user.id,
+        conversion_status=RootfsConversionStatus.pending.value,
+        base_image=base_image,
+    )
+    db.add(asset)
+    await db.commit()
+    await db.refresh(asset)
+    return asset
+
+
 @router.delete("/default-assets/{kind}/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_default_asset(
     kind: str,
@@ -365,12 +434,13 @@ async def delete_default_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="資産が見つかりません")
 
-    ref_column = Image.default_kernel_asset_id if kind == "kernels" else Image.default_rootfs_asset_id
-    ref_result = await db.execute(
-        select(Image.id).where(ref_column == asset_id, Image.is_active == True)
-    )
-    if ref_result.first():
-        raise HTTPException(status_code=400, detail="このデフォルト資産を使用しているプロジェクトが存在するため削除できません")
+    ref_columns = [Image.default_kernel_asset_id] if kind == "kernels" else [Image.default_rootfs_asset_id, Image.base_rootfs_asset_id]
+    for ref_column in ref_columns:
+        ref_result = await db.execute(
+            select(Image.id).where(ref_column == asset_id, Image.is_active == True)
+        )
+        if ref_result.first():
+            raise HTTPException(status_code=400, detail="このデフォルト資産を使用しているプロジェクトが存在するため削除できません")
 
     paths_to_remove = [asset.file_path]
     source_archive_path = getattr(asset, "source_archive_path", None)

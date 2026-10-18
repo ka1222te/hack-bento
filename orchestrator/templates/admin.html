@@ -75,6 +75,21 @@
           <tbody id="rootfs-assets-tbody"></tbody>
         </table>
       </div>
+
+      <div class="panel-header" style="margin-top:2rem">
+        <h2 class="panel-title">docker-base（Compose バンドル用土台）</h2>
+        <button class="btn btn-sm btn-primary" id="btn-build-docker-base-asset">+ docker-base をビルド</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="docker-base-assets-table">
+          <thead><tr><th>ID</th><th>ラベル</th><th>状態</th><th>登録日</th><th>操作</th></tr></thead>
+          <tbody id="docker-base-assets-tbody"></tbody>
+        </table>
+      </div>
+      <p class="np-hint" style="margin:.5rem 0 0">
+        Compose バンドルの土台となる rootfs。アップロードではなく、指定したベースイメージから
+        サーバ側で Docker + compose を自動インストールしてビルドする（数分〜数十分かかる）。
+      </p>
     </div>
   </div>
 </div>
@@ -127,6 +142,29 @@
       <div class="modal-actions">
         <button type="submit" class="btn btn-primary">追加</button>
         <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-vm-asset">キャンセル</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Build docker-base Asset -->
+<div id="modal-docker-base" class="modal hidden">
+  <div class="modal-backdrop js-close-modal" data-modal="modal-docker-base"></div>
+  <div class="modal-box">
+    <h3 class="modal-title">docker-base をビルド</h3>
+    <form id="form-docker-base">
+      <div id="form-docker-base-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
+      <div class="form-group"><label>ラベル</label><input name="label" placeholder="例: Debian (bookworm-slim)" required /></div>
+      <div class="form-group">
+        <label>ベースイメージ</label>
+        <select name="base_image" id="docker-base-image-select"></select>
+        <p class="np-hint" style="margin:.3rem 0 0">
+          現時点では Debian 系のみ対応（docker-ce 公式リポジトリに対応したイメージが必要）。
+        </p>
+      </div>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">ビルドを開始</button>
+        <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-docker-base">キャンセル</button>
       </div>
     </form>
   </div>
@@ -427,44 +465,53 @@ function _maybeToggleVmAssetPolling(rootfsAssets) {
   }
 }
 
-async function loadVmAssets() {
-  // kind は API パスのセグメント（複数形: kernels/rootfs）。
-  // テーブル要素の id は kernel-assets-tbody（単数形）/ rootfs-assets-tbody なので、
-  // そのまま `${kind}-assets-tbody` にすると kernels 側が一致せず取得に失敗する。
-  const idPrefix = { kernels: 'kernel', rootfs: 'rootfs' };
-  for (const kind of ['kernels', 'rootfs']) {
-    const res = await API.get(`/api/admin/default-assets/${kind}`);
-    if (!res.ok) continue;
-    const assets = await res.json();
-    const tbody = document.getElementById(`${idPrefix[kind]}-assets-tbody`);
-    if (kind === 'rootfs') {
-      tbody.innerHTML = assets.map(a => {
-        const st = a.conversion_status;
-        const badge = (st && st !== 'ready')
-          ? `<span class="status-badge ${st}" ${a.conversion_error ? `title="${escHtml(a.conversion_error)}"` : ''}>${_CONVERSION_STATUS_LABELS[st] || st}</span>`
-          : '—';
-        return `
+function _renderRootfsLikeTable(tbodyId, assets, deleteKind) {
+  const tbody = document.getElementById(tbodyId);
+  tbody.innerHTML = assets.map(a => {
+    const st = a.conversion_status;
+    const badge = (st && st !== 'ready')
+      ? `<span class="status-badge ${st}" ${a.conversion_error ? `title="${escHtml(a.conversion_error)}"` : ''}>${_CONVERSION_STATUS_LABELS[st] || st}</span>`
+      : '—';
+    return `
       <tr>
         <td>${a.id}</td>
         <td>${escHtml(a.label)}</td>
         <td>${badge}</td>
         <td>${fmt(a.created_at)}</td>
-        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${kind}" data-aid="${a.id}">削除</button></td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${deleteKind}" data-aid="${a.id}">削除</button></td>
       </tr>
     `;
-      }).join('') || '<tr><td colspan="5" class="empty-cell">登録されている資産がありません</td></tr>';
-      _maybeToggleVmAssetPolling(assets);
-    } else {
-      tbody.innerHTML = assets.map(a => `
+  }).join('') || '<tr><td colspan="5" class="empty-cell">登録されている資産がありません</td></tr>';
+  return assets;
+}
+
+async function loadVmAssets() {
+  const kernelsRes = await API.get('/api/admin/default-assets/kernels');
+  if (kernelsRes.ok) {
+    const assets = await kernelsRes.json();
+    document.getElementById('kernel-assets-tbody').innerHTML = assets.map(a => `
       <tr>
         <td>${a.id}</td>
         <td>${escHtml(a.label)}</td>
         <td>${fmt(a.created_at)}</td>
-        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${kind}" data-aid="${a.id}">削除</button></td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="kernels" data-aid="${a.id}">削除</button></td>
       </tr>
     `).join('') || '<tr><td colspan="4" class="empty-cell">登録されている資産がありません</td></tr>';
-    }
   }
+
+  let pollTargets = [];
+  const rootfsRes = await API.get('/api/admin/default-assets/rootfs');
+  if (rootfsRes.ok) {
+    const assets = await rootfsRes.json();
+    pollTargets = pollTargets.concat(_renderRootfsLikeTable('rootfs-assets-tbody', assets, 'rootfs'));
+  }
+  const dockerBaseRes = await API.get('/api/admin/default-assets/docker-base');
+  if (dockerBaseRes.ok) {
+    const assets = await dockerBaseRes.json();
+    // docker-base 資産も削除は DELETE /default-assets/rootfs/{id}（モデルは同じ DefaultRootfsAsset）
+    pollTargets = pollTargets.concat(_renderRootfsLikeTable('docker-base-assets-tbody', assets, 'rootfs'));
+  }
+  _maybeToggleVmAssetPolling(pollTargets);
 }
 
 async function deleteVmAsset(kind, assetId) {
@@ -473,6 +520,43 @@ async function deleteVmAsset(kind, assetId) {
   if (res.ok) { showToast('削除しました', 'success'); loadVmAssets(); }
   else { const d = await res.json(); showToast(d.detail || 'エラーが発生しました', 'error'); }
 }
+
+// ---- docker-base ビルド ----
+document.getElementById('btn-build-docker-base-asset').addEventListener('click', async () => {
+  document.getElementById('form-docker-base').reset();
+  document.getElementById('form-docker-base-error').classList.add('hidden');
+  const select = document.getElementById('docker-base-image-select');
+  select.innerHTML = '<option value="">読み込み中...</option>';
+  document.getElementById('modal-docker-base').classList.remove('hidden');
+  const res = await API.get('/api/admin/default-assets/docker-base/base-images');
+  if (res.ok) {
+    const images = await res.json();
+    select.innerHTML = images.map(i => `<option value="${escHtml(i.image)}">${escHtml(i.label)}</option>`).join('');
+  } else {
+    select.innerHTML = '<option value="">取得に失敗しました</option>';
+  }
+});
+
+document.getElementById('form-docker-base').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errBox = document.getElementById('form-docker-base-error');
+  errBox.classList.add('hidden');
+  const fd = new FormData(e.target);
+  const res = await fetch('/api/admin/default-assets/docker-base/build', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${API.token()}` },
+    body: fd,
+  });
+  if (res.ok) {
+    document.getElementById('modal-docker-base').classList.add('hidden');
+    showToast('docker-base のビルドを開始しました（数分〜数十分かかります）', 'success');
+    loadVmAssets();
+  } else {
+    const d = await res.json();
+    errBox.textContent = d.detail || 'エラーが発生しました';
+    errBox.classList.remove('hidden');
+  }
+});
 
 document.getElementById('form-vm-asset').addEventListener('submit', async e => {
   e.preventDefault();
