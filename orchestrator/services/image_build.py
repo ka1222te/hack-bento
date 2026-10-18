@@ -100,6 +100,9 @@ async def run_build_vm(
     timeout_s: int = DEFAULT_BUILD_TIMEOUT_S,
     boot_marker: str = "hb_build=1",
     result_rootfs_path: str | None = None,
+    input_disk_path: str | None = None,
+    result_from_scratch: bool = False,
+    status_disk_path: str | None = None,
 ) -> None:
     """ネットワークなしのビルド VM を起動し、ゲストが電源を落とすまで待つ。
 
@@ -109,9 +112,21 @@ async def run_build_vm(
                          VM からは /dev/vdb として見える。呼び出し側が事前に用意し、後で読む。
     - timeout_s        : ハードタイムアウト。超過したら VM を強制終了して BuildVMError を送出。
     - boot_marker      : ゲスト init に「ビルドモード」を伝えるカーネル引数。
-    - result_rootfs_path: 指定すると、正常終了後にビルド済み rootfs コピー（docker-base に
-                         バンドルを焼き込んだもの）をこのパスへ移動して残す。Compose バンドルの
-                         成果物（本番用 rootfs）を回収するために使う。未指定なら破棄する。
+    - result_rootfs_path: 指定すると、正常終了後にビルド済み rootfs コピー（1本目のディスク。
+                         docker-base にバンドルを焼き込んだもの等）をこのパスへ移動して残す。
+                         result_from_scratch=True の場合は代わりに scratch（2本目）を回収する。
+                         未指定なら何も回収せず破棄する。
+    - input_disk_path  : 指定すると 3 本目のドライブ（読み取り専用）として渡す。VM からは
+                         /dev/vdc として見える。信用できない入力（rootfs tar 等）を、書き込み
+                         先の scratch とは別のディスクとして渡したい場合に使う。
+    - result_from_scratch: True の場合、成果物の回収元を 1 本目（base_rootfs のコピー）ではなく
+                         2 本目（scratch）にする。rootfs 変換（scratch 自体を最終 rootfs として
+                         VM 内で直接書き込む用途）向け。
+    - status_disk_path : 指定すると 4 本目のドライブ（書き込み可能）として渡す。VM からは
+                         /dev/vdd として見える。scratch を最終成果物としてそのまま回収する
+                         場合、ステータス/ログ/展開後サイズ等の「おまけ情報」を scratch に
+                         書くと成果物に混入してしまうため、別ディスクに分離するために使う。
+                         呼び出し側が事前に空の ext4 を用意し、終了後に自分で読む。
 
     正常終了（ゲストが自分で poweroff/reboot）した場合は None を返す。
     異常（タイムアウト・起動失敗）時は BuildVMError。
@@ -122,6 +137,10 @@ async def run_build_vm(
         raise BuildVMError(f"ベース rootfs が見つかりません: {base_rootfs_path}")
     if not scratch_path or not os.path.exists(scratch_path):
         raise BuildVMError(f"scratch ディスクが見つかりません: {scratch_path}")
+    if input_disk_path is not None and not os.path.exists(input_disk_path):
+        raise BuildVMError(f"入力ディスクが見つかりません: {input_disk_path}")
+    if status_disk_path is not None and not os.path.exists(status_disk_path):
+        raise BuildVMError(f"ステータスディスクが見つかりません: {status_disk_path}")
     if not os.path.exists("/dev/kvm"):
         raise BuildVMError("/dev/kvm が存在しません。KVM が有効か確認してください。")
 
@@ -172,6 +191,24 @@ async def run_build_vm(
                 "is_root_device": False,
                 "is_read_only": False,
             })
+            if input_disk_path is not None:
+                # 3 本目: 読み取り専用の入力ディスク（/dev/vdc）。信用できない入力
+                # （rootfs tar 等）を、書き込み先の scratch とは分離して渡す。
+                await smolvm._fc_api(socket_path, "PUT", "/drives/input", {
+                    "drive_id": "input",
+                    "path_on_host": input_disk_path,
+                    "is_root_device": False,
+                    "is_read_only": True,
+                })
+            if status_disk_path is not None:
+                # 4 本目: 書き込み可能なステータス専用ディスク（/dev/vdd）。ステータス・
+                # ログ・展開後サイズ等を、成果物として回収する scratch と分離して書く。
+                await smolvm._fc_api(socket_path, "PUT", "/drives/status", {
+                    "drive_id": "status",
+                    "path_on_host": status_disk_path,
+                    "is_root_device": False,
+                    "is_read_only": False,
+                })
             await smolvm._fc_api(socket_path, "PUT", "/machine-config", {
                 "vcpu_count": cpu,
                 "mem_size_mib": memory_mb,
@@ -192,14 +229,20 @@ async def run_build_vm(
                 logger.warning(f"ビルド VM の終了コードが非ゼロ: bid={bid} rc={fc_proc.returncode}")
             logger.info(f"ビルド VM 正常終了: bid={bid}")
 
-            # 成果物（ビルド済み rootfs）を残す場合はここで回収する。
-            # VM は既に終了しているためファイルは安定している。
+            # 成果物を残す場合はここで回収する（VM は既に終了しファイルは安定している）。
+            # result_from_scratch=True なら 2 本目（scratch）を、そうでなければ
+            # 1 本目（base_rootfs の書き込み可能コピー）を回収元にする。
             if result_rootfs_path is not None:
+                source = scratch_path if result_from_scratch else rootfs_copy
                 os.makedirs(os.path.dirname(result_rootfs_path), exist_ok=True)
                 tmp = result_rootfs_path + ".tmp"
                 if os.path.exists(tmp):
                     os.remove(tmp)
-                await loop.run_in_executor(None, shutil.move, rootfs_copy, tmp)
+                if result_from_scratch:
+                    # scratch は呼び出し側が所有するファイルなのでコピーする（移動しない）。
+                    await loop.run_in_executor(None, shutil.copy2, source, tmp)
+                else:
+                    await loop.run_in_executor(None, shutil.move, source, tmp)
                 os.replace(tmp, result_rootfs_path)
 
         finally:

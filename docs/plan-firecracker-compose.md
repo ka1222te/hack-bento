@@ -292,8 +292,15 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 - [ ] zstd 対応が必要なら受付検査・展開を拡張（現 `tarfile` は zstd 非対応）。
 
 **（並行）既存 OS イメージ経路の tar 展開もビルド用 VM に寄せる**
-- [x]（暫定対応・実施済み）`convert_tar_to_ext4` のホスト上 `tar -xf` を Python 製の安全な展開（`_safe_extract_tar`）に置き換えた。symlink の*作成*は許可（Alpine/Debian 系 rootfs が標準で持つ `/bin/sh -> /bin/busybox` 等の絶対パス symlink を壊さないため、`tarfile` の `filter="data"` は不採用）、通常ファイル/ディレクトリの書き込み直前に親パスを1階層ずつ解決し、既存 symlink 経由で展開先の外に出ていないかを検証（symlink traversal 対策）。絶対パス・`../` を含むエントリ名は従来通り拒否。実機で (1) 絶対パス symlink を含む正当な rootfs が変換後も中身を保持して展開できること、(2) 絶対パス/相対パスいずれの symlink traversal 攻撃も `TarError` で検知されホスト側に書き込みが発生しないこと、を確認済み。
-- [ ]（本対応・未実施）`convert_tar_to_ext4` 自体をビルド用 VM 経由に移行し、信用できない tar をホストで展開しない方針に完全統一する。
+- [x]（暫定対応・実施済み・最終的に本対応へ置き換え）`_convert_tar_to_ext4_host_unsafe` として残存。ホスト上 `tar -xf` を Python 製の安全な展開（`_safe_extract_tar`）に置き換えたもの。symlink の*作成*は許可（Alpine/Debian 系 rootfs が標準で持つ `/bin/sh -> /bin/busybox` 等の絶対パス symlink を壊さないため、`tarfile` の `filter="data"` は不採用）、通常ファイル/ディレクトリの書き込み直前に親パスを1階層ずつ解決し、既存 symlink 経由で展開先の外に出ていないかを検証（symlink traversal 対策）。用途は「rootfs 変換専用ベース自身の初回ビルド」1箇所のみに限定（ニワトリと卵問題の解消。HackBento 自身が docker.sock 経由で生成する内容を把握できる tar のみが対象で、ユーザアップロードには使わない）。
+- [x]（本対応・実施済み）`convert_tar_to_ext4`（公開インターフェース）をビルド用 VM 経由に完全移行した。信用できない tar（ユーザアップロード・rootfs_convert 経由）はホストで一切展開せず、ネットワークなしの使い捨てVMの中でのみ処理する。
+  - 新設した**rootfs 変換専用ベース**（`ROOTFS_CONVERTER_BASE_PATH`, tar コマンドのみの最小 Alpine）を土台に、`image_build.run_build_vm` を4本ディスク構成で呼ぶ: 1本目=変換専用ベース自身、2本目=scratch（空ext4。ゲストがそのルート直下へ直接 tar を展開し、ディスクそのものが最終 rootfs として回収される）、3本目=input（読み取り専用。アップロードされた tar の生バイト列）、4本目=status（結果報告用の小さな ext4）。
+  - scratch のマウントポイント自体を展開先にすることで、サブディレクトリへの展開→再抽出が不要になり、1本目（変換用ベース自身のファイル）も結果に混在しない。
+  - scratch のサイズは入力 tar の圧縮サイズから固定倍率（4倍）+ 余白（256MiB）で事前計算する（VM内では動的な再計算ができないため）。
+  - `image_build.run_build_vm` に `input_disk_path`（3本目・読み取り専用）、`status_disk_path`（4本目）、`result_from_scratch`（成果物の回収元を1本目でなく2本目にする）を追加。
+  - **実機検証で踏んだ落とし穴**: busybox の `poweroff -f`/`reboot -f` は、Firecracker が ACPI/APM 電源管理を仮想化していない環境では「カーネルを HALT 状態に落とすだけ」の場合がありFirecrackerプロセスが終了せずハングする（docker-base/Attack Machine は `poweroff`/`reboot` コマンド自体が存在しない Debian 構成だったため偶然この問題を踏んでいなかった）。確実な方法は `echo o > /proc/sysrq-trigger`（`kernel_power_off()` を直接呼ぶ）。さらに重要な点として、**sysrq は電源断シーケンスを非同期に開始するだけ**で、直後に別の電源管理コマンド（poweroff 等のフォールバック）を実行すると、シーケンスに割り込んで却ってハングする。そのため sysrq 発行後は何も実行せずシェルを終了させる（docker-base 側の対応するビルドモード init も同時に修正）。
+  - `ensure_default_vm_assets` の実行順序を変更: 変換専用ベースの構築を最初（デフォルトカーネル/rootfs・docker-base の構築より前）に移動。これらが内部で新 `convert_tar_to_ext4` を使うため、先に土台が無いと全て失敗する。
+  - 実機で: (1) 4本ディスク構成で2.7秒で正常終了（修正前は15分タイムアウトまでハング）、(2) 本番の `rootfs_convert` ワーカー経由（実際の `/api/images/upload` → DB `pending`→`converting`→`ready`）で3秒で完了、(3) 変換後の rootfs に絶対パス symlink（`/bin/sh -> /bin/busybox`）とファイル内容が正しく保持されていること、(4) docker.sock 無しの安全構成での起動・既存 docker-base（旧init）のビルド動作に退行が無いこと、を確認済み。
 
 **検証**: web+db+lb の3コンテナ構成バンドルを ready にし、起動 → ポートごとに各コンテナへ到達することを確認。overlay のフラグが VM の `/root` に存在することを確認。
 

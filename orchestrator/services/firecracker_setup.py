@@ -23,6 +23,14 @@ ROOTFS_SIZE_MB = 512
 DEFAULT_KERNEL_LABEL = os.path.basename(KERNEL_URL)
 DEFAULT_ROOTFS_LABEL = "Alpine + sshd (user:hackbento, password:hackbento)"
 
+# --- rootfs 変換専用ベース (OS イメージ rootfs tar → ext4 変換をビルド用VM内で行うための土台) ---
+# アップロードされた信用できない tar をホスト上で展開せず、ネットワークなしの使い捨てVMの
+# 中で展開することで、tar の内容（symlink traversal 等）がホストに影響し得ない構成にする。
+# このベース自体は空の Alpine（tar コマンドのみ）で、本番運用には使わない。
+ROOTFS_CONVERTER_BASE_PATH = os.path.join(DEFAULTS_DIR, "rootfs-converter-base.ext4")
+ROOTFS_CONVERTER_BASE_SIZE_MB = 64  # tar コマンドが入った最小限の Alpine のみ
+ROOTFS_CONVERTER_BASE_LABEL = "rootfs 変換用ベース（内部専用・選択肢には出さない）"
+
 # --- docker-base rootfs (Compose バンドル用の共通土台) ---
 # Debian + Docker + docker compose を含み、/sbin/init が2モードで動く:
 #   build モード (カーネル引数に hb_build): scratch(/dev/vdb) のバンドルを docker load /
@@ -141,6 +149,86 @@ tar -cf /rootfs.tar -C / --exclude=./proc --exclude=./sys --exclude=./dev --excl
 """
 
 
+# rootfs 変換専用ベースの /sbin/init。
+# 常にビルドモードのみで動く（本番起動には使わないため run モードは無い）。
+#
+# 4 本のディスクを使う:
+#   1 本目（/dev/vda, root）  : この変換専用ベース自身（tar コマンドのみの Alpine）
+#   2 本目（/dev/vdb, scratch）: 空の ext4。*ルート直下に直接* tar を展開し、
+#                                ディスクそのものが最終的な rootfs として host へ回収される
+#   3 本目（/dev/vdc, input）  : 読み取り専用。アップロードされた rootfs tar の生バイト列
+#                                （ファイルシステムではなく tar ファイルそのものを dd した
+#                                ブロックデバイス）
+#   4 本目（/dev/vdd, status） : 書き込み可能な小さな ext4。status/error/convert.log/
+#                                extracted_bytes を書く。scratch（2本目）は丸ごと成果物として
+#                                回収されるため、おまけ情報をそこに混在させないために分離する。
+# scratch のマウントポイント自体を展開先にすることで、サブディレクトリへの展開 → 再抽出が
+# 不要になり、1 本目（変換用ベース自身のファイル）も結果に混在しない。展開はこの VM の中で
+# 完結し、VM にはネットワークも他ディスクへの経路も無いため、tar の内容（symlink 等）が
+# ホストへ影響することはない。
+_ROOTFS_CONVERTER_INIT_SCRIPT = r"""#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /mnt/out
+mount /dev/vdb /mnt/out 2>/dev/null || true
+mkdir -p /mnt/status
+mount /dev/vdd /mnt/status 2>/dev/null || true
+
+STATUS=1
+{
+    echo "=== hackbento rootfs-convert start ==="
+    if [ -e /dev/vdc ]; then
+        if tar -xf /dev/vdc -C /mnt/out; then
+            mkdir -p /mnt/out/proc /mnt/out/sys /mnt/out/dev /mnt/out/tmp
+            du -sb /mnt/out 2>/dev/null | cut -f1 > /mnt/status/extracted_bytes
+            STATUS=0
+        else
+            echo "tar展開に失敗しました" > /mnt/status/error
+            STATUS=2
+        fi
+    else
+        echo "/dev/vdc (入力ディスク) が見つかりません" > /mnt/status/error
+        STATUS=3
+    fi
+    echo "$STATUS" > /mnt/status/status
+    echo "=== rootfs-convert end status=$STATUS ==="
+} 2>&1 | tee /mnt/status/convert.log >/dev/null
+
+sync
+umount /mnt/out 2>/dev/null || true
+umount /mnt/status 2>/dev/null || true
+# Firecracker は ACPI/APM 等のハードウェア電源管理を仮想化していないため、busybox の
+# poweroff/reboot は（コマンドが存在する環境では）カーネルを HALT 状態に落とすだけで
+# Firecracker プロセス自体は終了しない（ハングし、呼び出し側のハードタイムアウトまで
+# 待たされる）。SysRq 経由の電源断（echo o > /proc/sysrq-trigger）は
+# kernel_power_off() を直接呼び、Firecracker がこれを確実に検知して正常終了する
+# （実機検証で確認済み）。
+# 重要: sysrq は電源断シーケンスを*非同期に*開始するだけで、echo コマンド自体は
+# すぐに返ってくる。続けて poweroff/reboot 等のフォールバックを実行すると、
+# シャットダウン処理の最中に別の電源管理コマンドが割り込み、却って Firecracker が
+# 終了しないままハングすることを実機で確認した。そのため sysrq 発行後は何も実行せず、
+# シェルをそのまま終了させる（結果的に init(PID1) が終了し、カーネルパニック経由でも
+# Firecracker の終了が検知される。どちらの経路でも確実に終了することを実機確認済み）。
+echo o > /proc/sysrq-trigger
+"""
+
+
+# rootfs 変換専用ベースを Alpine コンテナ内で構築するスクリプト（docker export で取り出す）。
+# tar コマンドのみを含む最小構成（apk 等の追加パッケージは不要）。
+_ROOTFS_CONVERTER_BASE_BUILD_SCRIPT = """
+set -e
+cat > /tmp/hackbento-init << 'INIT_EOF'
+{init_script}
+INIT_EOF
+chmod +x /tmp/hackbento-init
+rm -f /sbin/init
+mv /tmp/hackbento-init /sbin/init
+tar -cf /rootfs.tar -C / --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./rootfs.tar .
+"""
+
+
 # docker-base の /sbin/init（build/run 2 モード）。
 # __RESOLV_CONF__ は実行時に FC_GUEST_DNS から差し込む（置換方式）。
 # dockerd は overlay2 + legacy iptables 前提（ゲストカーネル 6.1 に nftables 無し）。
@@ -224,7 +312,14 @@ if [ "$is_build" = "1" ]; then
     cp /var/log/dockerd.log /mnt/scratch/dockerd.log 2>/dev/null || true
     sync
     umount /mnt/scratch 2>/dev/null || true
-    poweroff -f 2>/dev/null || reboot -f 2>/dev/null || { echo o > /proc/sysrq-trigger; }
+    # Firecracker は ACPI/APM 等のハードウェア電源管理を仮想化していないため、
+    # poweroff/reboot コマンドが存在する環境ではカーネルを HALT 状態に落とすだけで
+    # Firecracker プロセス自体が終了しないことがある。SysRq 経由の電源断
+    # （kernel_power_off() を直接呼ぶ）を使う。sysrq は非同期にシャットダウンを
+    # 開始するだけなので、直後に別の電源管理コマンド（poweroff/reboot 等）を
+    # 実行するとシーケンスに割り込んで却ってハングすることを実機で確認したため、
+    # sysrq 発行後は何も実行せずシェルを終了させる。
+    echo o > /proc/sysrq-trigger
 else
     # ===== run モード: 本番起動。IP はカーネル引数で設定済み =====
     printf '__RESOLV_CONF__' > /etc/resolv.conf
@@ -425,8 +520,128 @@ def _safe_extract_tar(tar_path: str, dest_dir: str) -> None:
             # isfile 以外（ソケット等）は無視する（ゲスト rootfs に不要かつ扱いが煩雑なため）
 
 
+# rootfs tar → ext4 変換で使う scratch（展開先）のサイズを、入力 tar の圧縮サイズから
+# 事前計算するための倍率・余白。tar は展開すると（圧縮効率次第で）数倍に増えることがあるため、
+# 十分に大きい倍率を取った上で固定の余白も足す。実サイズに応じた動的な再計算は行わない
+# （ビルド用VMの中では事前にサイズを確定したディスクが必要なため）。
+_ROOTFS_CONVERT_SIZE_MULTIPLIER = 4
+_ROOTFS_CONVERT_SIZE_MARGIN_MB = 256
+
+
 async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB) -> None:
-    """単純なファイルシステム tar を ext4 イメージへ変換し、dest_path へ os.replace する。
+    """信用できない rootfs tar（ユーザアップロード）を、ビルド用VMの中で安全に展開し
+    ext4 イメージへ変換する。dest_path へ os.replace する。
+
+    tar のパース・展開処理そのものをネットワークなしの使い捨てVMの中で実行するため、
+    tar の内容（symlink traversal に限らず、tar パーサー自体の未知の脆弱性を含む）が
+    ホストに影響することはない。
+
+    手順:
+      1. 入力 tar の圧縮サイズから、十分な余白を持つ scratch（展開先）サイズを事前計算
+      2. scratch（空の ext4）・input（tar の生バイト列を書き込んだブロックデバイス）・
+         status（結果報告用の小さな ext4）をホスト上に用意
+      3. rootfs 変換専用ベース（ROOTFS_CONVERTER_BASE_PATH）をベースに image_build.run_build_vm
+         を実行。ゲストの中で input を展開して scratch に書き込み、status に結果を報告する
+      4. status を読んで成否判定。成功なら scratch を dest_path として回収する
+    """
+    from services import image_build
+
+    if not os.path.exists(ROOTFS_CONVERTER_BASE_PATH):
+        raise RuntimeError(
+            "rootfs 変換専用ベースが見つかりません（サーバの初期化が完了していない可能性があります）: "
+            f"{ROOTFS_CONVERTER_BASE_PATH}"
+        )
+
+    tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-convert-")
+    try:
+        input_disk = os.path.join(tmpdir, "input.raw")
+        scratch_disk = os.path.join(tmpdir, "scratch.ext4")
+        status_disk = os.path.join(tmpdir, "status.ext4")
+
+        # 1. scratch サイズを tar の圧縮サイズから事前計算する
+        try:
+            tar_size = os.path.getsize(tar_path)
+        except OSError as e:
+            raise RuntimeError(f"rootfs tar が読み取れません: {e}")
+        auto_mb = int(tar_size * _ROOTFS_CONVERT_SIZE_MULTIPLIER / (1024 * 1024)) + _ROOTFS_CONVERT_SIZE_MARGIN_MB
+        image_mb = max(size_mb, auto_mb)
+
+        # 2. 各ディスクを用意する（いずれもブロッキングI/O。executor 経由で実行）
+        loop = asyncio.get_event_loop()
+
+        def _prepare_disks() -> None:
+            # input: tar の生バイト列をそのままコピーしたファイル（ブロックデバイスとして渡す）
+            shutil.copy2(tar_path, input_disk)
+            # scratch: 空の ext4（ここに tar を展開した結果がそのまま最終 rootfs になる）
+            subprocess_run(["dd", "if=/dev/zero", f"of={scratch_disk}", "bs=1M", f"count={image_mb}"])
+            subprocess_run(["mkfs.ext4", "-F", "-O", "^metadata_csum", scratch_disk])
+            # status: 結果報告用の小さな ext4
+            subprocess_run(["dd", "if=/dev/zero", f"of={status_disk}", "bs=1M", "count=4"])
+            subprocess_run(["mkfs.ext4", "-F", "-O", "^metadata_csum", status_disk])
+
+        await loop.run_in_executor(None, _prepare_disks)
+
+        # 3. ビルド用VMで変換を実行する
+        try:
+            await image_build.run_build_vm(
+                kernel_path=DEFAULT_KERNEL_PATH,
+                base_rootfs_path=ROOTFS_CONVERTER_BASE_PATH,
+                scratch_path=scratch_disk,
+                input_disk_path=input_disk,
+                status_disk_path=status_disk,
+                boot_marker="hb_rootfs_convert=1",
+                result_rootfs_path=dest_path,
+                result_from_scratch=True,
+            )
+        except image_build.BuildVMError as e:
+            raise RuntimeError(f"rootfs 変換用VMの実行に失敗しました: {e}")
+
+        # 4. status を読んで成否判定する（debugfs 経由。loop マウント不要）
+        status_text = await _debugfs_cat(status_disk, "status")
+        if status_text.strip() != "0":
+            error_text = await _debugfs_cat(status_disk, "error")
+            log_text = await _debugfs_cat(status_disk, "convert.log")
+            detail = error_text.strip() or log_text.strip()[-400:] or f"status={status_text.strip()!r}"
+            # 失敗時は dest_path に書き込まれてしまった中途半端な成果物を削除する
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+            raise RuntimeError(f"rootfs tar の変換に失敗しました: {detail}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def subprocess_run(cmd: list[str]) -> None:
+    """同期的にコマンドを実行する（run_in_executor 経由で呼ぶための小さなラッパー）。"""
+    import subprocess
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)}: {result.stderr.decode(errors='replace').strip()}")
+
+
+async def _debugfs_cat(ext4_path: str, filename: str) -> str:
+    """debugfs 経由で ext4 イメージ内のファイルを読む（loop マウント不要）。"""
+    proc = await asyncio.create_subprocess_exec(
+        "debugfs", "-R", f"cat /{filename}", ext4_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode(errors="replace")
+
+
+async def _convert_tar_to_ext4_host_unsafe(tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB) -> None:
+    """単純なファイルシステム tar を、ホスト上で直接展開して ext4 イメージへ変換する。
+
+    「_host_unsafe」の名の通り、信用できない（ユーザがアップロードした）tar には
+    絶対に使わないこと。tar のパース・展開処理自体をホストのプロセスとして実行するため、
+    今回の symlink traversal 対策（_safe_extract_tar）でカバーしていない未知の攻撃面
+    （tar パーサー自体の脆弱性等）にはこの関数単体では対処できない。
+    用途は HackBento 自身が管理者操作（docker.sock 経由）で生成する、内容を把握できる
+    tar の変換に限定する（現時点では rootfs 変換専用ベース自身の初回ビルドのみ）。
+    ユーザがアップロードする rootfs tar の変換は convert_tar_to_ext4（ビルド用VM経由）を使うこと。
 
     mount/loop デバイスを使わず mkfs.ext4 -d で直接構築する（_build_default_rootfs と同じ方式）。
     イメージサイズは展開後のディレクトリ実サイズを元に自動計算し、固定値より大きい場合はそちらを使う。
@@ -558,6 +773,59 @@ async def _build_default_rootfs() -> None:
 
         await convert_tar_to_ext4(tar_path, DEFAULT_ROOTFS_PATH)
         logger.info(f"デフォルト rootfs を保存しました: {DEFAULT_ROOTFS_PATH}")
+    finally:
+        try:
+            await _run(["docker", "rm", "-f", container_name])
+        except Exception:
+            pass
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _build_rootfs_converter_init_script() -> str:
+    return _ROOTFS_CONVERTER_INIT_SCRIPT
+
+
+async def _build_rootfs_converter_base() -> None:
+    """rootfs 変換専用ベース（tar コマンドのみの最小 Alpine）を構築する。
+
+    この資産自体はビルド時に docker.sock（信頼できる管理者操作）を使って作るが、
+    出来上がったベースは「ユーザがアップロードする信用できない rootfs tar」を
+    ビルド用VMの中で展開するための土台として使う（services.rootfs_convert から利用）。
+    """
+    if os.path.exists(ROOTFS_CONVERTER_BASE_PATH):
+        logger.info(f"rootfs 変換専用ベースは既に存在します: {ROOTFS_CONVERTER_BASE_PATH}")
+        return
+    if not _docker_available():
+        raise RuntimeError(
+            "rootfs 変換専用ベースの構築には Docker (docker.sock) が必要ですが、"
+            f"{_DOCKER_SOCK} が見つかりません。資産ビルド時のみ docker.sock マウントを有効にしてください。"
+        )
+    logger.info("rootfs 変換専用ベースを構築中...")
+
+    tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-converter-")
+    container_name = f"hackbento-rootfs-converter-build-{os.path.basename(tmpdir)}"
+    try:
+        build_script = _ROOTFS_CONVERTER_BASE_BUILD_SCRIPT.format(
+            init_script=_build_rootfs_converter_init_script()
+        )
+        await _run(["docker", "rm", "-f", container_name])
+    except Exception:
+        pass
+    try:
+        await _run([
+            "docker", "run", "--name", container_name,
+            "alpine:3.19",
+            "sh", "-c", build_script,
+        ], timeout=300)
+
+        tar_path = os.path.join(tmpdir, "rootfs.tar")
+        await _run(["docker", "cp", f"{container_name}:/rootfs.tar", tar_path])
+
+        # 変換専用ベース自身の初回ビルドは「ニワトリと卵」（まだベースが無い）のため、
+        # この1箇所だけはホスト上展開版を使う。入力は HackBento 自身が docker.sock
+        # 経由で生成した tar（内容を把握できる）であり、ユーザアップロードではない。
+        await _convert_tar_to_ext4_host_unsafe(tar_path, ROOTFS_CONVERTER_BASE_PATH, size_mb=ROOTFS_CONVERTER_BASE_SIZE_MB)
+        logger.info(f"rootfs 変換専用ベースを保存しました: {ROOTFS_CONVERTER_BASE_PATH}")
     finally:
         try:
             await _run(["docker", "rm", "-f", container_name])
@@ -974,8 +1242,19 @@ async def ensure_default_vm_assets() -> None:
         logger.warning("/dev/kvm が見つからないため、デフォルトVMアセットの準備をスキップします。")
         return
 
+    os.makedirs(DEFAULTS_DIR, exist_ok=True)
+
+    # rootfs 変換専用ベース（アップロードされた rootfs tar をビルド用VM内で安全に
+    # 展開するための土台）を最初に準備する。convert_tar_to_ext4（デフォルト rootfs・
+    # docker-base・Attack Machine の構築、および rootfs_convert からのユーザアップロード
+    # 変換すべてが内部で使う）がこのベースに依存するため、他のどの資産構築よりも先に
+    # 用意できていないと以降の変換が全て失敗する。
     try:
-        os.makedirs(DEFAULTS_DIR, exist_ok=True)
+        await _build_rootfs_converter_base()
+    except Exception as e:
+        logger.error(f"rootfs 変換専用ベースの準備に失敗しました（rootfs の tar→ext4 変換が全て失敗します）: {e}")
+
+    try:
         await _download_default_kernel()
         await _build_default_rootfs()
         await _register_builtin_asset_records()
