@@ -70,6 +70,7 @@ class ImageResponse(BaseModel):
     default_rootfs_asset_id: Optional[int] = None
     rootfs_conversion_status: str = RootfsConversionStatus.ready.value
     rootfs_conversion_error: Optional[str] = None
+    build_phase: Optional[str] = None
     rootfs_kind: str = "os"
     compose_summary: Optional[dict] = None
     extra_boot_args: Optional[str] = None
@@ -164,6 +165,7 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         default_rootfs_asset_id=image.default_rootfs_asset_id,
         rootfs_conversion_status=image.rootfs_conversion_status,
         rootfs_conversion_error=image.rootfs_conversion_error,
+        build_phase=getattr(image, "build_phase", None),
         rootfs_kind=getattr(image, "rootfs_kind", "os") or "os",
         compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
         extra_boot_args=getattr(image, "extra_boot_args", None),
@@ -705,6 +707,9 @@ async def update_image(
     default_rootfs_asset_id: Optional[int] = Form(None),
     kernel_url: Optional[str] = Form(None),
     rootfs_url: Optional[str] = Form(None),
+    # Compose バンドル経路（rootfs_kind='compose' のプロジェクトのみ・再アップロードによる再ビルド用）
+    bundle: Optional[UploadFile] = File(None),
+    base_rootfs_asset_id: Optional[int] = Form(None),
     readme: Optional[UploadFile] = File(None),
     readme_text: Optional[str] = Form(None),
     current_user: User = Depends(require_username_set),
@@ -732,30 +737,35 @@ async def update_image(
     # カーネル・rootfs 変更が伴う場合: 起動中VMを先に停止
     has_new_kernel = bool(kernel and kernel.filename and kernel.size and kernel.size > 0)
     has_new_rootfs = bool(rootfs and rootfs.filename and rootfs.size and rootfs.size > 0)
+    has_new_bundle = bool(bundle and bundle.filename and (bundle.size or 0) > 0)
+
+    is_compose = getattr(image, "rootfs_kind", "os") == "compose"
+    bundle_changing = is_compose and has_new_bundle
 
     # モード未指定なら現状維持（変更なし）として扱う
     kernel_changing = False
     rootfs_changing = False
-    if kernel_mode is not None:
-        if kernel_mode not in ("default", "file", "link"):
-            raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
-        if kernel_mode == "default":
-            kernel_changing = default_kernel_asset_id != image.default_kernel_asset_id
-        elif kernel_mode == "file":
-            kernel_changing = has_new_kernel
-        else:  # link
-            kernel_changing = bool(kernel_url and kernel_url.strip())
-    if rootfs_mode is not None:
-        if rootfs_mode not in ("default", "file", "link"):
-            raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
-        if rootfs_mode == "default":
-            rootfs_changing = default_rootfs_asset_id != image.default_rootfs_asset_id
-        elif rootfs_mode == "file":
-            rootfs_changing = has_new_rootfs
-        else:  # link
-            rootfs_changing = bool(rootfs_url and rootfs_url.strip())
+    if not is_compose:
+        if kernel_mode is not None:
+            if kernel_mode not in ("default", "file", "link"):
+                raise HTTPException(status_code=400, detail="kernel_mode は default・file・link のいずれかを指定してください")
+            if kernel_mode == "default":
+                kernel_changing = default_kernel_asset_id != image.default_kernel_asset_id
+            elif kernel_mode == "file":
+                kernel_changing = has_new_kernel
+            else:  # link
+                kernel_changing = bool(kernel_url and kernel_url.strip())
+        if rootfs_mode is not None:
+            if rootfs_mode not in ("default", "file", "link"):
+                raise HTTPException(status_code=400, detail="rootfs_mode は default・file・link のいずれかを指定してください")
+            if rootfs_mode == "default":
+                rootfs_changing = default_rootfs_asset_id != image.default_rootfs_asset_id
+            elif rootfs_mode == "file":
+                rootfs_changing = has_new_rootfs
+            else:  # link
+                rootfs_changing = bool(rootfs_url and rootfs_url.strip())
 
-    needs_vm_stop = kernel_changing or rootfs_changing
+    needs_vm_stop = kernel_changing or rootfs_changing or bundle_changing
     if needs_vm_stop:
         from models import Environment, EnvStatus
         from services.watchdog import destroy_env, claim_env_for_stop
@@ -820,6 +830,47 @@ async def update_image(
             if rootfs_mode != "default" and new_rootfs_cleanup_path and os.path.exists(new_rootfs_cleanup_path):
                 os.remove(new_rootfs_cleanup_path)
             raise
+
+    if bundle_changing:
+        # Compose バンドルの再アップロード。POST /upload の compose 経路と同じ受付検査・
+        # 保存パターンを踏襲し、新しいバンドルを pending にして bundle_build ワーカーに委ねる。
+        image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
+        new_base_asset_id = await _resolve_docker_base_asset(base_rootfs_asset_id, db)
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        new_bundle_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.bundle.tar")
+        try:
+            written = 0
+            with open(new_bundle_path, "wb") as f:
+                while chunk := await bundle.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > image_max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"バンドルサイズが上限を超えています（上限: {settings.UPLOAD_IMAGE_MAX_MB} MB）",
+                        )
+                    f.write(chunk)
+            if _detect_archive_kind(new_bundle_path) != "compose-bundle":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Compose バンドル形式ではありません（bento-pack --bundle で作成したファイルをアップロードしてください）",
+                )
+        except Exception:
+            if os.path.exists(new_bundle_path):
+                os.remove(new_bundle_path)
+            raise
+
+        os.makedirs(VM_DIR, exist_ok=True)
+        new_rootfs_path = os.path.join(VM_DIR, f"compose-{uuid.uuid4()}.ext4")
+        old_rootfs = image.rootfs_path
+        old_source_archive = image.rootfs_source_archive_path
+        image.rootfs_path = new_rootfs_path
+        image.base_rootfs_asset_id = new_base_asset_id
+        image.rootfs_conversion_status = RootfsConversionStatus.pending.value
+        image.rootfs_conversion_error = None
+        image.rootfs_source_archive_path = new_bundle_path
+        image.compose_summary = None
+        _safe_remove(old_rootfs)
+        _safe_remove(old_source_archive)
 
     # メタデータ更新
     if name is not None:

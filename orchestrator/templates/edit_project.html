@@ -135,7 +135,37 @@
 
         <hr class="np-divider" />
 
-        <!-- Firecracker kernel / rootfs（変更任意・確認ダイアログあり） -->
+        <!-- ===== Compose バンドル: 再アップロードによる再ビルド ===== -->
+        <div id="compose-fields" class="hidden">
+          <div class="np-field">
+            <label class="np-label">
+              Compose バンドル再アップロード
+              <span class="np-optional">optional — 変更すると起動中VMが停止され再ビルドされます</span>
+              <span id="rootfs-conversion-badge"></span>
+            </label>
+            <a href="/docs/rootfs/compose" target="_blank" rel="noopener" class="np-howto-card">
+              <span class="np-howto-text">ビルドに失敗した場合、ここから修正済みの .tar を再アップロードしてください。</span>
+              <span class="np-howto-link">作り方 ↗</span>
+            </a>
+            <p class="np-hint hidden" id="bundle-error-detail" style="margin:.6rem 0;color:var(--danger,#e53e3e)"></p>
+            <div class="np-upload-area" id="bundle-upload-area">
+              <input type="file" name="bundle" id="bundle-file-input" accept=".tar" class="file-input-hidden" />
+              <div id="bundle-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">📦</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">bento-pack --bundle で作成した .tar</span>
+              </div>
+              <div id="bundle-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="bundle-filename" class="np-upload-text"></span>
+                <span id="bundle-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== OS イメージ: Firecracker kernel / rootfs（変更任意・確認ダイアログあり） ===== -->
+        <div id="os-fields">
         <div class="np-field">
           <div class="np-toggle-header">
             <label class="np-label">
@@ -182,7 +212,7 @@
             <label class="np-label">
               rootfs 変更
               <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
-              <span id="rootfs-conversion-badge"></span>
+              <span id="rootfs-conversion-badge-os"></span>
             </label>
             <div class="np-toggle-group" id="rootfs-toggle">
               <button type="button" class="np-toggle-btn active" data-target="rootfs-default">Default</button>
@@ -239,6 +269,7 @@
             </div>
           </div>
         </details>
+        </div><!-- /os-fields -->
 
         <!-- README 変更 -->
         <div class="np-field">
@@ -363,11 +394,20 @@ async function init() {
     const details = document.getElementById('boot-args-checkboxes').closest('details');
     if (details) details.open = true;
   }
-  await Promise.all([
-    initAssetToggle('kernel', imageData.default_kernel_asset_id),
-    initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
-  ]);
-  renderRootfsConversionBadge(imageData);
+  // 登録形式（OS イメージ / Compose バンドル）に応じてフィールドを出し分ける。
+  // new_project.html とは異なり作成後に形式を変更することはできない。
+  const isCompose = imageData.rootfs_kind === 'compose';
+  document.getElementById('os-fields').classList.toggle('hidden', isCompose);
+  document.getElementById('compose-fields').classList.toggle('hidden', !isCompose);
+  if (isCompose) {
+    renderRootfsConversionBadge(imageData, 'rootfs-conversion-badge');
+  } else {
+    await Promise.all([
+      initAssetToggle('kernel', imageData.default_kernel_asset_id),
+      initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
+    ]);
+    renderRootfsConversionBadge(imageData, 'rootfs-conversion-badge-os');
+  }
   _maybeStartRootfsConversionPolling(imageData);
 
   // visibility
@@ -397,16 +437,32 @@ const _ROOTFS_CONVERSION_STATUS_LABELS = {
   failed: '変換失敗',
 };
 
-function renderRootfsConversionBadge(img) {
-  const el = document.getElementById('rootfs-conversion-badge');
+// Compose バンドルのビルド中フェーズ（services.bundle_build が更新する build_phase）の表示名
+const _BUILD_PHASE_LABELS = {
+  validating: '受付検査中', preparing: 'ディスク準備中', building: 'ビルドVMで構築中', inspecting: '結果を検証中',
+};
+
+function renderRootfsConversionBadge(img, badgeId) {
+  const el = document.getElementById(badgeId);
   const st = img.rootfs_conversion_status;
   el.innerHTML = '';
+  // Compose バンドル再ビルド失敗時は、修正の手がかりとして失敗理由を直接表示する
+  // （バッジの title は hover 操作が必要で見落とされやすいため）
+  const errEl = document.getElementById('bundle-error-detail');
+  if (errEl) errEl.classList.add('hidden');
   if (!st || st === 'ready') return;
   const badge = document.createElement('span');
   badge.className = `status-badge ${st}`;
-  badge.textContent = _ROOTFS_CONVERSION_STATUS_LABELS[st] || st;
+  const isComposeBadge = badgeId === 'rootfs-conversion-badge';
+  const phaseLabel = (isComposeBadge && st === 'converting' && img.build_phase)
+    ? `（${_BUILD_PHASE_LABELS[img.build_phase] || img.build_phase}）` : '';
+  badge.textContent = (_ROOTFS_CONVERSION_STATUS_LABELS[st] || st) + phaseLabel;
   if (img.rootfs_conversion_error) badge.title = img.rootfs_conversion_error;
   el.appendChild(badge);
+  if (st === 'failed' && img.rootfs_conversion_error && errEl) {
+    errEl.textContent = `ビルド失敗の理由: ${img.rootfs_conversion_error}`;
+    errEl.classList.remove('hidden');
+  }
 }
 
 let _rootfsConversionPollTimer = null;
@@ -421,7 +477,7 @@ function _maybeStartRootfsConversionPolling(img) {
       const fresh = images.find(i => i.id === imageData.id);
       if (!fresh) return;
       imageData = fresh;
-      renderRootfsConversionBadge(fresh);
+      renderRootfsConversionBadge(fresh, fresh.rootfs_kind === 'compose' ? 'rootfs-conversion-badge' : 'rootfs-conversion-badge-os');
       if (!['pending', 'converting'].includes(fresh.rootfs_conversion_status)) {
         clearInterval(_rootfsConversionPollTimer);
         _rootfsConversionPollTimer = null;
@@ -505,6 +561,7 @@ window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) 
   if (targetBtn) targetBtn.click();
 };
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
+setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placeholder','bundle-upload-selected','bundle-filename','bundle-filesize','MB');
 
 // 追加カーネル起動引数: チップ型チェックボックスの選択を隠しフィールドへスペース区切りで集約する
 (function setupBootArgsCheckboxes() {
@@ -645,18 +702,26 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
     return !!document.getElementById(`${prefix}-url-input`).value.trim();
   }
 
-  let needsConfirm = false;
-  let kernelChanged = false, rootfsChanged = false;
-  kernelChanged = isAssetChanged('kernel', imageData.default_kernel_asset_id);
-  rootfsChanged = isAssetChanged('rootfs', imageData.default_rootfs_asset_id);
-  needsConfirm = kernelChanged || rootfsChanged;
+  const isCompose = imageData.rootfs_kind === 'compose';
+  let kernelChanged = false, rootfsChanged = false, bundleChanged = false;
+  if (isCompose) {
+    bundleChanged = !!document.getElementById('bundle-file-input').files[0];
+  } else {
+    kernelChanged = isAssetChanged('kernel', imageData.default_kernel_asset_id);
+    rootfsChanged = isAssetChanged('rootfs', imageData.default_rootfs_asset_id);
+  }
+  const needsConfirm = kernelChanged || rootfsChanged || bundleChanged;
   if (needsConfirm) {
-    const ok = confirm(
-      '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
-      'このプロジェクトで起動中の環境は全て停止されます。\n' +
-      '他のユーザの作業が中断される可能性があります。\n\n' +
-      '続行しますか？'
-    );
+    const msg = isCompose
+      ? '⚠ Compose バンドルを再アップロードします。\n\n' +
+        'このプロジェクトで起動中の環境は全て停止され、サーバで再ビルドされます。\n' +
+        '他のユーザの作業が中断される可能性があります。\n\n' +
+        '続行しますか？'
+      : '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
+        'このプロジェクトで起動中の環境は全て停止されます。\n' +
+        '他のユーザの作業が中断される可能性があります。\n\n' +
+        '続行しますか？';
+    const ok = confirm(msg);
     if (!ok) return;
   }
 
@@ -688,10 +753,19 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
     }
     if (mode !== 'link') fd.delete(urlFieldName);
   }
-  applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
-  applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
-  if (!kernelChanged) fd.delete('kernel');
-  if (!rootfsChanged) fd.delete('rootfs');
+  if (isCompose) {
+    // OS イメージ用フィールドは送らない。bundle が未変更なら送らずサーバ側の現状維持に任せる。
+    ['kernel','rootfs','kernel_mode','rootfs_mode','kernel_url','rootfs_url',
+     'default_kernel_asset_id','default_rootfs_asset_id'].forEach(k => fd.delete(k));
+    if (!bundleChanged) fd.delete('bundle');
+  } else {
+    // Compose バンドル用フィールドは送らない
+    fd.delete('bundle');
+    applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
+    applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
+    if (!kernelChanged) fd.delete('kernel');
+    if (!rootfsChanged) fd.delete('rootfs');
+  }
 
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();

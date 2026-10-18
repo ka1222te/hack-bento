@@ -281,14 +281,20 @@ function renderLaunchPanel() {
   const _ROOTFS_CONVERSION_BADGE_LABELS = _isCompose
     ? { pending: 'ビルド待ち', converting: 'ビルド中...', failed: 'ビルド失敗' }
     : { pending: '変換待ち', converting: '変換中...', failed: '変換失敗' };
+  // Compose バンドルのビルド中フェーズ（services.bundle_build が更新する build_phase）の表示名
+  const _BUILD_PHASE_LABELS = {
+    validating: '受付検査中', preparing: 'ディスク準備中', building: 'ビルドVMで構築中', inspecting: '結果を検証中',
+  };
   const convStatus = imageData.rootfs_conversion_status;
   if (!running && convStatus && convStatus !== 'ready') {
+    const phaseLabel = (_isCompose && convStatus === 'converting' && imageData.build_phase)
+      ? `（${_BUILD_PHASE_LABELS[imageData.build_phase] || imageData.build_phase}）` : '';
     panel.innerHTML = `
       <div class="launch-panel launch-panel-idle">
         <div class="launch-panel-info">
           <span class="launch-status-dot ${convStatus === 'failed' ? 'error' : 'idle'}"></span>
           <div>
-            <div class="launch-panel-label">${_ROOTFS_CONVERSION_LABELS[convStatus] || convStatus}</div>
+            <div class="launch-panel-label">${_ROOTFS_CONVERSION_LABELS[convStatus] || convStatus}${phaseLabel}</div>
             <div class="launch-panel-ip"><span class="status-badge ${convStatus}" ${imageData.rootfs_conversion_error ? `title="${escHtml(imageData.rootfs_conversion_error)}"` : ''}>${_ROOTFS_CONVERSION_BADGE_LABELS[convStatus] || convStatus}</span></div>
           </div>
         </div>

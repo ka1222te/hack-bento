@@ -36,6 +36,14 @@ class RootfsConversionStatus(str, PyEnum):
     failed = "failed"
 
 
+class BundlePhase(str, PyEnum):
+    """Compose バンドルビルドのフェーズ（services.bundle_build が更新。UI 表示用）。"""
+    validating = "validating"       # 受付検査（tar のメタデータのみ確認）
+    preparing = "preparing"         # scratch ディスク構築（tar 展開 + ext4 作成）
+    building = "building"           # ビルド用 VM 起動・docker load・compose config
+    inspecting = "inspecting"       # ビルド結果の検査（compose 設定・images.tar 整合性）
+
+
 class Difficulty(str, PyEnum):
     none = "none"
     easy = "easy"
@@ -106,6 +114,9 @@ class Image(Base):
     base_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     # ビルド用 VM が出力した正規化 compose 設定の要約（サービス名・公開ポート等。UI 表示用）
     compose_summary = Column(Text, nullable=True)
+    # rootfs_kind='compose' のビルド進捗フェーズ（UI 表示用・services.bundle_build が更新）。
+    # 値は BundlePhase を参照。rootfs_conversion_status='converting' の間のみ意味を持つ。
+    build_phase = Column(String(32), nullable=True)
     # プロジェクト別の追加カーネル起動引数（カーネル exploit 問題で nokaslr 等を渡す用途）。
     # ip=/init=/console=/root= 等 HackBento が管理する引数はホスト側で除去・上書き不可。
     extra_boot_args = Column(String(512), nullable=True)

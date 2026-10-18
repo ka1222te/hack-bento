@@ -22,7 +22,7 @@ import tempfile
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from models import Image, DefaultRootfsAsset, RootfsConversionStatus
+from models import Image, DefaultRootfsAsset, RootfsConversionStatus, BundlePhase
 from config import settings
 from services import image_build
 from services.vm_assets import DEFAULT_KERNEL_PATH
@@ -220,7 +220,11 @@ def _validate_compose(compose_json_text: str, loaded_text: str) -> tuple[dict, s
         image = scfg.get("image")
         if not image:
             return {}, f"サービス '{sname}' に image がありません（build のみはバンドルでは非対応）"
-        if loaded and image not in loaded:
+        # docker compose config はタグ省略（例: "web"）をそのまま出力し :latest を補わないが、
+        # loaded 側（docker images）は常に "repo:tag" 形式になる。タグなし参照は
+        # :latest 相当として比較する（digest参照 "repo@sha256:..." はそのまま比較）。
+        image_for_check = image if ("@" in image or ":" in image.rsplit("/", 1)[-1]) else f"{image}:latest"
+        if loaded and image_for_check not in loaded:
             return {}, f"サービス '{sname}' のイメージ '{image}' が images.tar に含まれていません"
         ports = []
         for p in (scfg.get("ports") or []):
@@ -254,10 +258,21 @@ async def _claim_pending() -> int | None:
         if row is None:
             return None
         row.rootfs_conversion_status = RootfsConversionStatus.converting.value
+        row.build_phase = BundlePhase.validating.value
         await db.flush()
         rid = row.id
         await db.commit()
         return rid
+
+
+async def _set_phase(row_id: int, phase: str) -> None:
+    """ビルド進捗フェーズをUI表示用に更新する（converting中のみ意味を持つ）。"""
+    async with AsyncSessionLocal() as db:
+        row = await db.get(Image, row_id)
+        if row is None:
+            return
+        row.build_phase = phase
+        await db.commit()
 
 
 async def _finish(row_id: int, status: str, error: str | None,
@@ -268,6 +283,7 @@ async def _finish(row_id: int, status: str, error: str | None,
             return
         row.rootfs_conversion_status = status
         row.rootfs_conversion_error = error
+        row.build_phase = None
         if rootfs_path is not None:
             row.rootfs_path = rootfs_path
         if summary is not None:
@@ -320,17 +336,19 @@ async def _process_one(row_id: int) -> None:
         if base is None:
             raise BundleError("docker-base 資産が見つかりません（管理者がデフォルトVM資産に登録してください）")
 
-        # 1) 受付検査（展開しない）
+        # 1) 受付検査（展開しない。build_phase は _claim_pending で validating 済み）
         info = _validate_bundle_tar(tar_path)
         project_name = info["project_name"]
 
         # 2) scratch 構築
+        await _set_phase(row_id, BundlePhase.preparing.value)
         scratch = dest_rootfs + ".scratch"
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _build_scratch_from_bundle, tar_path, project_name, scratch)
 
         try:
             # 3) ビルド用 VM で docker-base にバンドルを焼き込み、成果物を dest_rootfs へ
+            await _set_phase(row_id, BundlePhase.building.value)
             await image_build.run_build_vm(
                 kernel_path=DEFAULT_KERNEL_PATH,
                 base_rootfs_path=base,
@@ -343,6 +361,7 @@ async def _process_one(row_id: int) -> None:
             )
 
             # 4) scratch から結果回収・検査
+            await _set_phase(row_id, BundlePhase.inspecting.value)
             status = (await _read_scratch_file(scratch, "status")).strip()
             if status != "0":
                 err = (await _read_scratch_file(scratch, "compose.err")).strip() \
