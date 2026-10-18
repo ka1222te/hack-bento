@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     ATTACK_MACHINE_MEMORY_LIMIT_MB: int = 2048
     ATTACK_MACHINE_TIMEOUT_MINUTES: int = 60
 
+    # ---- docker-base builder ----
+    # orchestrator コンテナから見た docker-base-builder への接続先。orchestrator は
+    # docker.sock を持たないため、docker-base rootfs のビルドはこのサービスへ委譲する
+    # （services/docker_base_assets.py 参照。両コンテナとも network_mode: host）。
+    DOCKER_BASE_BUILDER_URL: str = "http://127.0.0.1:8300"
+
     # ---- Guacamole ----
     # orchestrator コンテナから見た Guacamole (Tomcat) への接続先。
     # main.py のリバースプロキシ (/guacamole/*) がこの URL へ転送する。

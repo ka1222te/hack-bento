@@ -12,14 +12,37 @@ services:
       # 注意: ホストの docker.sock は意図的にマウントしていない。
       # docker.sock はコンテナからホスト Docker デーモン＝実質ホスト root へ到達でき、
       # Firecracker 脱出等の際の被害を大きくするため、定常運用では外す。
-      # 用途はデフォルト/Attack Machine rootfs の初回自動ビルドのみ（既存資産があれば不要）。
+      # デフォルト/Attack Machine rootfs の初回自動ビルドのみ docker.sock が必要なため、
       # 自動ビルドが必要な初回だけ、下行のコメントを外して資産生成後に再度外すこと:
-      #   - /var/run/docker.sock:/var/run/docker.sock
+      #- /var/run/docker.sock:/var/run/docker.sock
     network_mode: host
     restart: unless-stopped
+    depends_on:
+      docker-base-builder:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]
       interval: 120s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  # docker-base rootfs（Compose バンドル用の共通土台）のビルド専用コンテナ。
+  # /var/run/docker.sock を持つのはこのコンテナのみで、orchestrator からは完全に分離する。
+  # 127.0.0.1 の内部ポートにのみバインドするため、同一ホスト上の orchestrator
+  # （network_mode: host）からのみ到達可能。
+  docker-base-builder:
+    build:
+      context: ./docker/docker-base-builder
+    container_name: hackbento-docker-base-builder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/images/vm/defaults:/output
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8300/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
