@@ -301,12 +301,15 @@ function initNavbar() {
 }
 
 async function _loadNavbarUser() {
+  // 新規タブ（target=_blank）はsessionStorageを引き継がないため、hb_tokenが無い場合は
+  // httponly Cookie（access_token）だけで /api/auth/me を呼ぶ。Cookie認証時はレスポンスに
+  // access_tokenが含まれるので、このタブ用にsessionStorageへ同期する。
   const token = sessionStorage.getItem('hb_token');
-  if (!token) return;
   try {
-    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch('/api/auth/me', token ? { headers: { Authorization: `Bearer ${token}` } } : {});
     if (!res.ok) return;
     const me = await res.json();
+    if (!token && me.access_token) sessionStorage.setItem('hb_token', me.access_token);
 
     const avatarEl = document.getElementById('nav-user-avatar');
     if (avatarEl) avatarEl.textContent = me.username ? me.username[0].toUpperCase() : '?';
@@ -324,6 +327,7 @@ async function _loadNavbarUser() {
 async function _loadMyProjects(username) {
   const token = sessionStorage.getItem('hb_token');
   if (!token || !username) return;
+  // _loadNavbarUserがhb_tokenをCookie経由で同期した直後に呼ばれるため、ここでは既に設定済みのはず
   const el = document.getElementById('drawer-my-projects');
   try {
     const res = await fetch('/api/images/', { headers: { Authorization: `Bearer ${token}` } });
