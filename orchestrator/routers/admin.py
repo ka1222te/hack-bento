@@ -17,7 +17,8 @@ from models import (
 )
 from reserved import is_reserved
 from deps import require_admin
-from services.firecracker_setup import DEFAULTS_DIR, _detect_archive_kind
+from services.vm_assets import DEFAULTS_DIR
+from services.rootfs_tar import detect_archive_kind as _detect_archive_kind
 
 _VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 from services.auth_local import hash_password

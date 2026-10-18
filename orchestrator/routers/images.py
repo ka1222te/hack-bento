@@ -12,7 +12,8 @@ from datetime import datetime
 from database import get_db
 from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
 from deps import get_current_user, require_username_set
-from services.firecracker_setup import DEFAULTS_DIR, _detect_archive_kind
+from services.vm_assets import DEFAULTS_DIR
+from services.rootfs_tar import detect_archive_kind as _detect_archive_kind
 from models import RootfsConversionStatus
 from config import settings
 

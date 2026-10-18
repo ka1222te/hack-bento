@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from models import DefaultRootfsAsset, Image, RootfsConversionStatus
-from services.firecracker_setup import convert_tar_to_ext4
+from services.rootfs_tar import convert_tar_to_ext4
 
 logger = logging.getLogger(__name__)
 

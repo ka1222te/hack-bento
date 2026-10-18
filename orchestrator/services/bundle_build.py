@@ -25,7 +25,7 @@ from database import AsyncSessionLocal
 from models import Image, DefaultRootfsAsset, RootfsConversionStatus
 from config import settings
 from services import image_build
-from services.firecracker_setup import DEFAULT_KERNEL_PATH
+from services.vm_assets import DEFAULT_KERNEL_PATH
 
 logger = logging.getLogger(__name__)
 
