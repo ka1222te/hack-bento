@@ -26,8 +26,17 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
 
 @event.listens_for(engine.sync_engine, "begin")
 def _do_begin(conn):
-    """isolation_level=None化に伴い、SQLAlchemyのトランザクション開始時に明示的にBEGINを発行する。"""
-    conn.exec_driver_sql("BEGIN")
+    """isolation_level=None化に伴い、SQLAlchemyのトランザクション開始時に明示的にBEGINを発行する。
+
+    BEGIN（DEFERRED）は最初の読み取りで共有ロック、最初の書き込みで排他ロックへ
+    "昇格"を試みるため、複数の非同期タスク（watchdog・rootfs_convert・bundle_build・
+    docker_base_assets 等）が同時に読み取り→書き込みを行うと、昇格時に他接続の共有
+    ロックとぶつかって即座に "database is locked" になりやすい（busy_timeoutが
+    効くのは排他ロック取得待ちのみで、昇格の競合は別経路で即時失敗し得る）。
+    BEGIN IMMEDIATE にして書き込みトランザクション開始時点で排他ロックを取ろうとする
+    ことで、取れない場合は busy_timeout の待機に確実に乗るようにする。
+    """
+    conn.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 async def init_db():
