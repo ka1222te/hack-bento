@@ -21,8 +21,12 @@
       </p>
       <ol style="margin:0 0 .75rem 1.2rem;line-height:1.9">
         <li>手元で compose プロジェクトを用意し動作確認する</li>
-        <li>付属ツールでバンドル tar を作る（root 不要）:
-          <pre style="background:var(--code-bg,#1113);padding:.6rem .8rem;border-radius:6px;overflow-x:auto"><code>tools/hackbento-pack --bundle ./my-ctf -o my-ctf.bundle.tar</code></pre>
+        <li>付属ツールを取得する（クローン不要・root 不要。認証なしで取得できる）:
+          <pre style="background:var(--code-bg,#1113);padding:.6rem .8rem;border-radius:6px;overflow-x:auto"><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/static/tools/hackbento-pack -o hackbento-pack
+chmod +x hackbento-pack</code></pre>
+        </li>
+        <li>バンドル tar を作る:
+          <pre style="background:var(--code-bg,#1113);padding:.6rem .8rem;border-radius:6px;overflow-x:auto"><code>./hackbento-pack --bundle ./my-ctf -o my-ctf.bundle.tar</code></pre>
         </li>
         <li>新規プロジェクト作成で「Compose バンドル」を選び、tar をアップロード</li>
         <li>サーバがネットワークなしのビルド用 VM の中で ext4 を組み立て、<code>ready</code> になれば起動可能</li>
