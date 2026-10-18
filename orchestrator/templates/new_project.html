@@ -146,11 +146,13 @@
               <button type="button" class="np-toggle-btn"        data-kind="compose">Compose バンドル</button>
             </div>
           </div>
-          <p class="np-hint" style="margin:.3rem 0 0">
-            OS イメージ: ゲストカーネル + rootfs（ext4 / tar）を直接登録
-            （<a href="/docs/rootfs/os" target="_blank" rel="noopener">作り方 ↗</a>）。
-            Compose バンドル: <code>bento-pack --bundle</code> で作った tar をアップロードし、サーバが VM 内で ext4 を組み立てます
-            （<a href="/docs/rootfs/compose" target="_blank" rel="noopener">作り方 ↗</a>）。
+          <p class="np-hint" id="kind-hint-os" style="margin:.3rem 0 0">
+            ゲストカーネル + rootfs（ext4 / tar）を直接登録します。
+            <a href="/docs/rootfs/os" target="_blank" rel="noopener">OS イメージの作り方 ↗</a>
+          </p>
+          <p class="np-hint" id="kind-hint-compose" style="margin:.3rem 0 0" hidden>
+            <code>bento-pack --bundle</code> で作った tar をアップロードし、サーバが VM 内で ext4 を組み立てます。
+            <a href="/docs/rootfs/compose" target="_blank" rel="noopener">Compose バンドルの作り方 ↗</a>
           </p>
         </div>
 
@@ -486,16 +488,21 @@ setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placehol
 let currentKind = 'os';
 (function setupKindToggle() {
   const group = document.getElementById('kind-toggle');
+  function applyKind(kind) {
+    currentKind = kind;
+    group.querySelectorAll('.np-toggle-btn').forEach(b => b.classList.toggle('active', b.dataset.kind === kind));
+    document.getElementById('rootfs-kind-input').value = currentKind;
+    document.getElementById('os-fields').classList.toggle('hidden', currentKind !== 'os');
+    document.getElementById('compose-fields').classList.toggle('hidden', currentKind !== 'compose');
+    document.getElementById('kind-hint-os').hidden = currentKind !== 'os';
+    document.getElementById('kind-hint-compose').hidden = currentKind !== 'compose';
+  }
   group.querySelectorAll('.np-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      group.querySelectorAll('.np-toggle-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentKind = btn.dataset.kind;
-      document.getElementById('rootfs-kind-input').value = currentKind;
-      document.getElementById('os-fields').classList.toggle('hidden', currentKind !== 'os');
-      document.getElementById('compose-fields').classList.toggle('hidden', currentKind !== 'compose');
-    });
+    btn.addEventListener('click', () => applyKind(btn.dataset.kind));
   });
+  // ?kind=compose / ?kind=os で初期表示の形式を指定できる（/docs/rootfs 等からのリンク用）
+  const initialKind = new URLSearchParams(window.location.search).get('kind');
+  if (initialKind === 'compose' || initialKind === 'os') applyKind(initialKind);
 })();
 
 // 送信
