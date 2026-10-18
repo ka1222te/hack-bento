@@ -376,6 +376,15 @@ body::before {
   box-shadow: var(--shadow);
 }
 .copy-pop-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.code-block { position: relative; }
+.code-block .copy-btn {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+.code-block .copy-btn:hover { background: var(--bg4); }
+.code-block pre { margin: 0; padding-right: 2.2rem; }
 .env-timer {
   font-size: 0.85rem;
   color: var(--text2);
@@ -1517,4 +1526,16 @@ textarea { resize: vertical; min-height: 70px; }
   .np-vis-group { flex-direction: column; }
   .np-vis-btn { min-width: unset; }
   .np-vis-inner { flex-direction: row; justify-content: flex-start; gap: 0.75rem; text-align: left; }
+}
+
+/* ===== Docs: rootfs 作り方の索引ページ（形式ごとの選択カード） ===== */
+.docs-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+.docs-choice-card {
+  display: block; text-decoration: none; color: inherit;
+  padding: 1.5rem; transition: border-color 0.15s, transform 0.15s;
+}
+.docs-choice-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.docs-choice-link { color: var(--accent); font-weight: 600; font-size: 0.9rem; }
+@media (max-width: 640px) {
+  .docs-choice-grid { grid-template-columns: 1fr; }
 }

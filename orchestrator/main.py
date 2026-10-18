@@ -373,11 +373,29 @@ async def new_project_page(request: Request):
 
 @app.get("/docs/rootfs", response_class=HTMLResponse)
 async def rootfs_help_page(request: Request):
-    """rootfs / Compose バンドルの作り方を説明するヘルプページ。"""
+    """rootfs / Compose バンドルの作り方の索引ページ（形式ごとに詳細ページへ振り分け）。"""
     user = await _get_request_user(request)
     if not user or user.needs_username_setup:
         return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
     return templates.TemplateResponse("rootfs_help.html", {"request": request, "settings": settings})
+
+
+@app.get("/docs/rootfs/compose", response_class=HTMLResponse)
+async def rootfs_help_compose_page(request: Request):
+    """Compose バンドルの作り方の詳細ページ。"""
+    user = await _get_request_user(request)
+    if not user or user.needs_username_setup:
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
+    return templates.TemplateResponse("rootfs_help_compose.html", {"request": request, "settings": settings})
+
+
+@app.get("/docs/rootfs/os", response_class=HTMLResponse)
+async def rootfs_help_os_page(request: Request):
+    """OS イメージの作り方の詳細ページ。"""
+    user = await _get_request_user(request)
+    if not user or user.needs_username_setup:
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
+    return templates.TemplateResponse("rootfs_help_os.html", {"request": request, "settings": settings})
 
 
 @app.get("/settings", response_class=HTMLResponse)

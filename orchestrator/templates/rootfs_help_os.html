@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}OS イメージの作り方 — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="container" style="max-width:820px;padding-top:2.5rem;padding-bottom:3rem">
+    <p style="margin-bottom:.75rem"><a href="/docs/rootfs">← rootfs の作り方</a></p>
+    <h1 style="font-size:1.4rem;font-weight:700;margin-bottom:.5rem">OS イメージの作り方</h1>
+    <p style="color:var(--muted);margin-bottom:1.75rem">
+      脆弱な Web サーバ 1 つ、SSH で入る 1 台など、サービスを OS に直接入れた VM を作る場合はこちら。
+      ゲストカーネルと rootfs をそれぞれ指定します（デフォルト資産 / アップロード / URL）。
+    </p>
+
+    <div class="card" style="padding:1.5rem;margin-bottom:1.25rem">
+      <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.75rem">rootfs</h2>
+      <ul style="margin:0 0 0 1.2rem;line-height:1.8">
+        <li><strong>ext4</strong>: 完成した ext4 イメージをそのまま使う</li>
+        <li><strong>tar</strong>: <code>docker export</code> したファイルシステム tar をアップロードすると、
+          自動的に ext4 へ変換される（<code>docker save</code> 形式は非対応）</li>
+        <li>tar から作る場合、起動後にサービスを立ち上げる <code>/sbin/init</code> を自分で用意する必要がある
+          （カーネルは <code>CMD</code>/<code>ENTRYPOINT</code> を使わず <code>/sbin/init</code> を実行する）</li>
+      </ul>
+    </div>
+
+    <div class="card" style="padding:1.5rem;margin-bottom:1.25rem">
+      <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.75rem">カーネル</h2>
+      <p style="margin:0">
+        既定の Firecracker 公式カーネルで足りる。カーネル CVE を扱う問題だけ、
+        プロジェクト専用の脆弱なカーネルをアップロードする。
+      </p>
+    </div>
+
+    <div class="card" style="padding:1.5rem">
+      <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.75rem">手順</h2>
+      <ol style="margin:0;line-height:1.9">
+        <li><a href="/new">新規プロジェクト作成</a>で「OS イメージ」を選ぶ</li>
+        <li>カーネル・rootfs それぞれを「デフォルト資産を使う」「アップロード」「URL」のいずれかで指定する</li>
+        <li>rootfs が tar の場合は自動的に ext4 へ変換される（<code>pending</code>/<code>converting</code> の間は起動不可）</li>
+        <li><code>ready</code> になれば起動可能</li>
+      </ol>
+    </div>
+
+    <p style="margin-top:1.25rem;color:var(--muted)">
+      複数のサービス（Web + DB + LB など）を 1 台で動かす場合は <a href="/docs/rootfs/compose">Compose バンドルの作り方 →</a>
+    </p>
+  </div>
+</div>
+{% endblock %}
