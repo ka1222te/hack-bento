@@ -59,12 +59,6 @@
         <!-- 説明 -->
         <div class="project-readme" id="project-desc"></div>
 
-        <!-- Compose 構成（バンドルの場合） -->
-        <div id="compose-info" class="hidden" style="margin-top:1rem">
-          <h3 style="margin:0 0 .4rem;font-size:.95rem">Compose 構成</h3>
-          <div id="compose-info-body" style="font-size:.9rem"></div>
-        </div>
-
         <!-- README -->
         <div id="readme-section" class="hidden">
           <div class="readme-header">
@@ -146,6 +140,7 @@ const visLabel   = { public: '🌍 Public', protected: '🔒 Protected', private
 let imageData = null;
 let myEnvs    = [];
 let _projConvPollTimer = null;
+let _projStartingPollTimer = null;
 
 async function init() {
   const imgRes = await API.get('/api/images/');
@@ -207,19 +202,6 @@ async function init() {
 
   // 説明
   document.getElementById('project-desc').textContent = imageData.description || '';
-
-  // Compose 構成（バンドルの場合はサービス・公開ポートを表示）
-  if (imageData.rootfs_kind === 'compose' && imageData.compose_summary) {
-    const cs = imageData.compose_summary;
-    const svcRows = (cs.services || []).map(s =>
-      `<li><code>${escHtml(s.name)}</code> → ${escHtml(s.image || '')}${(s.ports && s.ports.length) ? ` <span class="cat-badge">:${s.ports.map(escHtml).join(', :')}</span>` : ''}</li>`
-    ).join('');
-    const ports = (cs.published_ports || []);
-    document.getElementById('compose-info-body').innerHTML =
-      `<div style="margin-bottom:.3rem">公開ポート: ${ports.length ? ports.map(p => `<span class="cat-badge">${escHtml(p)}</span>`).join(' ') : '（なし）'}</div>`
-      + `<ul style="margin:.2rem 0 0;padding-left:1.2rem">${svcRows}</ul>`;
-    document.getElementById('compose-info').classList.remove('hidden');
-  }
 
   // aside
   document.getElementById('aside-diff').innerHTML = imageData.difficulty !== 'none'
@@ -330,11 +312,27 @@ function renderLaunchPanel() {
           <div>
             <div class="launch-panel-label">環境を起動しています</div>
             <div class="env-timer" id="proj-timer-${running.id}">
-              <span class="env-starting-label">&#x23F3; VM起動中...</span>
+              <span class="spinner-inline"></span>
+              <span class="env-starting-label">&#x23F3; VM起動中...（ディスク状況により時間がかかる場合があります）</span>
             </div>
           </div>
         </div>
       </div>`;
+    // POST /start のレスポンス中にも関わらず他経路でstartingのまま残っている場合に備えて
+    // running/stopped への遷移をポーリングで検知し、固まって見えないようにする。
+    if (!_projStartingPollTimer) {
+      _projStartingPollTimer = setInterval(async () => {
+        const r = await API.get('/api/envs/');
+        if (!r.ok) return;
+        myEnvs = await r.json();
+        const fresh = myEnvs.find(e => e.image_id === imageData.id);
+        if (!fresh || fresh.status !== 'starting') {
+          clearInterval(_projStartingPollTimer);
+          _projStartingPollTimer = null;
+        }
+        renderLaunchPanel();
+      }, 4000);
+    }
   } else if (running) {
     panel.innerHTML = `
       <div class="launch-panel launch-panel-running">
@@ -356,8 +354,14 @@ function renderLaunchPanel() {
           </div>
         </div>
         <div class="launch-panel-actions">
-          <button class="btn btn-extend js-extend-env" data-eid="${running.id}" data-min="${running.timeout_minutes}">&#x23F1; 延長 (+${running.timeout_minutes}分)</button>
-          <button class="btn btn-danger js-stop-env" data-eid="${running.id}">&#x23F9; 停止する</button>
+          <button class="btn btn-extend js-extend-env" data-eid="${running.id}" data-min="${running.timeout_minutes}">
+            <span class="btn-spinner hidden"></span>
+            <span class="btn-text">&#x23F1; 延長 (+${running.timeout_minutes}分)</span>
+          </button>
+          <button class="btn btn-danger js-stop-env" data-eid="${running.id}">
+            <span class="btn-spinner hidden"></span>
+            <span class="btn-text">&#x23F9; 停止する</span>
+          </button>
         </div>
       </div>`;
     startProjCountdown(running.id, running.seconds_remaining, running.timeout_minutes * 60);
@@ -386,7 +390,8 @@ function renderLaunchPanel() {
         <div class="launch-panel-actions">
           <button class="btn btn-launch btn-launch-lg ${atLimit ? 'btn-disabled' : ''} js-start-env"
             data-iid="${imageData.id}" ${atLimit ? `disabled title="同時起動上限(${MAX_ENVS})に達しています"` : ''}>
-            &#x25B6; 起動する
+            <span class="btn-spinner hidden"></span>
+            <span class="btn-text">&#x25B6; 起動する</span>
           </button>
         </div>
       </div>`;
@@ -436,43 +441,80 @@ function startProjCountdown(envId, seconds, timeoutSec) {
 }
 
 async function extendEnv(envId, timeoutMin, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '延長中...'; }
-  const res = await API.post(`/api/envs/${envId}/extend`);
-  if (res.ok) {
-    showToast(`${timeoutMin}分延長しました`, 'success');
-    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
-    renderLaunchPanel();
-    notifyEnvsChanged();
-  } else {
+  _setBtnBusy(btn, '延長中...');
+  try {
+    const res = await API.post(`/api/envs/${envId}/extend`);
+    if (res.ok) {
+      showToast(`${timeoutMin}分延長しました`, 'success');
+      const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+      renderLaunchPanel();
+      notifyEnvsChanged();
+      return;
+    }
     const d = await res.json(); showToast(d.detail || 'エラー', 'error');
-    if (btn) { btn.disabled = false; btn.textContent = `⏱ 延長 (+${timeoutMin}分)`; }
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
   }
+  _clearBtnBusy(btn, `⏱ 延長 (+${timeoutMin}分)`);
+}
+
+// ボタンにスピナー表示をセット/解除する（HTML構造は <span class="btn-spinner">+<span class="btn-text"> 前提）。
+// ディスクI/O等でサーバ応答が数十秒かかる場合でも、処理が継続中であることを視覚的に示す。
+function _setBtnBusy(btn, busyLabel) {
+  if (!btn) return;
+  btn.disabled = true;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.remove('hidden');
+  if (text) text.textContent = busyLabel;
+  else btn.textContent = busyLabel;
+}
+function _clearBtnBusy(btn, idleLabel) {
+  if (!btn) return;
+  btn.disabled = false;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.add('hidden');
+  if (text) text.textContent = idleLabel;
+  else btn.textContent = idleLabel;
 }
 
 async function startEnv(imageId, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '起動中...'; }
-  const res = await API.post(`/api/envs/${imageId}/start`);
-  if (res.ok) {
-    showToast('環境を起動しました', 'success');
-    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
-    renderLaunchPanel();
-    notifyEnvsChanged();
-  } else {
+  _setBtnBusy(btn, '起動中...（ディスク状況により時間がかかる場合があります）');
+  try {
+    const res = await API.post(`/api/envs/${imageId}/start`);
+    if (res.ok) {
+      showToast('環境を起動しました', 'success');
+      const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+      renderLaunchPanel();
+      notifyEnvsChanged();
+      return;
+    }
     const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
-    if (btn) { btn.disabled = false; btn.textContent = '▶ 起動する'; }
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
   }
+  _clearBtnBusy(btn, '▶ 起動する');
 }
 
-async function stopEnv(envId) {
+async function stopEnv(envId, btn) {
   if (!confirm('この環境を停止しますか？')) return;
-  const res = await API.post(`/api/envs/${envId}/stop`);
-  if (res.ok) {
-    showToast('停止しました', 'success');
-    if (projTimers[envId]) { clearInterval(projTimers[envId]); delete projTimers[envId]; }
-    const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
-    renderLaunchPanel();
-    notifyEnvsChanged();
-  } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+  _setBtnBusy(btn, '停止中...');
+  try {
+    const res = await API.post(`/api/envs/${envId}/stop`);
+    if (res.ok) {
+      showToast('停止しました', 'success');
+      if (projTimers[envId]) { clearInterval(projTimers[envId]); delete projTimers[envId]; }
+      const r = await API.get('/api/envs/'); if (r.ok) myEnvs = await r.json();
+      renderLaunchPanel();
+      notifyEnvsChanged();
+      return;
+    }
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+  }
+  _clearBtnBusy(btn, '⏹ 停止する');
 }
 
 // イベント委譲: 起動・停止・IPコピー
@@ -482,7 +524,7 @@ document.addEventListener('click', e => {
   if (btn.classList.contains('js-start-env')) {
     startEnv(Number(btn.dataset.iid), btn);
   } else if (btn.classList.contains('js-stop-env')) {
-    stopEnv(Number(btn.dataset.eid));
+    stopEnv(Number(btn.dataset.eid), btn);
   } else if (btn.classList.contains('js-extend-env')) {
     extendEnv(Number(btn.dataset.eid), Number(btn.dataset.min), btn);
   } else if (btn.classList.contains('js-copy-ip')) {

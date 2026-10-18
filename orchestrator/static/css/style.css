@@ -200,6 +200,17 @@ body::before {
   animation: spin .6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* 通常のカード背景（白文字を想定しない箇所）で使うスピナー。
+   env-timer（起動中表示）等、ボタンの外で「処理継続中」を示す用途。 */
+.spinner-inline {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
 
 /* ===== Container & Sections ===== */
 .container { max-width: 1280px; margin: 0 auto; padding: 0 1.5rem; }
