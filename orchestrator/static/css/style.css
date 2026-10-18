@@ -1214,6 +1214,16 @@ textarea { resize: vertical; min-height: 70px; }
 }
 .np-hint { font-size: 0.78rem; color: var(--text3); margin-top: -0.75rem; margin-bottom: 1.25rem; }
 
+.np-howto-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 0.65rem 0.9rem; margin-top: -0.75rem; margin-bottom: 1.25rem;
+  text-decoration: none; transition: border-color 0.15s, background 0.15s;
+}
+.np-howto-card:hover { border-color: var(--accent); background: var(--bg3); }
+.np-howto-text { font-size: 0.78rem; color: var(--text3); }
+.np-howto-link { font-size: 0.82rem; font-weight: 600; color: var(--accent); white-space: nowrap; }
+
 .np-input {
   background: var(--bg);
   border: 1px solid var(--border2);

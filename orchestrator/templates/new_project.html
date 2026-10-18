@@ -146,14 +146,14 @@
               <button type="button" class="np-toggle-btn"        data-kind="compose">Compose バンドル</button>
             </div>
           </div>
-          <p class="np-hint" id="kind-hint-os" style="margin:.3rem 0 0">
-            ゲストカーネル + rootfs（ext4 / tar）を直接登録します。
-            <a href="/docs/rootfs/os" target="_blank" rel="noopener">OS イメージの作り方 ↗</a>
-          </p>
-          <p class="np-hint" id="kind-hint-compose" style="margin:.3rem 0 0" hidden>
-            <code>bento-pack --bundle</code> で作った tar をアップロードし、サーバが VM 内で ext4 を組み立てます。
-            <a href="/docs/rootfs/compose" target="_blank" rel="noopener">Compose バンドルの作り方 ↗</a>
-          </p>
+          <a href="/docs/rootfs/os" target="_blank" rel="noopener" class="np-howto-card" id="kind-hint-os">
+            <span class="np-howto-text">ゲストカーネル + rootfs（ext4 / tar）を直接登録します。</span>
+            <span class="np-howto-link">OS イメージの作り方 ↗</span>
+          </a>
+          <a href="/docs/rootfs/compose" target="_blank" rel="noopener" class="np-howto-card" id="kind-hint-compose" hidden>
+            <span class="np-howto-text"><code>bento-pack --bundle</code> で作った tar をアップロードし、サーバが VM 内で ext4 を組み立てます。</span>
+            <span class="np-howto-link">Compose バンドルの作り方 ↗</span>
+          </a>
         </div>
 
         <!-- ===== Compose バンドル ===== -->
