@@ -174,6 +174,20 @@
               </div>
             </div>
           </div>
+
+          <details class="np-details">
+            <summary>詳細設定</summary>
+            <div class="np-details-body">
+              <div class="np-field">
+                <label class="np-label">docker-base 資産 <span class="np-optional">optional</span></label>
+                <p class="np-hint" style="margin:0 0 .6rem">
+                  Compose バンドルを焼き込む土台。指定しない場合はデフォルトの docker-base 資産が使われます。
+                </p>
+                <select class="np-input" name="base_rootfs_asset_id" id="docker-base-asset-select"></select>
+                <p class="np-hint" id="docker-base-asset-empty-hint" style="margin:.3rem 0 0" hidden>利用可能な docker-base 資産がありません（デフォルトが使われます）</p>
+              </div>
+            </div>
+          </details>
         </div>
 
         <!-- ===== OS イメージ: Firecracker kernel + rootfs ===== -->
@@ -464,6 +478,25 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
   }
   loadDefaultAssetOptions('kernel', 'kernel-default-select', 'kernel-default-empty-hint', 'kernel-toggle');
   loadDefaultAssetOptions('rootfs', 'rootfs-default-select', 'rootfs-default-empty-hint', 'rootfs-toggle');
+
+  // docker-base 資産の選択肢（Compose バンドルの詳細設定）。トグル切替は無く、
+  // 無指定時はサーバ側で既定の docker-base 資産が使われる（任意項目）。
+  (async function loadDockerBaseAssetOptions() {
+    const select = document.getElementById('docker-base-asset-select');
+    const hint = document.getElementById('docker-base-asset-empty-hint');
+    try {
+      const res = await fetch('/api/images/default-assets?kind=docker-base', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const assets = res.ok ? await res.json() : [];
+      select.innerHTML = '<option value="">— デフォルトを使用 —</option>'
+        + assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+      hint.hidden = assets.length > 0;
+    } catch {
+      select.innerHTML = '<option value="">— デフォルトを使用 —</option>';
+      hint.hidden = false;
+    }
+  })();
 }
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
 setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placeholder','bundle-upload-selected','bundle-filename','bundle-filesize','MB');
@@ -568,9 +601,12 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   if (currentKind === 'compose') {
     // OS イメージ用フィールドは送らない（バンドルのみ）
     ['kernel','rootfs','kernel_url','rootfs_url','default_kernel_asset_id','default_rootfs_asset_id','extra_boot_args'].forEach(k => fd.delete(k));
+    // docker-base 資産未選択（空文字）ならサーバ側の既定値に任せるため送らない
+    if (!fd.get('base_rootfs_asset_id')) fd.delete('base_rootfs_asset_id');
   } else {
-    // バンドルフィールドは送らない
+    // バンドル・docker-base関連フィールドは送らない（OS イメージには無関係）
     fd.delete('bundle');
+    fd.delete('base_rootfs_asset_id');
     // 選択中のモードに応じて、不要なフィールドを除去しモード値をセットする
     function applyAssetMode(toggleGroupId, prefix, modeFieldName, { selectFieldName, fileInputId, fileFieldName, urlFieldName }) {
       const mode = document.querySelector(`#${toggleGroupId} .np-toggle-btn.active`).dataset.target.split('-')[1];

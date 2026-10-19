@@ -429,15 +429,27 @@ async def list_default_assets(
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    """bridge プロジェクト作成・編集時に選択可能なデフォルトカーネル/rootfs資産の一覧を返す。"""
+    """bridge プロジェクト作成・編集時に選択可能なデフォルトカーネル/rootfs/docker-base資産の一覧を返す。"""
     from models import DefaultKernelAsset, DefaultRootfsAsset
 
-    if kind not in ("kernel", "rootfs"):
-        raise HTTPException(status_code=400, detail="kind は kernel または rootfs を指定してください")
-    AssetModel = DefaultKernelAsset if kind == "kernel" else DefaultRootfsAsset
-    result = await db.execute(
-        select(AssetModel).where(AssetModel.is_active == True).order_by(AssetModel.label)
-    )
+    if kind not in ("kernel", "rootfs", "docker-base"):
+        raise HTTPException(status_code=400, detail="kind は kernel・rootfs・docker-base のいずれかを指定してください")
+    if kind == "kernel":
+        query = select(DefaultKernelAsset).where(DefaultKernelAsset.is_active == True)
+    elif kind == "docker-base":
+        # Compose バンドルの土台として選べる docker-base 種別のみ返す（通常の os 用 rootfs は含めない）
+        query = select(DefaultRootfsAsset).where(
+            DefaultRootfsAsset.is_active == True,
+            DefaultRootfsAsset.kind == "docker-base",
+            DefaultRootfsAsset.conversion_status == RootfsConversionStatus.ready.value,
+        )
+    else:
+        # 通常の os 用 rootfs のみ返す（docker-base は Compose バンドル専用の別選択肢のため除外）
+        query = select(DefaultRootfsAsset).where(
+            DefaultRootfsAsset.is_active == True,
+            DefaultRootfsAsset.kind != "docker-base",
+        )
+    result = await db.execute(query.order_by(DefaultRootfsAsset.label if kind != "kernel" else DefaultKernelAsset.label))
     return [{"id": a.id, "label": a.label} for a in result.scalars().all()]
 
 
