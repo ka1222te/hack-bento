@@ -72,6 +72,7 @@ class ImageResponse(BaseModel):
     rootfs_conversion_error: Optional[str] = None
     build_phase: Optional[str] = None
     rootfs_kind: str = "os"
+    base_rootfs_asset_id: Optional[int] = None
     compose_summary: Optional[dict] = None
     extra_boot_args: Optional[str] = None
     difficulty: str
@@ -167,6 +168,7 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         rootfs_conversion_error=image.rootfs_conversion_error,
         build_phase=getattr(image, "build_phase", None),
         rootfs_kind=getattr(image, "rootfs_kind", "os") or "os",
+        base_rootfs_asset_id=getattr(image, "base_rootfs_asset_id", None),
         compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
         extra_boot_args=getattr(image, "extra_boot_args", None),
         difficulty=image.difficulty.value,
@@ -258,12 +260,12 @@ async def _resolve_default_kernel(db: AsyncSession) -> tuple[str, Optional[int]]
 
 
 async def _resolve_docker_base_asset(base_rootfs_asset_id: Optional[int], db: AsyncSession) -> int:
-    """Compose バンドルの土台に使う docker-base 資産 id を解決する。未指定なら有効な既定を使う。"""
+    """Compose バンドルの土台に使う docker-base  id を解決する。未指定なら有効な既定を使う。"""
     from models import DefaultRootfsAsset
     if base_rootfs_asset_id is not None:
         asset = await db.get(DefaultRootfsAsset, base_rootfs_asset_id)
         if asset is None or asset.kind != "docker-base" or not asset.is_active:
-            raise HTTPException(status_code=400, detail="指定された docker-base 資産が見つかりません")
+            raise HTTPException(status_code=400, detail="指定された docker-base が見つかりません")
         return asset.id
     result = await db.execute(
         select(DefaultRootfsAsset).where(
@@ -274,7 +276,7 @@ async def _resolve_docker_base_asset(base_rootfs_asset_id: Optional[int], db: As
     if asset is None:
         raise HTTPException(
             status_code=400,
-            detail="docker-base 資産が未登録です（管理者がデフォルトVM資産に docker-base を登録してください）",
+            detail="docker-base が未登録です（管理者がデフォルトVMに docker-base を登録してください）",
         )
     return asset.id
 
@@ -308,12 +310,12 @@ async def _resolve_vm_asset(
 
     if mode == "default":
         if not asset_id:
-            raise HTTPException(status_code=400, detail=f"{label}のデフォルト資産を選択してください")
+            raise HTTPException(status_code=400, detail=f"{label}のデフォルトを選択してください")
         asset = await db.get(AssetModel, asset_id)
         if not asset or not asset.is_active:
-            raise HTTPException(status_code=400, detail=f"指定された{label}のデフォルト資産が見つかりません")
+            raise HTTPException(status_code=400, detail=f"指定された{label}のデフォルトが見つかりません")
         if not os.path.exists(asset.file_path):
-            raise HTTPException(status_code=503, detail=f"{label}のデフォルト資産ファイルが見つかりません。管理者に連絡してください")
+            raise HTTPException(status_code=503, detail=f"{label}のデフォルトファイルが見つかりません。管理者に連絡してください")
         return asset.file_path, asset.id, None
 
     if mode == "link":
@@ -429,7 +431,7 @@ async def list_default_assets(
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    """bridge プロジェクト作成・編集時に選択可能なデフォルトカーネル/rootfs/docker-base資産の一覧を返す。"""
+    """bridge プロジェクト作成・編集時に選択可能なデフォルトカーネル/rootfs/docker-baseの一覧を返す。"""
     from models import DefaultKernelAsset, DefaultRootfsAsset
 
     if kind not in ("kernel", "rootfs", "docker-base"):

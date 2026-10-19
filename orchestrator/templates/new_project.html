@@ -179,12 +179,12 @@
             <summary>詳細設定</summary>
             <div class="np-details-body">
               <div class="np-field">
-                <label class="np-label">docker-base 資産 <span class="np-optional">optional</span></label>
+                <label class="np-label">docker-base  <span class="np-optional">optional</span></label>
                 <p class="np-hint" style="margin:0 0 .6rem">
-                  Compose バンドルを焼き込む土台。指定しない場合はデフォルトの docker-base 資産が使われます。
+                  Compose バンドルを焼き込む土台。指定しない場合はデフォルトの docker-base が使われます。
                 </p>
                 <select class="np-input" name="base_rootfs_asset_id" id="docker-base-asset-select"></select>
-                <p class="np-hint" id="docker-base-asset-empty-hint" style="margin:.3rem 0 0" hidden>利用可能な docker-base 資産がありません（デフォルトが使われます）</p>
+                <p class="np-hint" id="docker-base-asset-empty-hint" style="margin:.3rem 0 0" hidden>利用可能な docker-base がありません（デフォルトが使われます）</p>
               </div>
             </div>
           </details>
@@ -205,7 +205,7 @@
           <!-- Default -->
           <div id="kernel-default-panel">
             <select class="np-input" name="default_kernel_asset_id" id="kernel-default-select"></select>
-            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません。File または Link を選択してください</p>
+            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません。File または Link を選択してください</p>
           </div>
 
           <!-- File -->
@@ -247,7 +247,7 @@
           <!-- Default -->
           <div id="rootfs-default-panel">
             <select class="np-input" name="default_rootfs_asset_id" id="rootfs-default-select"></select>
-            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません。File または Link を選択してください</p>
+            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません。File または Link を選択してください</p>
           </div>
 
           <!-- File -->
@@ -451,7 +451,7 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
   setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
   setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
 
-  // デフォルト資産の選択肢を取得して <select> を埋める
+  // デフォルトの選択肢を取得して <select> を埋める
   async function loadDefaultAssetOptions(kind, selectId, hintId, toggleGroupId) {
     const select = document.getElementById(selectId);
     const hint = document.getElementById(hintId);
@@ -464,7 +464,7 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
       if (assets.length === 0) {
         select.disabled = true;
         hint.hidden = false;
-        // デフォルト資産が無ければ File モードへ切り替える
+        // デフォルトが無ければ File モードへ切り替える
         const fileBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target$="-file"]`);
         if (fileBtn) fileBtn.click();
       } else {
@@ -479,8 +479,8 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
   loadDefaultAssetOptions('kernel', 'kernel-default-select', 'kernel-default-empty-hint', 'kernel-toggle');
   loadDefaultAssetOptions('rootfs', 'rootfs-default-select', 'rootfs-default-empty-hint', 'rootfs-toggle');
 
-  // docker-base 資産の選択肢（Compose バンドルの詳細設定）。トグル切替は無く、
-  // 無指定時はサーバ側で既定の docker-base 資産が使われる（任意項目）。
+  // docker-base の選択肢（Compose バンドルの詳細設定）。トグル切替は無く、
+  // 無指定時はサーバ側で既定の docker-base が使われる（任意項目）。
   (async function loadDockerBaseAssetOptions() {
     const select = document.getElementById('docker-base-asset-select');
     const hint = document.getElementById('docker-base-asset-empty-hint');
@@ -560,7 +560,7 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
     const mode = document.querySelector(`#${toggleGroupId} .np-toggle-btn.active`).dataset.target.split('-')[1];
     if (mode === 'default') {
       const select = document.getElementById(selectId);
-      if (!select.value) return `${label}のデフォルト資産を選択してください`;
+      if (!select.value) return `${label}のデフォルトを選択してください`;
     } else if (mode === 'file') {
       if (!document.getElementById(fileInputId).files[0]) return `${label}のファイルをアップロードしてください`;
     } else if (mode === 'link') {
@@ -601,7 +601,7 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   if (currentKind === 'compose') {
     // OS イメージ用フィールドは送らない（バンドルのみ）
     ['kernel','rootfs','kernel_url','rootfs_url','default_kernel_asset_id','default_rootfs_asset_id','extra_boot_args'].forEach(k => fd.delete(k));
-    // docker-base 資産未選択（空文字）ならサーバ側の既定値に任せるため送らない
+    // docker-base 未選択（空文字）ならサーバ側の既定値に任せるため送らない
     if (!fd.get('base_rootfs_asset_id')) fd.delete('base_rootfs_asset_id');
   } else {
     // バンドル・docker-base関連フィールドは送らない（OS イメージには無関係）

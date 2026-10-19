@@ -162,6 +162,20 @@
               </div>
             </div>
           </div>
+
+          <details class="np-details">
+            <summary>詳細設定</summary>
+            <div class="np-details-body">
+              <div class="np-field">
+                <label class="np-label">docker-base  <span class="np-optional">optional</span></label>
+                <p class="np-hint" style="margin:0 0 .6rem">
+                  再ビルド時にバンドルを焼き込む土台。変更しない場合は現在の設定が維持されます。
+                </p>
+                <select class="np-input" name="base_rootfs_asset_id" id="docker-base-asset-select"></select>
+                <p class="np-hint" id="docker-base-asset-empty-hint" style="margin:.3rem 0 0" hidden>利用可能な docker-base がありません</p>
+              </div>
+            </div>
+          </details>
         </div>
 
         <!-- ===== OS イメージ: Firecracker kernel / rootfs（変更任意・確認ダイアログあり） ===== -->
@@ -181,7 +195,7 @@
 
           <div id="kernel-default-panel">
             <select class="np-input" name="default_kernel_asset_id" id="kernel-default-select"></select>
-            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません</p>
+            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません</p>
           </div>
 
           <div id="kernel-file-panel" class="hidden">
@@ -223,7 +237,7 @@
 
           <div id="rootfs-default-panel">
             <select class="np-input" name="default_rootfs_asset_id" id="rootfs-default-select"></select>
-            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません</p>
+            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません</p>
           </div>
 
           <div id="rootfs-file-panel" class="hidden">
@@ -401,6 +415,7 @@ async function init() {
   document.getElementById('compose-fields').classList.toggle('hidden', !isCompose);
   if (isCompose) {
     renderRootfsConversionBadge(imageData, 'rootfs-conversion-badge');
+    await loadDockerBaseAssetOptions(imageData.base_rootfs_asset_id);
   } else {
     await Promise.all([
       initAssetToggle('kernel', imageData.default_kernel_asset_id),
@@ -534,7 +549,7 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
 setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
 setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
 
-// デフォルト資産の選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
+// デフォルトの選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
 window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) {
   const select = document.getElementById(`${prefix}-default-select`);
   const hint = document.getElementById(`${prefix}-default-empty-hint`);
@@ -560,6 +575,25 @@ window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) 
   const targetBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target="${initialTarget}"]`);
   if (targetBtn) targetBtn.click();
 };
+
+// docker-base の選択肢（Compose バンドルの詳細設定）。未選択（空文字）のままなら
+// サーバ側が現在の設定を維持する（new_project.htmlの「デフォルトを使う」とは異なり、
+// ここでの無指定は「変更しない」を意味する）。
+async function loadDockerBaseAssetOptions(currentAssetId) {
+  const select = document.getElementById('docker-base-asset-select');
+  const hint = document.getElementById('docker-base-asset-empty-hint');
+  let assets = [];
+  try {
+    const res = await fetch('/api/images/default-assets?kind=docker-base', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    assets = res.ok ? await res.json() : [];
+  } catch {}
+  select.innerHTML = '<option value="">— 変更しない —</option>'
+    + assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+  hint.hidden = assets.length > 0;
+  if (currentAssetId) select.value = String(currentAssetId);
+}
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
 setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placeholder','bundle-upload-selected','bundle-filename','bundle-filesize','MB');
 
@@ -735,7 +769,7 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
   pw.classList.remove('hidden'); pb.style.width = '0%';
 
   const fd = new FormData(e.target);
-  // 変更があった資産のみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
+  // 変更があったのみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
   function applyAssetIfChanged(prefix, changed, modeFieldName, selectFieldName, fileFieldName, fileInputId, urlFieldName) {
     if (!changed) {
       fd.delete(modeFieldName);
@@ -758,9 +792,12 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
     ['kernel','rootfs','kernel_mode','rootfs_mode','kernel_url','rootfs_url',
      'default_kernel_asset_id','default_rootfs_asset_id'].forEach(k => fd.delete(k));
     if (!bundleChanged) fd.delete('bundle');
+    // docker-base 資産未選択（— 変更しない —）ならサーバ側の現状維持に任せるため送らない
+    if (!fd.get('base_rootfs_asset_id')) fd.delete('base_rootfs_asset_id');
   } else {
     // Compose バンドル用フィールドは送らない
     fd.delete('bundle');
+    fd.delete('base_rootfs_asset_id');
     applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
     applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
     if (!kernelChanged) fd.delete('kernel');
