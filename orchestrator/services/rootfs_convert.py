@@ -101,6 +101,35 @@ async def _convert_one(target: dict, row_id: int, tar_path: str, dest_path: str)
                 pass
 
 
+async def reset_stuck_conversions() -> None:
+    """起動時に converting のまま残っている行を pending に戻す（起動時 reconciliation）。
+
+    converting は「いずれかのワーカーが処理中」を意味する状態だが、orchestrator
+    プロセスが変換中にクラッシュ・再起動すると、どのワーカーも処理していないのに
+    converting のまま DB に残り続ける。各ワーカーは pending のみ claim するため、
+    一度 converting で止まった行は手動介入なしには二度と処理されず、該当プロジェクト/
+    資産は（envs.py の起動ガードにより）永久に使用不能になる。
+    起動直後は定義上どのワーカーもまだ動いていないため、converting の行を
+    無条件に pending へ戻して再キューする（docker-base 行は _claim_pending_docker_base
+    と同じ対象条件で絞る必要はなく、converting を取りうるのはこの3パターンのみ）。
+    """
+    async with AsyncSessionLocal() as db:
+        for model, status_col in (
+            (DefaultRootfsAsset, "conversion_status"),
+            (Image, "rootfs_conversion_status"),
+        ):
+            col = getattr(model, status_col)
+            result = await db.execute(select(model).where(col == RootfsConversionStatus.converting.value))
+            rows = result.scalars().all()
+            for row in rows:
+                setattr(row, status_col, RootfsConversionStatus.pending.value)
+                if hasattr(row, "build_phase"):
+                    row.build_phase = None
+                label = model.__tablename__
+                logger.warning(f"前回処理が中断されたまま残っていたため再キューします: {label}.id={row.id}")
+        await db.commit()
+
+
 async def run_rootfs_conversion_worker() -> None:
     """pending 状態の rootfs（共有デフォルト・プロジェクト個別の両方）を順次 ext4 へ変換する
     バックグラウンドループ。

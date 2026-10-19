@@ -23,7 +23,63 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docker-base-builder")
 
+# このコンテナ自身の再起動（orchestrator再起動とは独立に起こりうる）や、ジョブ実行中に
+# orchestrator側がクラッシュしてポーリング・DELETEが来なくなった場合、ここで起動した
+# docker run コンテナだけがホストに残り続ける（_jobs はメモリのみで再起動すると失われる）。
+# 起動時に、このサービスが作るコンテナの命名規則に一致するものを強制削除して回収する。
+_ORPHAN_CONTAINER_PREFIXES = ("hackbento-docker-base-build-", "hackbento-export-build-")
+
+
+async def _cleanup_orphan_containers() -> None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "ps", "-a", "--format", "{{.Names}}",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            logger.warning(f"孤児コンテナ調査に失敗しました（続行): {err.decode(errors='replace').strip()}")
+            return
+        names = [n for n in out.decode(errors="replace").splitlines() if n.strip()]
+        orphans = [n for n in names if n.startswith(_ORPHAN_CONTAINER_PREFIXES)]
+        for name in orphans:
+            logger.warning(f"前回起動時の孤児コンテナを削除します: {name}")
+            try:
+                rm_proc = await asyncio.create_subprocess_exec(
+                    "docker", "rm", "-f", name,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(rm_proc.communicate(), timeout=30)
+            except Exception as e:
+                logger.warning(f"孤児コンテナの削除に失敗しました（続行): {name}: {e}")
+    except Exception as e:
+        logger.warning(f"孤児コンテナの掃除処理自体に失敗しました（続行): {e}")
+
+
 app = FastAPI()
+
+
+def _cleanup_orphan_tmpdirs() -> None:
+    """前回起動時に残った作業用ディレクトリ（/tmp/hackbento-*）を削除する。
+
+    このコンテナは restart: unless-stopped のため、コンテナ再起動時もファイル
+    システム（/tmp含む）は維持される。ジョブ中断時に残ったテンポラリディレクトリが
+    積み重なるのを防ぐ（ディスク容量のみの問題で、セキュリティ上の実害はない）。
+    """
+    tmp_root = tempfile.gettempdir()
+    try:
+        for name in os.listdir(tmp_root):
+            if name.startswith("hackbento-"):
+                path = os.path.join(tmp_root, name)
+                shutil.rmtree(path, ignore_errors=True)
+    except OSError as e:
+        logger.warning(f"作業用ディレクトリの掃除に失敗しました（続行): {e}")
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    await _cleanup_orphan_containers()
+    _cleanup_orphan_tmpdirs()
 
 OUTPUT_DIR = "/output"
 _BUILD_TIMEOUT_S = 1800

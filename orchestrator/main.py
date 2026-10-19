@@ -20,7 +20,7 @@ from services.auth_local import hash_password
 from services.watchdog import run_watchdog
 from services.network import ensure_vm_network
 from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_machine_assets
-from services.rootfs_convert import run_rootfs_conversion_worker
+from services.rootfs_convert import run_rootfs_conversion_worker, reset_stuck_conversions
 from services.bundle_build import run_bundle_build_worker
 from services.docker_base_assets import run_docker_base_build_worker
 from services.smolvm import cleanup_orphaned_vms
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     await _seed_admin()
     await ensure_vm_network()
     await cleanup_orphaned_vms()
+    await reset_stuck_conversions()
     task = asyncio.create_task(run_watchdog())
     vm_assets_task = asyncio.create_task(ensure_default_vm_assets())
     rootfs_convert_task = asyncio.create_task(run_rootfs_conversion_worker())
