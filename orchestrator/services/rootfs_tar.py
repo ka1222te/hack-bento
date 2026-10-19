@@ -42,6 +42,10 @@ async def run_builder_job(
     start_path は "/build" または "/export-tar"。ジョブ状態の照会・削除は両方
     共通で "/build/{job_id}" を使う（docker-base-builder 側で単一のジョブ辞書を
     共有しているため）。
+    docker-base-builder 側は dockerd 競合を避けるため同時実行数を1に絞っており、
+    他のジョブが先行している間はステータスが "running" のまま変わらず待たされる。
+    timeout_s はこの待ち時間も含んだ全体の上限であるため、呼び出し側が大きめの
+    timeout_s を渡している場合（Attack Machine 等）はそのままで構わない。
     """
     async with httpx.AsyncClient(timeout=30) as client:
         try:

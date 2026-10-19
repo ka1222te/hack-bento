@@ -95,6 +95,15 @@ ALLOWED_EXPORT_BASE_IMAGES = {"alpine:3.19", "kalilinux/kali-rolling"}
 
 _jobs: dict[str, dict] = {}
 
+# dockerd は単一ホスト上の共有デーモンのため、docker-base・default rootfs・
+# rootfs変換専用ベース・Attack Machine の4つの独立ワーカーが同時にジョブを投げても
+# ここで同時実行数を絞る（Firecracker 側のビルドVMにある MAX_CONCURRENT_BUILDS と
+# 同じ方針）。ジョブ受付自体は即座にACKを返し、実行本体がこのセマフォを取得できるまで
+# "running" のまま待つ（呼び出し側 run_builder_job はステータスが "running" である限り
+# ポーリングを続けるだけなので、新しい状態値を増やす必要はない）。
+MAX_CONCURRENT_BUILDS = 1
+_build_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BUILDS)
+
 
 class BuildRequest(BaseModel):
     job_id: str
@@ -301,19 +310,20 @@ async def _do_build(job_id: str, base_image: str, resolv_conf: str, dest_path: s
     tmpdir = tempfile.mkdtemp(prefix="hackbento-docker-base-")
     container_name = f"hackbento-docker-base-build-{job_id}"
     try:
-        init_script = _DOCKER_BASE_INIT_TEMPLATE.replace("__RESOLV_CONF__", resolv_conf)
-        build_script = _DOCKER_BASE_BUILD_SCRIPT.replace("__INIT_SCRIPT__", init_script)
-        try:
-            await _run(["docker", "rm", "-f", container_name], timeout=30)
-        except Exception:
-            pass
-        await _run(
-            ["docker", "run", "--name", container_name, base_image, "bash", "-c", build_script],
-            timeout=_BUILD_TIMEOUT_S,
-        )
-        tar_path = os.path.join(tmpdir, "rootfs.tar")
-        await _run_to_file(["docker", "export", container_name], tar_path, timeout=_EXPORT_TIMEOUT_S)
-        await _run_convert_to_ext4(tar_path, dest_path, size_mb)
+        async with _build_semaphore:
+            init_script = _DOCKER_BASE_INIT_TEMPLATE.replace("__RESOLV_CONF__", resolv_conf)
+            build_script = _DOCKER_BASE_BUILD_SCRIPT.replace("__INIT_SCRIPT__", init_script)
+            try:
+                await _run(["docker", "rm", "-f", container_name], timeout=30)
+            except Exception:
+                pass
+            await _run(
+                ["docker", "run", "--name", container_name, base_image, "bash", "-c", build_script],
+                timeout=_BUILD_TIMEOUT_S,
+            )
+            tar_path = os.path.join(tmpdir, "rootfs.tar")
+            await _run_to_file(["docker", "export", container_name], tar_path, timeout=_EXPORT_TIMEOUT_S)
+            await _run_convert_to_ext4(tar_path, dest_path, size_mb)
         job["status"] = "ready"
         logger.info(f"job {job_id}: docker-base rootfs built -> {dest_path}")
     except Exception as e:
@@ -340,20 +350,21 @@ async def _do_export_tar(
     job = _jobs[job_id]
     container_name = f"hackbento-export-build-{job_id}"
     try:
-        try:
-            await _run(["docker", "rm", "-f", container_name], timeout=30)
-        except Exception:
-            pass
-        await _run(
-            ["docker", "run", "--name", container_name, base_image, "sh", "-c", build_script],
-            timeout=build_timeout_s,
-        )
-        if method == "cp":
-            if not cp_src_path:
-                raise RuntimeError("method='cp' には cp_src_path が必要です")
-            await _run(["docker", "cp", f"{container_name}:{cp_src_path}", dest_path], timeout=_EXPORT_TIMEOUT_S)
-        else:
-            await _run_to_file(["docker", "export", container_name], dest_path, timeout=_EXPORT_TIMEOUT_S)
+        async with _build_semaphore:
+            try:
+                await _run(["docker", "rm", "-f", container_name], timeout=30)
+            except Exception:
+                pass
+            await _run(
+                ["docker", "run", "--name", container_name, base_image, "sh", "-c", build_script],
+                timeout=build_timeout_s,
+            )
+            if method == "cp":
+                if not cp_src_path:
+                    raise RuntimeError("method='cp' には cp_src_path が必要です")
+                await _run(["docker", "cp", f"{container_name}:{cp_src_path}", dest_path], timeout=_EXPORT_TIMEOUT_S)
+            else:
+                await _run_to_file(["docker", "export", container_name], dest_path, timeout=_EXPORT_TIMEOUT_S)
         job["status"] = "ready"
         logger.info(f"job {job_id}: tar exported -> {dest_path}")
     except Exception as e:
