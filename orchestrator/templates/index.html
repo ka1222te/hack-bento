@@ -91,6 +91,7 @@ function renderMyEnvs() {
       </div>
       <div class="env-timer" id="timer-${env.id}">
         ${env.status === 'starting' ? `
+        <span class="spinner-inline"></span>
         <span class="env-starting-label">&#x23F3; VM起動中...</span>
         ` : `
         <span>残り</span>
@@ -101,8 +102,14 @@ function renderMyEnvs() {
       ${env.status === 'starting' ? '' : `<div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>`}
       <div class="env-actions">
         ${env.status === 'starting' ? '' : `
-        <button class="btn btn-sm btn-extend js-extend-env" data-eid="${env.id}" data-timeout="${env.timeout_minutes}">&#x23F1; 延長 (+${env.timeout_minutes}分)</button>
-        <button class="btn btn-sm btn-danger js-stop-env" data-eid="${env.id}">&#x23F9; 停止</button>
+        <button class="btn btn-sm btn-extend js-extend-env" data-eid="${env.id}" data-timeout="${env.timeout_minutes}">
+          <span class="btn-spinner hidden"></span>
+          <span class="btn-text">&#x23F1; 延長 (+${env.timeout_minutes}分)</span>
+        </button>
+        <button class="btn btn-sm btn-danger js-stop-env" data-eid="${env.id}">
+          <span class="btn-spinner hidden"></span>
+          <span class="btn-text">&#x23F9; 停止</span>
+        </button>
         `}
       </div>
     </div>
@@ -182,30 +189,63 @@ document.addEventListener('click', e => {
   } else if (btn.classList.contains('js-extend-env')) {
     extendEnv(Number(btn.dataset.eid), Number(btn.dataset.timeout), btn);
   } else if (btn.classList.contains('js-stop-env')) {
-    stopEnv(Number(btn.dataset.eid));
+    stopEnv(Number(btn.dataset.eid), btn);
   }
 });
 
-async function extendEnv(envId, timeoutMin, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '延長中...'; }
-  const res = await API.post(`/api/envs/${envId}/extend`);
-  if (res.ok) {
-    showToast(`${timeoutMin}分延長しました`, 'success');
-    await loadMyEnvs(); // リセット後は青に戻る
-  } else {
-    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
-    btn.disabled = false; btn.textContent = `&#x23F1; 延長 (+${timeoutMin}分)`;
-  }
+// ボタンにスピナー表示をセット/解除する（HTML構造は <span class="btn-spinner">+<span class="btn-text"> 前提）。
+// サーバ応答に時間がかかる場合でも、処理が継続中であることを視覚的に示す。
+function _setBtnBusy(btn, busyLabel) {
+  if (!btn) return;
+  btn.disabled = true;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.remove('hidden');
+  if (text) text.textContent = busyLabel;
+  else btn.textContent = busyLabel;
+}
+function _clearBtnBusy(btn, idleLabel) {
+  if (!btn) return;
+  btn.disabled = false;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.add('hidden');
+  if (text) text.textContent = idleLabel;
+  else btn.textContent = idleLabel;
 }
 
-async function stopEnv(envId) {
+async function extendEnv(envId, timeoutMin, btn) {
+  _setBtnBusy(btn, '延長中...');
+  try {
+    const res = await API.post(`/api/envs/${envId}/extend`);
+    if (res.ok) {
+      showToast(`${timeoutMin}分延長しました`, 'success');
+      await loadMyEnvs(); // リセット後は青に戻る
+      return;
+    }
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+  }
+  _clearBtnBusy(btn, `⏱ 延長 (+${timeoutMin}分)`);
+}
+
+async function stopEnv(envId, btn) {
   if (!confirm('この環境を停止しますか？')) return;
-  const res = await API.post(`/api/envs/${envId}/stop`);
-  if (res.ok) {
-    showToast('停止しました', 'success');
-    if (timers[envId]) clearInterval(timers[envId]);
-    await loadMyEnvs();
-  } else { const d = await res.json(); showToast(d.detail || 'エラー', 'error'); }
+  _setBtnBusy(btn, '停止中...');
+  try {
+    const res = await API.post(`/api/envs/${envId}/stop`);
+    if (res.ok) {
+      showToast('停止しました', 'success');
+      if (timers[envId]) clearInterval(timers[envId]);
+      await loadMyEnvs();
+      return;
+    }
+    const d = await res.json(); showToast(d.detail || 'エラー', 'error');
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+  }
+  _clearBtnBusy(btn, '⏹ 停止');
 }
 
 // copyToClipboard / copyIP は navbar.html で定義済み

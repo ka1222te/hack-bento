@@ -51,12 +51,8 @@ class Settings(BaseSettings):
             return v
         return [d.strip() for d in str(v).split(",") if d.strip()]
 
-    # バックエンド
-    VM_BACKEND: str = "macvlan"
-
     # ---- ネットワーク設定 ----
-    MACVLAN_NETWORK: str = "hackbento-vm"   # macvlan モード: docker-compose.override.yml の name と一致させる
-    BRIDGE_NAME: str = "vmbr-hackbento"               # bridge モード: TAP を接続するホスト bridge 名
+    BRIDGE_NAME: str = "vmbr-hackbento"               # TAP を接続するホスト bridge 名
 
     # VM に払い出す IP プール
     IP_POOL_START: str = "192.168.181.200"
@@ -73,6 +69,12 @@ class Settings(BaseSettings):
     ATTACK_MACHINE_CPU_LIMIT: int = 2
     ATTACK_MACHINE_MEMORY_LIMIT_MB: int = 2048
     ATTACK_MACHINE_TIMEOUT_MINUTES: int = 60
+
+    # ---- docker-base builder ----
+    # orchestrator コンテナから見た docker-base-builder への接続先。orchestrator は
+    # docker.sock を持たないため、docker-base rootfs のビルドはこのサービスへ委譲する
+    # （services/docker_base_assets.py 参照。両コンテナとも network_mode: host）。
+    DOCKER_BASE_BUILDER_URL: str = "http://127.0.0.1:8300"
 
     # ---- Guacamole ----
     # orchestrator コンテナから見た Guacamole (Tomcat) への接続先。

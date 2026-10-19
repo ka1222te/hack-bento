@@ -8,14 +8,14 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
-from database import get_db
+from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
-from services import firecracker_setup
+from services import vm_assets
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/attack-machine", tags=["attack-machine"])
 
 ATTACK_VNC_PORT = 5901
-# Attack Machine の rootfs (firecracker_setup._ATTACK_ROOTFS_BUILD_SCRIPT) で
+# Attack Machine の rootfs (services/attack_machine_assets.py の _ATTACK_ROOTFS_BUILD_SCRIPT) で
 # hackbento ユーザの VNC パスワードとして固定設定している値
 ATTACK_VNC_PASSWORD = "hackbento"
 
@@ -75,7 +75,7 @@ async def _get_attack_image(db: AsyncSession) -> Image:
 @router.get("/", response_model=AttackMachineStatusResponse)
 async def get_my_attack_machine(
     user: User = Depends(require_username_set),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     result = await db.execute(
         select(Image).where(Image.is_attack_machine == True, Image.is_active == True)
@@ -83,8 +83,8 @@ async def get_my_attack_machine(
     image = result.scalar_one_or_none()
     if image is None:
         return AttackMachineStatusResponse(
-            rootfs_status=firecracker_setup.attack_rootfs_build_status,
-            rootfs_error=firecracker_setup.attack_rootfs_build_error,
+            rootfs_status=vm_assets.attack_rootfs_build_status,
+            rootfs_error=vm_assets.attack_rootfs_build_error,
             machine=None,
         )
 

@@ -9,12 +9,48 @@ services:
     volumes:
       - ./orchestrator:/app
       - ./data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 注意: ホストの docker.sock は意図的にマウントしていない。
+      # docker.sock はコンテナからホスト Docker デーモン＝実質ホスト root へ到達でき、
+      # Firecracker 脱出等の際の被害を大きくするため持たせない。
+      # デフォルト/docker-base/Attack Machine rootfs など Docker 操作が必要なビルドは
+      # すべて docker-base-builder コンテナへ HTTP 経由で委譲する（services/rootfs_tar.py
+      # の run_builder_job 参照）。手動でのマウント切替は不要。
+    tmpfs:
+      # VM起動ごとのwritable rootfsコピー先（services/smolvm.py: FC_ROOTFS_DIR）をtmpfs化。
+      # HDD環境では2GB前後のコピーが数十秒〜それ以上かかりディスクI/Oを飽和させるため、
+      # RAM上に置いて起動を高速化する。サイズ上限はホストRAMに対して安全マージンを
+      # 取った値（MAX_ENVS_TOTAL × 想定rootfsサイズを超えないよう運用側で調整すること）。
+      # 上限を超えると書き込みがENOSPCで失敗する（ホストメモリを無制限に食うことはない）。
+      - /data/images/vm/runtime-rootfs:size=20G,mode=0755
     network_mode: host
     restart: unless-stopped
+    depends_on:
+      docker-base-builder:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]
       interval: 120s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  # Docker 操作が必要な全ビルド（docker-base・デフォルトrootfs・rootfs変換専用
+  # ベース・Attack Machine）を代行する専用コンテナ。/var/run/docker.sock を持つのは
+  # このコンテナのみで、orchestrator からは完全に分離する。127.0.0.1 の内部ポートに
+  # のみバインドするため、同一ホスト上の orchestrator（network_mode: host）からのみ
+  # 到達可能。
+  docker-base-builder:
+    build:
+      context: ./docker/docker-base-builder
+    container_name: hackbento-docker-base-builder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/images/vm/defaults:/output
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8300/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

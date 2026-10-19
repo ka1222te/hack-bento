@@ -14,13 +14,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from config import settings
-from database import init_db, AsyncSessionLocal
+from database import init_db, AsyncSessionLocal, AsyncSessionLocalReadonly
 from models import User, UserRole, AuthProvider, Image, Visibility, ImageCollaborator
 from services.auth_local import hash_password
 from services.watchdog import run_watchdog
 from services.network import ensure_vm_network
 from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_machine_assets
-from services.rootfs_convert import run_rootfs_conversion_worker
+from services.rootfs_convert import run_rootfs_conversion_worker, reset_stuck_conversions
+from services.bundle_build import run_bundle_build_worker
+from services.docker_base_assets import run_docker_base_build_worker
 from services.smolvm import cleanup_orphaned_vms
 from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
@@ -38,16 +40,21 @@ async def lifespan(app: FastAPI):
     await _seed_admin()
     await ensure_vm_network()
     await cleanup_orphaned_vms()
+    await reset_stuck_conversions()
     task = asyncio.create_task(run_watchdog())
     vm_assets_task = asyncio.create_task(ensure_default_vm_assets())
     rootfs_convert_task = asyncio.create_task(run_rootfs_conversion_worker())
+    bundle_build_task = asyncio.create_task(run_bundle_build_worker())
     attack_machine_task = asyncio.create_task(ensure_attack_machine_assets())
+    docker_base_build_task = asyncio.create_task(run_docker_base_build_worker())
     yield
     task.cancel()
     vm_assets_task.cancel()
     rootfs_convert_task.cancel()
+    bundle_build_task.cancel()
     attack_machine_task.cancel()
-    for t in (task, vm_assets_task, rootfs_convert_task, attack_machine_task):
+    docker_base_build_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -235,7 +242,7 @@ async def _get_request_user(request: Request) -> Optional[User]:
         return None
     try:
         payload = decode_token(token)
-        async with AsyncSessionLocal() as db:
+        async with AsyncSessionLocalReadonly() as db:
             result = await db.execute(
                 select(User).where(User.id == int(payload["sub"]), User.is_active == True)
             )
@@ -246,7 +253,7 @@ async def _get_request_user(request: Request) -> Optional[User]:
 
 async def _can_view_project(owner: str, slug: str, user: Optional[User]) -> bool:
     """owner/slug のプロジェクトを user が閲覧できるか確認する。"""
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         owner_result = await db.execute(select(User).where(User.username == owner))
         owner_obj = owner_result.scalar_one_or_none()
         if not owner_obj:
@@ -284,7 +291,7 @@ async def _can_edit_project(owner: str, slug: str, user: Optional[User]) -> bool
     """owner/slug のプロジェクトを user が編集できるか確認する。"""
     if user is None:
         return False
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         owner_result = await db.execute(select(User).where(User.username == owner))
         owner_obj = owner_result.scalar_one_or_none()
         if not owner_obj:
@@ -368,6 +375,24 @@ async def new_project_page(request: Request):
     return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
 
 
+@app.get("/docs/rootfs/compose", response_class=HTMLResponse)
+async def rootfs_help_compose_page(request: Request):
+    """Compose バンドルの作り方の詳細ページ。"""
+    user = await _get_request_user(request)
+    if not user or user.needs_username_setup:
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
+    return templates.TemplateResponse("rootfs_help_compose.html", {"request": request, "settings": settings})
+
+
+@app.get("/docs/rootfs/os", response_class=HTMLResponse)
+async def rootfs_help_os_page(request: Request):
+    """OS イメージの作り方の詳細ページ。"""
+    user = await _get_request_user(request)
+    if not user or user.needs_username_setup:
+        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
+    return templates.TemplateResponse("rootfs_help_os.html", {"request": request, "settings": settings})
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     user = await _get_request_user(request)
@@ -389,7 +414,7 @@ async def user_profile_page(username: str, request: Request):
     user = await _get_request_user(request)
     if not user:
         return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         result = await db.execute(select(User).where(User.username == username, User.is_active == True))
         target = result.scalar_one_or_none()
     if not target:

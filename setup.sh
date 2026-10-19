@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HackBento セットアップスクリプト
-# VM_BACKEND (macvlan / bridge) を対話的に選択し、
-# .env と docker-compose.override.yml を生成する。
+# Firecracker microVM + Linux bridge 構成のネットワーク（および Attack Machine）を
+# 対話的に設定し、.env と docker-compose.override.yml を生成する。
 
 set -euo pipefail
 
@@ -231,17 +231,15 @@ detect_network_info() {
     list_physical_nics
     ask NIC "設定対象の物理 NIC" "$(first_physical_nic)"
 
-    if [[ "$BACKEND" == "bridge" ]]; then
-        local existing_master
-        existing_master="$(detect_master "$NIC")"
-        if [[ -n "$existing_master" ]]; then
-            echo ""
-            red "[ERROR] 物理 NIC '${NIC}' は既に master '${existing_master}' に従属しています。"
-            echo "        bridge モードのセットアップでは、この NIC を新しい bridge に付け替える必要がありますが、"
-            echo "        既存の master 設定と競合するためセットアップを中断します。"
-            echo "        既存の master 設定を確認・解除してから再実行してください。"
-            exit 1
-        fi
+    local existing_master
+    existing_master="$(detect_master "$NIC")"
+    if [[ -n "$existing_master" ]]; then
+        echo ""
+        red "[ERROR] 物理 NIC '${NIC}' は既に master '${existing_master}' に従属しています。"
+        echo "        セットアップではこの NIC を新しい bridge に付け替える必要がありますが、"
+        echo "        既存の master 設定と競合するためセットアップを中断します。"
+        echo "        既存の master 設定を確認・解除してから再実行してください。"
+        exit 1
     fi
 
     local detected_subnet detected_gw detected_dns
@@ -268,64 +266,6 @@ detect_network_info() {
     SUBNET="$detected_subnet"
     GATEWAY="$detected_gw"
     DNS_SERVER="$detected_dns"
-}
-
-# ---------- macvlan セットアップ ----------
-
-setup_macvlan() {
-    echo ""
-    bold "=== macvlan 設定 ==="
-    echo ""
-    echo "macvlan モードでは検出済みのアドレス情報をそのまま利用します。"
-    echo ""
-
-    ask_ip_in_subnet POOL_START "VM IP プール 開始アドレス" "${SUBNET}"
-    ask_ip_in_subnet POOL_END   "VM IP プール 終了アドレス" "${SUBNET}"
-    ask NET_NAME   "Docker ネットワーク名" "hackbento-vm"
-
-    local subnet_cidr="${SUBNET}"
-    echo ""
-    bold "--- 確認 ---"
-    echo "  親 NIC         : ${NIC}"
-    echo "  サブネット     : ${subnet_cidr}"
-    echo "  ゲートウェイ   : ${GATEWAY}"
-    echo "  IP プール      : ${POOL_START} - ${POOL_END}"
-    echo "  Docker net名   : ${NET_NAME}"
-    echo ""
-    if ! ask_yn "この内容で設定しますか？"; then
-        yellow "キャンセルしました。"
-        exit 1
-    fi
-
-    # .env 更新
-    env_set "VM_BACKEND"    "macvlan"
-    env_set "MACVLAN_NETWORK" "${NET_NAME}"
-    env_set "IP_POOL_START" "${POOL_START}"
-    env_set "IP_POOL_END"   "${POOL_END}"
-    env_set "FC_GUEST_DNS"  "${DNS_SERVER:-8.8.8.8}"
-
-    # Attack Machine (Guacamole) は bridge モード専用機能のため macvlan では無効化する
-    env_set "ATTACK_MACHINE_ENABLED" "false"
-
-    # docker-compose.override.yml 生成
-    cat > "$OVERRIDE_FILE" <<EOF
-# 自動生成 by setup.sh (macvlan モード)
-# 再生成するには: sudo ./setup.sh
-
-networks:
-  vm_net:
-    name: ${NET_NAME}
-    driver: macvlan
-    driver_opts:
-      parent: ${NIC}
-    ipam:
-      config:
-        - subnet: ${subnet_cidr}
-          gateway: ${GATEWAY}
-EOF
-
-    own "$OVERRIDE_FILE"
-    green "[OK] docker-compose.override.yml を生成しました (macvlan モード)"
 }
 
 # ---------- bridge ネットワーク設定の永続化 ----------
@@ -588,7 +528,6 @@ setup_bridge() {
     fi
 
     # .env 更新
-    env_set "VM_BACKEND"      "bridge"
     env_set "BRIDGE_NAME"     "${BRIDGE_NAME}"
     env_set "IP_POOL_START"   "${POOL_START}"
     env_set "IP_POOL_END"     "${POOL_END}"
@@ -680,7 +619,7 @@ EOF
 
 # ---------- メイン ----------
 
-# 既にネットワーク (bridge/macvlan) を設定済みで、VM 用 cgroup 委譲ツリーだけを
+# 既にネットワーク (bridge) を設定済みで、VM 用 cgroup 委譲ツリーだけを
 # (再) セットアップしたい場合のショートカット。
 if [[ "${1:-}" == "--vm-cgroup-only" ]]; then
     setup_vm_cgroup
@@ -712,65 +651,40 @@ fi
 own "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+# HackBento は Firecracker microVM + bridge 構成が必須（KVM が前提）。
 # KVM チェック
 if check_kvm; then
-    green "[OK] /dev/kvm が見つかりました。bridge モードが利用可能です。"
-    KVM_OK=true
+    green "[OK] /dev/kvm が見つかりました。"
 else
-    yellow "[--] /dev/kvm が見つかりません。macvlan モードのみ利用可能です。"
-    KVM_OK=false
+    red "[ERROR] /dev/kvm が見つかりません。"
+    echo "        HackBento は Firecracker microVM を使うため KVM が必須です。"
+    echo "        BIOS/UEFI で仮想化支援 (SVM/VT-x) を有効にし、kvm モジュールを読み込んでください。"
+    exit 1
 fi
 
 # bridge 作成試験（試験用 bridge "vmbr-test" を作成→削除して可否を判定）
 if check_bridge_tools; then
     echo "試験用 bridge 'vmbr-test' を作成して bridge 作成可否を確認しています..."
     if check_bridge_capability; then
-        BRIDGE_OK=true
-        green "[OK] bridge の作成・削除に成功しました。bridge モードが利用可能です。"
+        green "[OK] bridge の作成・削除に成功しました。"
     else
-        BRIDGE_OK=false
-        yellow "[--] bridge の作成に失敗しました（権限不足または非対応）。macvlan モードを推奨します。"
+        red "[ERROR] bridge の作成に失敗しました（権限不足または非対応）。"
+        echo "        root 権限で実行しているか、環境が Linux bridge をサポートしているか確認してください。"
+        exit 1
     fi
 else
-    BRIDGE_OK=false
-    yellow "[--] ip コマンドが見つかりません。iproute2 をインストールしてください。"
+    red "[ERROR] ip コマンドが見つかりません。iproute2 をインストールしてください。"
+    exit 1
 fi
 
 echo ""
 
-# バックエンド選択
-if [[ "$KVM_OK" == true && "$BRIDGE_OK" == true ]]; then
-    bold "利用可能なバックエンド:"
-    echo "  1) bridge   - TAP + Linux bridge 経由で VM にネットワーク提供（推奨）"
-    echo "  2) macvlan  - macvlan ネットワークでコンテナに直接 IP を割り当て"
-    echo ""
-    while true; do
-        read -rp "$(bold "バックエンドを選択してください [1/2]: ")" choice
-        case "$choice" in
-            1) BACKEND="bridge";  break ;;
-            2) BACKEND="macvlan"; break ;;
-            *) yellow "  1 または 2 を入力してください。" ;;
-        esac
-    done
-else
-    echo ""
-    if ask_yn "macvlan モードでセットアップしますか？"; then
-        BACKEND="macvlan"
-    else
-        yellow "セットアップをキャンセルしました。"
-        exit 1
-    fi
-fi
-
-# 物理 NIC とアドレス情報を聞き取り・検出（macvlan / bridge 共通）
+# 物理 NIC とアドレス情報を聞き取り・検出
 detect_network_info
 
 echo ""
 
-case "$BACKEND" in
-    bridge)  setup_bridge  ;;
-    macvlan) setup_macvlan ;;
-esac
+setup_bridge
 
 echo ""
 bold "=== セットアップ完了 ==="

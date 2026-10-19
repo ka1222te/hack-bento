@@ -6,13 +6,13 @@ from sqlalchemy import select
 
 from database import AsyncSessionLocal
 from models import DefaultRootfsAsset, Image, RootfsConversionStatus
-from services.firecracker_setup import convert_tar_to_ext4
+from services.rootfs_tar import convert_tar_to_ext4
 
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 10
 
-# 変換対象となりうるテーブル・カラムの組（共有デフォルト資産／プロジェクトのrootfsの両方）。
+# 変換対象となりうるテーブル・カラムの組（共有デフォルト／プロジェクトのrootfsの両方）。
 # どちらも DefaultRootfsAsset と同じ4カラム構成（状態・エラー・変換元tarパス・実体パス）を持つ。
 _TARGETS = [
     {
@@ -43,9 +43,20 @@ async def _claim_pending() -> tuple[dict, int, str, str] | None:
         for target in _TARGETS:
             model = target["model"]
             status_col = getattr(model, target["status_col"])
+            conds = [status_col == RootfsConversionStatus.pending.value]
+            # Image の Compose バンドル行（rootfs_kind='compose'）は bundle_build ワーカーが
+            # 専用処理するため、tar→ext4 変換ワーカーは拾わない。
+            if model is Image:
+                conds.append(Image.rootfs_kind != "compose")
+            # DefaultRootfsAsset の docker-base 行（管理者が /admin からビルド依頼した。
+            # source_archive_path を持たず base_image からビルドする）は
+            # services.docker_base_assets.run_docker_base_build_worker が専用処理するため、
+            # tar→ext4 変換ワーカーは拾わない。
+            if model is DefaultRootfsAsset:
+                conds.append(DefaultRootfsAsset.kind != "docker-base")
             result = await db.execute(
                 select(model)
-                .where(status_col == RootfsConversionStatus.pending.value)
+                .where(*conds)
                 .with_for_update()
                 .limit(1)
             )
@@ -90,8 +101,37 @@ async def _convert_one(target: dict, row_id: int, tar_path: str, dest_path: str)
                 pass
 
 
+async def reset_stuck_conversions() -> None:
+    """起動時に converting のまま残っている行を pending に戻す（起動時 reconciliation）。
+
+    converting は「いずれかのワーカーが処理中」を意味する状態だが、orchestrator
+    プロセスが変換中にクラッシュ・再起動すると、どのワーカーも処理していないのに
+    converting のまま DB に残り続ける。各ワーカーは pending のみ claim するため、
+    一度 converting で止まった行は手動介入なしには二度と処理されず、該当プロジェクト/
+    資産は（envs.py の起動ガードにより）永久に使用不能になる。
+    起動直後は定義上どのワーカーもまだ動いていないため、converting の行を
+    無条件に pending へ戻して再キューする（docker-base 行は _claim_pending_docker_base
+    と同じ対象条件で絞る必要はなく、converting を取りうるのはこの3パターンのみ）。
+    """
+    async with AsyncSessionLocal() as db:
+        for model, status_col in (
+            (DefaultRootfsAsset, "conversion_status"),
+            (Image, "rootfs_conversion_status"),
+        ):
+            col = getattr(model, status_col)
+            result = await db.execute(select(model).where(col == RootfsConversionStatus.converting.value))
+            rows = result.scalars().all()
+            for row in rows:
+                setattr(row, status_col, RootfsConversionStatus.pending.value)
+                if hasattr(row, "build_phase"):
+                    row.build_phase = None
+                label = model.__tablename__
+                logger.warning(f"前回処理が中断されたまま残っていたため再キューします: {label}.id={row.id}")
+        await db.commit()
+
+
 async def run_rootfs_conversion_worker() -> None:
-    """pending 状態の rootfs（共有デフォルト資産・プロジェクト個別の両方）を順次 ext4 へ変換する
+    """pending 状態の rootfs（共有デフォルト・プロジェクト個別の両方）を順次 ext4 へ変換する
     バックグラウンドループ。
 
     run_watchdog（services/watchdog.py）と同じ定期ポーリング構成だが、ユーザ操作起点の

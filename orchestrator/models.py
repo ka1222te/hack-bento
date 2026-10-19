@@ -36,6 +36,14 @@ class RootfsConversionStatus(str, PyEnum):
     failed = "failed"
 
 
+class BundlePhase(str, PyEnum):
+    """Compose バンドルビルドのフェーズ（services.bundle_build が更新。UI 表示用）。"""
+    validating = "validating"       # 受付検査（tar のメタデータのみ確認）
+    preparing = "preparing"         # scratch ディスク構築（tar 展開 + ext4 作成）
+    building = "building"           # ビルド用 VM 起動・docker load・compose config
+    inspecting = "inspecting"       # ビルド結果の検査（compose 設定・images.tar 整合性）
+
+
 class Difficulty(str, PyEnum):
     none = "none"
     easy = "easy"
@@ -53,11 +61,6 @@ class Visibility(str, PyEnum):
 class CollaboratorRole(str, PyEnum):
     read = "read"            # 閲覧・起動のみ
     read_write = "read_write"  # 閲覧・起動・編集
-
-
-class Backend(str, PyEnum):
-    macvlan = "macvlan"  # Docker コンテナ + macvlan（OCIイメージを保持）
-    bridge = "bridge"    # Firecracker microVM + bridge（カーネル・rootfsを保持）
 
 
 class User(Base):
@@ -89,11 +92,12 @@ class Image(Base):
     name = Column(String(128), nullable=False, index=True)
     slug = Column(String(128), nullable=False)
     description = Column(Text, nullable=True)
-    backend = Column(Enum(Backend), default=Backend.macvlan, nullable=False)
-    # macvlan バックエンド: Docker OCI イメージ
+    # 後方互換のための旧 macvlan 用カラム（Firecracker 一本化後は未使用。
+    # 既存 DB では NOT NULL のため、新規行でも既定値を入れて挿入エラーを避ける）。
+    backend = Column(String(16), nullable=False, default="bridge")
     oci_ref = Column(String(512), nullable=False, default="")
     archive_path = Column(String(512), nullable=True)
-    # bridge バックエンド: Firecracker ゲストカーネル・rootfs
+    # Firecracker ゲストカーネル・rootfs
     kernel_path = Column(String(512), nullable=True)
     rootfs_path = Column(String(512), nullable=True)
     # rootfs としてファイルシステム tar がアップロード/リンクされた場合、ext4への変換が
@@ -102,7 +106,21 @@ class Image(Base):
     rootfs_conversion_status = Column(String(16), default=RootfsConversionStatus.ready.value, nullable=False)
     rootfs_conversion_error = Column(String(512), nullable=True)
     rootfs_source_archive_path = Column(String(512), nullable=True)
-    # 「default」モードで選択された共有デフォルト資産への参照（編集画面の初期表示用）
+    # rootfs の種別: "os"（従来のゲスト OS イメージ）/ "compose"（Compose バンドル）。
+    # "compose" の場合、rootfs_source_archive_path にバンドル tar を保持し、
+    # ビルド用 VM（services.bundle_build）が base_rootfs（docker-base）を土台に ext4 を組み立てる。
+    rootfs_kind = Column(String(16), default="os", nullable=False)
+    # Compose バンドルの土台に使う docker-base への参照
+    base_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
+    # ビルド用 VM が出力した正規化 compose 設定の要約（サービス名・公開ポート等。UI 表示用）
+    compose_summary = Column(Text, nullable=True)
+    # rootfs_kind='compose' のビルド進捗フェーズ（UI 表示用・services.bundle_build が更新）。
+    # 値は BundlePhase を参照。rootfs_conversion_status='converting' の間のみ意味を持つ。
+    build_phase = Column(String(32), nullable=True)
+    # プロジェクト別の追加カーネル起動引数（カーネル exploit 問題で nokaslr 等を渡す用途）。
+    # ip=/init=/console=/root= 等 HackBento が管理する引数はホスト側で除去・上書き不可。
+    extra_boot_args = Column(String(512), nullable=True)
+    # 「default」モードで選択された共有デフォルトへの参照（編集画面の初期表示用）
     default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
     default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     readme_path = Column(String(512), nullable=True)
@@ -152,12 +170,19 @@ class DefaultRootfsAsset(Base):
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String(128), nullable=False)
     file_path = Column(String(512), nullable=False)
+    # "os": 通常のゲスト rootfs。"docker-base": Compose バンドル用の共通土台。
+    kind = Column(String(16), nullable=False, default="os")
     is_active = Column(Boolean, default=True, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     conversion_status = Column(String(16), default=RootfsConversionStatus.ready.value, nullable=False)
     conversion_error = Column(String(512), nullable=True)
     source_archive_path = Column(String(512), nullable=True)
+    # kind="docker-base" をサーバ側でビルドして登録した場合のみ設定される
+    # Docker イメージ参照（例: "debian:bookworm-slim"）。ビルドワーカー
+    # （services.docker_base_assets.run_docker_base_build_worker）がこれを見て
+    # pending 行を処理する。アップロードで直接登録した（os 種別含む）では未設定。
+    base_image = Column(String(256), nullable=True)
 
 
 class ImageCollaborator(Base):

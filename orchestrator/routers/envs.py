@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 from typing import Optional
 
-from database import get_db
-from models import Environment, EnvStatus, Image, Backend, User, UserRole, RootfsConversionStatus
+from database import get_db, get_db_readonly
+from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
@@ -63,7 +63,7 @@ def _to_response(env: Environment) -> EnvResponse:
 @router.get("/", response_model=list[EnvResponse])
 async def list_my_envs(
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     result = await db.execute(
         select(Environment)
@@ -94,13 +94,6 @@ async def start_env(
     from routers.images import _can_see
     if not await _can_see(image, user, db):
         raise HTTPException(status_code=404, detail="イメージが見つかりません")
-
-    host_backend = Backend.bridge if settings.VM_BACKEND == "bridge" else Backend.macvlan
-    if image.backend != host_backend:
-        raise HTTPException(
-            status_code=400,
-            detail=f"このホストでは backend={host_backend.value} のプロジェクトのみ起動できます",
-        )
 
     if image.rootfs_conversion_status in (RootfsConversionStatus.pending.value, RootfsConversionStatus.converting.value):
         raise HTTPException(
@@ -171,32 +164,47 @@ async def start_env(
         await db.commit()
         raise HTTPException(status_code=500, detail="VM起動に失敗しました")
 
-    # vm_id は取得後すぐに確定させる。ここで commit せずに後続処理中にオーケストレータが
-    # 落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL のまま残り、
-    # cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
-    # また、vm_id が確定する前に停止要求（watchdogのstuck-starting処理含む）が
-    # 先行した場合、destroy_env が vm_id=None で実VM/TAP/cgroupを解放できず
-    # 孤児が残ってしまうため、vm_id だけを先に確定・commitする。
-    env.vm_id = vm_result.vm_id
-    await db.commit()
-
-    # ここまでの間に他経路（停止要求・watchdog）が先に env を stopping/stopped へ
-    # 遷移させていた場合は、running への遷移を行わず、いま確定した vm_id を使って
-    # 実VMを後始末する（孤児防止）。
-    result = await db.execute(
-        select(Environment).where(Environment.id == env.id).with_for_update()
-    )
-    env = result.scalar_one()
-    if env.status != EnvStatus.starting:
+    try:
+        # vm_id は取得後すぐに確定させる。ここで commit せずに後続処理中にオーケストレータが
+        # 落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL のまま残り、
+        # cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
+        # また、vm_id が確定する前に停止要求（watchdogのstuck-starting処理含む）が
+        # 先行した場合、destroy_env が vm_id=None で実VM/TAP/cgroupを解放できず
+        # 孤児が残ってしまうため、vm_id だけを先に確定・commitする。
+        env.vm_id = vm_result.vm_id
         await db.commit()
-        await stop_vm(vm_result.vm_id)
-        raise HTTPException(status_code=409, detail="起動中にこの環境は停止されました")
 
-    env.status = EnvStatus.running
-    # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
-    # running に遷移した時点から timeout 分のカウントを開始する。
-    env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
-    await db.commit()
+        # ここまでの間に他経路（停止要求・watchdog）が先に env を stopping/stopped へ
+        # 遷移させていた場合は、running への遷移を行わず、いま確定した vm_id を使って
+        # 実VMを後始末する（孤児防止）。
+        result = await db.execute(
+            select(Environment).where(Environment.id == env.id).with_for_update()
+        )
+        env = result.scalar_one()
+        if env.status != EnvStatus.starting:
+            await db.commit()
+            await stop_vm(vm_result.vm_id)
+            raise HTTPException(status_code=409, detail="起動中にこの環境は停止されました")
+
+        env.status = EnvStatus.running
+        # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
+        # running に遷移した時点から timeout 分のカウントを開始する。
+        env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        # start_vm 自体は成功している（実VM/TAP/cgroupが実在する）ため、ここで例外が
+        # 出た場合（DBロック等）に何もせず上に投げると、HTTPレスポンスは失敗を返しつつ
+        # 実VMだけが起動済みのまま孤立する（ユーザーが再試行すると二重起動・IP枯渇の
+        # 原因になる）。vm_id は確定済みなので stop_vm でここで必ず後始末する。
+        logger.error(f"start_env commit failed after start_vm succeeded env_id={env.id} vm_id={vm_result.vm_id}: {e}")
+        try:
+            await stop_vm(vm_result.vm_id)
+        except Exception as cleanup_e:
+            logger.error(f"start_env cleanup also failed vm_id={vm_result.vm_id}: {cleanup_e}")
+        raise HTTPException(status_code=500, detail="環境の起動処理中にエラーが発生しました。もう一度お試しください")
+
     result = await db.execute(
         select(Environment)
         .options(selectinload(Environment.image).selectinload(Image.owner))

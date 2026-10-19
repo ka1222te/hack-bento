@@ -6,7 +6,7 @@ from pydantic import BaseModel, field_validator
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
-from database import get_db
+from database import get_db, get_db_readonly
 from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility, AuthProvider
 from deps import get_current_user, require_username_set
 from services.jwt_utils import create_access_token
@@ -75,7 +75,7 @@ async def setup_username(
 async def search_users(
     q: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     """ユーザ名の前方一致検索（候補サジェスト用）。自分自身は除外。"""
     if len(q) < 1 or len(q) > 64:
@@ -93,7 +93,7 @@ async def search_users(
 
 
 @router.get("/check-username")
-async def check_username(username: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def check_username(username: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db_readonly)):
     """ユーザ名の使用可否を確認する。自分自身は除外。"""
     if not _VALID_USERNAME.match(username):
         return {"available": False, "reason": "英数字・ハイフン・アンダースコアのみ使用可"}
@@ -109,7 +109,7 @@ async def check_username(username: str, _: User = Depends(get_current_user), db:
 async def check_username_for_setup(
     username: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     """ユーザ名設定画面専用: 自分自身のユーザ名は使用可として扱う。"""
     if not _VALID_USERNAME.match(username):
@@ -178,7 +178,7 @@ async def list_collaborators(
     owner: str,
     slug: str,
     current_user: User = Depends(require_username_set),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     image = await _get_image_as_owner_or_admin(owner, slug, current_user, db)
     result = await db.execute(

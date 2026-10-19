@@ -200,6 +200,17 @@ body::before {
   animation: spin .6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* 通常のカード背景（白文字を想定しない箇所）で使うスピナー。
+   env-timer（起動中表示）等、ボタンの外で「処理継続中」を示す用途。 */
+.spinner-inline {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
 
 /* ===== Container & Sections ===== */
 .container { max-width: 1280px; margin: 0 auto; padding: 0 1.5rem; }
@@ -376,6 +387,27 @@ body::before {
   box-shadow: var(--shadow);
 }
 .copy-pop-show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.code-block { position: relative; }
+.code-block .copy-btn {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+.code-block .copy-btn:hover { background: var(--bg4); }
+.code-block pre { margin: 0; padding-right: 2.2rem; border-radius: 6px; overflow-x: auto; }
+.code-block pre code.hljs { padding: .6rem .8rem; border-radius: 6px; background: transparent; }
+
+/* サイト全体のスクロールバーを、ブラウザ標準の太いグレーではなく
+   テーマ配色に合わせた細いバーにする（Firefox/Chromium 両対応） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border2) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--accent2); }
 .env-timer {
   font-size: 0.85rem;
   color: var(--text2);
@@ -1205,6 +1237,17 @@ textarea { resize: vertical; min-height: 70px; }
 }
 .np-hint { font-size: 0.78rem; color: var(--text3); margin-top: -0.75rem; margin-bottom: 1.25rem; }
 
+.np-howto-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 0.65rem 0.9rem; margin: 0.6rem 0 0;
+  text-decoration: none; transition: border-color 0.15s, background 0.15s;
+}
+.np-howto-card[hidden] { display: none; }
+.np-howto-card:hover { border-color: var(--accent); background: var(--bg3); }
+.np-howto-text { font-size: 0.78rem; color: var(--text3); }
+.np-howto-link { font-size: 0.82rem; font-weight: 600; color: var(--accent); white-space: nowrap; }
+
 .np-input {
   background: var(--bg);
   border: 1px solid var(--border2);
@@ -1302,6 +1345,53 @@ textarea { resize: vertical; min-height: 70px; }
 .np-checkbox-label input[type="checkbox"] {
   cursor: pointer;
 }
+
+/* 押しやすいチップ型チェックボックス（複数選択・np-toggle-btnと見た目を揃える） */
+.np-chip-group {
+  display: flex; flex-wrap: wrap; gap: 0.5rem;
+}
+.np-chip-checkbox {
+  display: inline-flex; align-items: center;
+  padding: 0.5rem 0.9rem;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.85rem; font-weight: 500; color: var(--text2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.np-chip-checkbox input[type="checkbox"] {
+  position: absolute; opacity: 0; pointer-events: none;
+}
+.np-chip-checkbox:hover { color: var(--text); background: var(--bg4); }
+.np-chip-checkbox.active {
+  background: var(--accent2);
+  color: #fff;
+  border-color: var(--accent2);
+  font-weight: 600;
+}
+
+/* 詳細設定（details/summary）の折りたたみ */
+.np-details {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.9rem;
+}
+.np-details summary {
+  padding: 0.6rem 0;
+  font-size: 0.85rem; font-weight: 500; color: var(--text2);
+  cursor: pointer;
+  list-style: none;
+}
+.np-details summary::-webkit-details-marker { display: none; }
+.np-details summary::before {
+  content: "▸"; display: inline-block; margin-right: 0.5rem;
+  transition: transform 0.15s;
+}
+.np-details[open] summary::before { transform: rotate(90deg); }
+.np-details-body { padding: 0 0 0.9rem; }
 .np-upload-ph, .np-upload-selected {
   display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
 }
@@ -1470,4 +1560,29 @@ textarea { resize: vertical; min-height: 70px; }
   .np-vis-group { flex-direction: column; }
   .np-vis-btn { min-width: unset; }
   .np-vis-inner { flex-direction: row; justify-content: flex-start; gap: 0.75rem; text-align: left; }
+}
+
+/* ===== Docs: rootfs / Compose バンドルの作り方ページ ===== */
+.howto-row {
+  display: flex; align-items: flex-start; gap: 0.9rem;
+  padding: 0.6rem 0; border-bottom: 1px solid var(--border);
+}
+.howto-row:last-of-type { border-bottom: none; }
+.howto-badge {
+  flex: 0 0 auto; background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius-sm); color: var(--accent);
+  font-size: 0.78rem; font-weight: 700; padding: 0.2rem 0.6rem;
+  margin-top: 0.1rem; white-space: nowrap;
+}
+.howto-desc { color: var(--text2); font-size: 0.9rem; line-height: 1.7; }
+.howto-note {
+  margin-top: 1rem; padding: 0.75rem 0.9rem; background: var(--bg3);
+  border-left: 3px solid var(--accent2); border-radius: var(--radius-sm);
+  color: var(--text3); font-size: 0.85rem; line-height: 1.7;
+}
+.howto-steps { margin: 0; padding-left: 1.3rem; line-height: 2; color: var(--text2); }
+.howto-list { margin: 0; padding-left: 1.3rem; line-height: 1.8; color: var(--text3); }
+.howto-step-label { font-size: 0.85rem; font-weight: 600; color: var(--text2); margin-bottom: 0.4rem; }
+@media (max-width: 640px) {
+  .howto-row { flex-direction: column; gap: 0.3rem; }
 }

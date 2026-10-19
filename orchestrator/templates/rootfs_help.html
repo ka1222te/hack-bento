@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}rootfs の作り方 — HackBento{% endblock %}
+
+{% block body %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+
+  <div class="container" style="max-width:820px;padding-top:2.5rem;padding-bottom:3rem">
+    <h1 style="font-size:1.4rem;font-weight:700;margin-bottom:.5rem">rootfs の作り方</h1>
+    <p style="color:var(--muted);margin-bottom:1.75rem">
+      HackBento は Firecracker microVM で環境を起動します。登録するプロジェクトには
+      「OS イメージ」と「Compose バンドル」の 2 形式があり、作りたい環境に応じてどちらかを選びます。
+    </p>
+
+    <div class="docs-choice-grid">
+      <a href="/docs/rootfs/compose" class="card docs-choice-card">
+        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.5rem">📦 Compose バンドル</h2>
+        <p style="color:var(--muted);margin-bottom:.75rem">推奨・手軽</p>
+        <p style="margin-bottom:.75rem">
+          手元で <code>docker compose up</code> が通る構成を、そのまま VM 1 台として配布します。
+          複数サービス（Web + DB + LB など）を 1 台で動かしたい場合はこちら。
+        </p>
+        <span class="docs-choice-link">作り方を見る →</span>
+      </a>
+
+      <a href="/docs/rootfs/os" class="card docs-choice-card">
+        <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.5rem">💾 OS イメージ</h2>
+        <p style="color:var(--muted);margin-bottom:.75rem">中で Docker を使わない 1 台</p>
+        <p style="margin-bottom:.75rem">
+          ゲストカーネルと rootfs をそれぞれ指定して VM を作ります。
+          1 つのサービス / OS を直接作る、カーネル CVE を扱う場合はこちら。
+        </p>
+        <span class="docs-choice-link">作り方を見る →</span>
+      </a>
+    </div>
+
+    <div class="card" style="padding:1.5rem;margin-top:1.25rem">
+      <h2 style="font-size:1.05rem;font-weight:600;margin-bottom:.75rem">どちらを選ぶか</h2>
+      <ul style="margin:0 0 0 1.2rem;line-height:1.8">
+        <li>複数のサービス（Web + DB + LB など）を 1 台で動かす → <a href="/docs/rootfs/compose"><strong>Compose バンドル</strong></a></li>
+        <li>1 つのサービス / OS を直接作る、カーネル CVE を扱う → <a href="/docs/rootfs/os"><strong>OS イメージ</strong></a></li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

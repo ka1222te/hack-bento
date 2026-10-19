@@ -135,8 +135,51 @@
 
         <hr class="np-divider" />
 
-        {% if settings.VM_BACKEND == "bridge" %}
-        <!-- Firecracker kernel / rootfs（変更任意・確認ダイアログあり） -->
+        <!-- ===== Compose バンドル: 再アップロードによる再ビルド ===== -->
+        <div id="compose-fields" class="hidden">
+          <div class="np-field">
+            <label class="np-label">
+              Compose バンドル再アップロード
+              <span class="np-optional">optional — 変更すると起動中VMが停止され再ビルドされます</span>
+              <span id="rootfs-conversion-badge"></span>
+            </label>
+            <a href="/docs/rootfs/compose" target="_blank" rel="noopener" class="np-howto-card">
+              <span class="np-howto-text">ビルドに失敗した場合、ここから修正済みの .tar を再アップロードしてください。</span>
+              <span class="np-howto-link">作り方 ↗</span>
+            </a>
+            <p class="np-hint hidden" id="bundle-error-detail" style="margin:.6rem 0;color:var(--danger,#e53e3e)"></p>
+            <div class="np-upload-area" id="bundle-upload-area">
+              <input type="file" name="bundle" id="bundle-file-input" accept=".tar" class="file-input-hidden" />
+              <div id="bundle-upload-placeholder" class="np-upload-ph">
+                <span class="np-upload-icon">📦</span>
+                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
+                <span class="np-upload-sub">bento-pack --bundle で作成した .tar</span>
+              </div>
+              <div id="bundle-upload-selected" class="np-upload-selected hidden">
+                <span class="np-upload-icon">✅</span>
+                <span id="bundle-filename" class="np-upload-text"></span>
+                <span id="bundle-filesize" class="np-upload-sub"></span>
+              </div>
+            </div>
+          </div>
+
+          <details class="np-details">
+            <summary>詳細設定</summary>
+            <div class="np-details-body">
+              <div class="np-field">
+                <label class="np-label">docker-base  <span class="np-optional">optional</span></label>
+                <p class="np-hint" style="margin:0 0 .6rem">
+                  再ビルド時にバンドルを焼き込む土台。変更しない場合は現在の設定が維持されます。
+                </p>
+                <select class="np-input" name="base_rootfs_asset_id" id="docker-base-asset-select"></select>
+                <p class="np-hint" id="docker-base-asset-empty-hint" style="margin:.3rem 0 0" hidden>利用可能な docker-base がありません</p>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- ===== OS イメージ: Firecracker kernel / rootfs（変更任意・確認ダイアログあり） ===== -->
+        <div id="os-fields">
         <div class="np-field">
           <div class="np-toggle-header">
             <label class="np-label">
@@ -152,7 +195,7 @@
 
           <div id="kernel-default-panel">
             <select class="np-input" name="default_kernel_asset_id" id="kernel-default-select"></select>
-            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません</p>
+            <p class="np-hint" id="kernel-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません</p>
           </div>
 
           <div id="kernel-file-panel" class="hidden">
@@ -183,7 +226,7 @@
             <label class="np-label">
               rootfs 変更
               <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
-              <span id="rootfs-conversion-badge"></span>
+              <span id="rootfs-conversion-badge-os"></span>
             </label>
             <div class="np-toggle-group" id="rootfs-toggle">
               <button type="button" class="np-toggle-btn active" data-target="rootfs-default">Default</button>
@@ -194,7 +237,7 @@
 
           <div id="rootfs-default-panel">
             <select class="np-input" name="default_rootfs_asset_id" id="rootfs-default-select"></select>
-            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルト資産がありません</p>
+            <p class="np-hint" id="rootfs-default-empty-hint" style="margin:.3rem 0 0" hidden>利用可能なデフォルトがありません</p>
           </div>
 
           <div id="rootfs-file-panel" class="hidden">
@@ -219,43 +262,28 @@
             <p class="np-hint" style="margin:.3rem 0 0">指定したURLからサーバ側でダウンロードして使用します（tar の場合は自動的に ext4 へ変換されます）</p>
           </div>
         </div>
-        {% else %}
-        <!-- Docker image（変更任意・確認ダイアログあり） -->
-        <div class="np-field">
-          <label class="np-label">
-            Docker イメージ変更
-            <span class="np-optional">optional — 変更すると起動中VMが停止されます</span>
-          </label>
-          <div class="np-toggle-header" style="margin-bottom:.5rem">
-            <span></span>
-            <div class="np-toggle-group" id="img-toggle">
-              <button type="button" class="np-toggle-btn active" data-target="img-file">File</button>
-              <button type="button" class="np-toggle-btn"        data-target="img-link">Link</button>
-            </div>
-          </div>
-          <div id="img-file-panel">
-            <div class="np-upload-area" id="image-upload-area">
-              <input type="file" name="file" id="image-file-input"
-                     accept=".tar,.tar.gz,.tgz,.tar.zst,.oci" class="file-input-hidden" />
-              <div id="image-upload-placeholder" class="np-upload-ph">
-                <span class="np-upload-icon">🐳</span>
-                <span class="np-upload-text">クリックまたはドロップ（1ファイルまで）</span>
-                <span class="np-upload-sub">.tar / .tar.gz / .tgz / .oci</span>
-              </div>
-              <div id="image-upload-selected" class="np-upload-selected hidden">
-                <span class="np-upload-icon">✅</span>
-                <span id="image-filename" class="np-upload-text"></span>
-                <span id="image-filesize" class="np-upload-sub"></span>
+
+        <!-- 追加カーネル起動引数 -->
+        <input type="hidden" name="extra_boot_args" id="extra-boot-args-input" value="" />
+        <details class="np-details">
+          <summary>詳細設定</summary>
+          <div class="np-details-body">
+            <div class="np-field">
+              <label class="np-label">カーネルの防御機能 <span class="np-optional">optional</span></label>
+              <p class="np-hint" style="margin:0 0 .6rem">
+                権限昇格などカーネルの脆弱性を題材にする場合、挑戦者が取り組みやすくなるようここで防御機能を外せます。
+              </p>
+              <div class="np-chip-group" id="boot-args-checkboxes">
+                <label class="np-chip-checkbox"><input type="checkbox" value="nokaslr">アドレスのランダム化を外す（nokaslr）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmep">実行権限の保護を外す（nosmep）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="nosmap">メモリ保護を外す（nosmap）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="kpti=0">Meltdown対策を外す（kpti=0）</label>
+                <label class="np-chip-checkbox"><input type="checkbox" value="mitigations=off">全ての緩和策を外す（mitigations=off）</label>
               </div>
             </div>
           </div>
-          <div id="img-link-panel" class="hidden">
-            <input class="np-input" name="image_url" id="image-url-input"
-                   placeholder="例: docker.io/library/ubuntu:22.04" autocomplete="off" />
-            <p class="np-hint" style="margin:.3rem 0 0">対応: docker.io / ghcr.io / quay.io / gcr.io</p>
-          </div>
-        </div>
-        {% endif %}
+        </details>
+        </div><!-- /os-fields -->
 
         <!-- README 変更 -->
         <div class="np-field">
@@ -368,14 +396,34 @@ async function init() {
   document.getElementById('proj-difficulty').value  = imageData.difficulty || 'none';
   document.getElementById('proj-timeout').value     = String(imageData.timeout_minutes || 60);
   if (imageData.category) document.getElementById('proj-category').value = imageData.category;
-  if (isBridge) {
+  // 既存の追加カーネル起動引数をチェックボックスに反映
+  const _currentBootArgs = (imageData.extra_boot_args || '').split(/\s+/).filter(Boolean);
+  document.querySelectorAll('#boot-args-checkboxes input[type="checkbox"]').forEach(cb => {
+    cb.checked = _currentBootArgs.includes(cb.value);
+    cb.closest('.np-chip-checkbox').classList.toggle('active', cb.checked);
+  });
+  document.getElementById('extra-boot-args-input').value = _currentBootArgs.join(' ');
+  // 既存の起動引数があれば詳細設定を開いた状態にする
+  if (_currentBootArgs.length > 0) {
+    const details = document.getElementById('boot-args-checkboxes').closest('details');
+    if (details) details.open = true;
+  }
+  // 登録形式（OS イメージ / Compose バンドル）に応じてフィールドを出し分ける。
+  // new_project.html とは異なり作成後に形式を変更することはできない。
+  const isCompose = imageData.rootfs_kind === 'compose';
+  document.getElementById('os-fields').classList.toggle('hidden', isCompose);
+  document.getElementById('compose-fields').classList.toggle('hidden', !isCompose);
+  if (isCompose) {
+    renderRootfsConversionBadge(imageData, 'rootfs-conversion-badge');
+    await loadDockerBaseAssetOptions(imageData.base_rootfs_asset_id);
+  } else {
     await Promise.all([
       initAssetToggle('kernel', imageData.default_kernel_asset_id),
       initAssetToggle('rootfs', imageData.default_rootfs_asset_id),
     ]);
-    renderRootfsConversionBadge(imageData);
-    _maybeStartRootfsConversionPolling(imageData);
+    renderRootfsConversionBadge(imageData, 'rootfs-conversion-badge-os');
   }
+  _maybeStartRootfsConversionPolling(imageData);
 
   // visibility
   document.querySelectorAll('input[name="visibility"]').forEach(r => {
@@ -404,16 +452,32 @@ const _ROOTFS_CONVERSION_STATUS_LABELS = {
   failed: '変換失敗',
 };
 
-function renderRootfsConversionBadge(img) {
-  const el = document.getElementById('rootfs-conversion-badge');
+// Compose バンドルのビルド中フェーズ（services.bundle_build が更新する build_phase）の表示名
+const _BUILD_PHASE_LABELS = {
+  validating: '受付検査中', preparing: 'ディスク準備中', building: 'ビルドVMで構築中', inspecting: '結果を検証中',
+};
+
+function renderRootfsConversionBadge(img, badgeId) {
+  const el = document.getElementById(badgeId);
   const st = img.rootfs_conversion_status;
   el.innerHTML = '';
+  // Compose バンドル再ビルド失敗時は、修正の手がかりとして失敗理由を直接表示する
+  // （バッジの title は hover 操作が必要で見落とされやすいため）
+  const errEl = document.getElementById('bundle-error-detail');
+  if (errEl) errEl.classList.add('hidden');
   if (!st || st === 'ready') return;
   const badge = document.createElement('span');
   badge.className = `status-badge ${st}`;
-  badge.textContent = _ROOTFS_CONVERSION_STATUS_LABELS[st] || st;
+  const isComposeBadge = badgeId === 'rootfs-conversion-badge';
+  const phaseLabel = (isComposeBadge && st === 'converting' && img.build_phase)
+    ? `（${_BUILD_PHASE_LABELS[img.build_phase] || img.build_phase}）` : '';
+  badge.textContent = (_ROOTFS_CONVERSION_STATUS_LABELS[st] || st) + phaseLabel;
   if (img.rootfs_conversion_error) badge.title = img.rootfs_conversion_error;
   el.appendChild(badge);
+  if (st === 'failed' && img.rootfs_conversion_error && errEl) {
+    errEl.textContent = `ビルド失敗の理由: ${img.rootfs_conversion_error}`;
+    errEl.classList.remove('hidden');
+  }
 }
 
 let _rootfsConversionPollTimer = null;
@@ -428,7 +492,7 @@ function _maybeStartRootfsConversionPolling(img) {
       const fresh = images.find(i => i.id === imageData.id);
       if (!fresh) return;
       imageData = fresh;
-      renderRootfsConversionBadge(fresh);
+      renderRootfsConversionBadge(fresh, fresh.rootfs_kind === 'compose' ? 'rootfs-conversion-badge' : 'rootfs-conversion-badge-os');
       if (!['pending', 'converting'].includes(fresh.rootfs_conversion_status)) {
         clearInterval(_rootfsConversionPollTimer);
         _rootfsConversionPollTimer = null;
@@ -455,21 +519,16 @@ function setupToggle(groupId, panels) {
     });
   });
 }
-const isBridge = {{ 'true' if settings.VM_BACKEND == 'bridge' else 'false' }};
-if (!isBridge) {
-  setupToggle('img-toggle', [{ id:'img-file-panel', key:'img-file' },{ id:'img-link-panel', key:'img-link' }]);
-} else {
-  setupToggle('kernel-toggle', [
-    { id: 'kernel-default-panel', key: 'kernel-default' },
-    { id: 'kernel-file-panel',    key: 'kernel-file' },
-    { id: 'kernel-link-panel',    key: 'kernel-link' },
-  ]);
-  setupToggle('rootfs-toggle', [
-    { id: 'rootfs-default-panel', key: 'rootfs-default' },
-    { id: 'rootfs-file-panel',    key: 'rootfs-file' },
-    { id: 'rootfs-link-panel',    key: 'rootfs-link' },
-  ]);
-}
+setupToggle('kernel-toggle', [
+  { id: 'kernel-default-panel', key: 'kernel-default' },
+  { id: 'kernel-file-panel',    key: 'kernel-file' },
+  { id: 'kernel-link-panel',    key: 'kernel-link' },
+]);
+setupToggle('rootfs-toggle', [
+  { id: 'rootfs-default-panel', key: 'rootfs-default' },
+  { id: 'rootfs-file-panel',    key: 'rootfs-file' },
+  { id: 'rootfs-link-panel',    key: 'rootfs-link' },
+]);
 setupToggle('readme-toggle', [{ id:'readme-file-panel', key:'readme-file' },{ id:'readme-text-panel', key:'readme-text' }]);
 
 // ファイル選択
@@ -487,40 +546,71 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
     document.getElementById(fsId).textContent = unit === 'MB' ? (f.size/1024/1024).toFixed(1)+' MB' : (f.size/1024).toFixed(1)+' KB';
   }
 }
-if (isBridge) {
-  setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
-  setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
+setupUploadArea('kernel-upload-area','kernel-file-input','kernel-upload-placeholder','kernel-upload-selected','kernel-filename','kernel-filesize','MB');
+setupUploadArea('rootfs-upload-area','rootfs-file-input','rootfs-upload-placeholder','rootfs-upload-selected','rootfs-filename','rootfs-filesize','MB');
 
-  // デフォルト資産の選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
-  window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) {
-    const select = document.getElementById(`${prefix}-default-select`);
-    const hint = document.getElementById(`${prefix}-default-empty-hint`);
-    let assets = [];
-    try {
-      const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      assets = res.ok ? await res.json() : [];
-    } catch {}
-    select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
-    select.disabled = assets.length === 0;
-    hint.hidden = assets.length > 0;
+// デフォルトの選択肢を取得し、現在の選択状態に応じて初期表示モードを設定する
+window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) {
+  const select = document.getElementById(`${prefix}-default-select`);
+  const hint = document.getElementById(`${prefix}-default-empty-hint`);
+  let assets = [];
+  try {
+    const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    assets = res.ok ? await res.json() : [];
+  } catch {}
+  select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+  select.disabled = assets.length === 0;
+  hint.hidden = assets.length > 0;
 
-    const toggleGroupId = `${prefix}-toggle`;
-    let initialTarget;
-    if (currentAssetId) {
-      select.value = String(currentAssetId);
-      initialTarget = `${prefix}-default`;
-    } else {
-      initialTarget = `${prefix}-file`;
-    }
-    const targetBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target="${initialTarget}"]`);
-    if (targetBtn) targetBtn.click();
-  };
-} else {
-  setupUploadArea('image-upload-area','image-file-input','image-upload-placeholder','image-upload-selected','image-filename','image-filesize','MB');
+  const toggleGroupId = `${prefix}-toggle`;
+  let initialTarget;
+  if (currentAssetId) {
+    select.value = String(currentAssetId);
+    initialTarget = `${prefix}-default`;
+  } else {
+    initialTarget = `${prefix}-file`;
+  }
+  const targetBtn = document.querySelector(`#${toggleGroupId} .np-toggle-btn[data-target="${initialTarget}"]`);
+  if (targetBtn) targetBtn.click();
+};
+
+// docker-base の選択肢（Compose バンドルの詳細設定）。未選択（空文字）のままなら
+// サーバ側が現在の設定を維持する（new_project.htmlの「デフォルトを使う」とは異なり、
+// ここでの無指定は「変更しない」を意味する）。
+async function loadDockerBaseAssetOptions(currentAssetId) {
+  const select = document.getElementById('docker-base-asset-select');
+  const hint = document.getElementById('docker-base-asset-empty-hint');
+  let assets = [];
+  try {
+    const res = await fetch('/api/images/default-assets?kind=docker-base', {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    assets = res.ok ? await res.json() : [];
+  } catch {}
+  select.innerHTML = '<option value="">— 変更しない —</option>'
+    + assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
+  hint.hidden = assets.length > 0;
+  if (currentAssetId) select.value = String(currentAssetId);
 }
 setupUploadArea('readme-upload-area','readme-file-input','readme-upload-placeholder','readme-upload-selected','readme-filename','readme-filesize','KB');
+setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placeholder','bundle-upload-selected','bundle-filename','bundle-filesize','MB');
+
+// 追加カーネル起動引数: チップ型チェックボックスの選択を隠しフィールドへスペース区切りで集約する
+(function setupBootArgsCheckboxes() {
+  const container = document.getElementById('boot-args-checkboxes');
+  const hidden = document.getElementById('extra-boot-args-input');
+  function sync() {
+    const values = [];
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.closest('.np-chip-checkbox').classList.toggle('active', cb.checked);
+      if (cb.checked) values.push(cb.value);
+    });
+    hidden.value = values.join(' ');
+  }
+  container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));
+})();
 
 // コラボレーター
 async function loadCollaborators() {
@@ -646,41 +736,27 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
     return !!document.getElementById(`${prefix}-url-input`).value.trim();
   }
 
-  let needsConfirm = false;
-  let kernelChanged = false, rootfsChanged = false;
-  if (isBridge) {
+  const isCompose = imageData.rootfs_kind === 'compose';
+  let kernelChanged = false, rootfsChanged = false, bundleChanged = false;
+  if (isCompose) {
+    bundleChanged = !!document.getElementById('bundle-file-input').files[0];
+  } else {
     kernelChanged = isAssetChanged('kernel', imageData.default_kernel_asset_id);
     rootfsChanged = isAssetChanged('rootfs', imageData.default_rootfs_asset_id);
-    needsConfirm = kernelChanged || rootfsChanged;
-    if (needsConfirm) {
-      const ok = confirm(
-        '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
-        'このプロジェクトで起動中の環境は全て停止されます。\n' +
+  }
+  const needsConfirm = kernelChanged || rootfsChanged || bundleChanged;
+  if (needsConfirm) {
+    const msg = isCompose
+      ? '⚠ Compose バンドルを再アップロードします。\n\n' +
+        'このプロジェクトで起動中の環境は全て停止され、サーバで再ビルドされます。\n' +
         '他のユーザの作業が中断される可能性があります。\n\n' +
         '続行しますか？'
-      );
-      if (!ok) return;
-    }
-  } else {
-    const imgMode = document.querySelector('#img-toggle .np-toggle-btn.active').dataset.target;
-    // アクティブでない側をクリア
-    if (imgMode === 'img-link') document.getElementById('image-file-input').value = '';
-    else document.getElementById('image-url-input').value = '';
-
-    const hasNewFile = !!document.getElementById('image-file-input').files[0];
-    const hasNewUrl  = !!document.getElementById('image-url-input').value.trim();
-    needsConfirm = hasNewFile || hasNewUrl;
-
-    // Dockerイメージ変更時は確認ダイアログ
-    if (needsConfirm) {
-      const ok = confirm(
-        '⚠ Dockerイメージを変更します。\n\n' +
+      : '⚠ ゲストカーネル / rootfs を変更します。\n\n' +
         'このプロジェクトで起動中の環境は全て停止されます。\n' +
         '他のユーザの作業が中断される可能性があります。\n\n' +
-        '続行しますか？'
-      );
-      if (!ok) return;
-    }
+        '続行しますか？';
+    const ok = confirm(msg);
+    if (!ok) return;
   }
 
   const btn = document.getElementById('submit-btn');
@@ -693,25 +769,35 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
   pw.classList.remove('hidden'); pb.style.width = '0%';
 
   const fd = new FormData(e.target);
-  if (isBridge) {
-    // 変更があった資産のみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
-    function applyAssetIfChanged(prefix, changed, modeFieldName, selectFieldName, fileFieldName, fileInputId, urlFieldName) {
-      if (!changed) {
-        fd.delete(modeFieldName);
-        fd.delete(selectFieldName);
-        fd.delete(fileFieldName);
-        fd.delete(urlFieldName);
-        return;
-      }
-      const mode = document.querySelector(`#${prefix}-toggle .np-toggle-btn.active`).dataset.target.split('-')[1];
-      fd.set(modeFieldName, mode);
-      if (mode !== 'default') fd.delete(selectFieldName);
-      if (mode !== 'file') {
-        fd.delete(fileFieldName);
-        document.getElementById(fileInputId).value = '';
-      }
-      if (mode !== 'link') fd.delete(urlFieldName);
+  // 変更があったのみモード・値を送信する（無変更時は何も送らずサーバ側の現状維持に任せる）
+  function applyAssetIfChanged(prefix, changed, modeFieldName, selectFieldName, fileFieldName, fileInputId, urlFieldName) {
+    if (!changed) {
+      fd.delete(modeFieldName);
+      fd.delete(selectFieldName);
+      fd.delete(fileFieldName);
+      fd.delete(urlFieldName);
+      return;
     }
+    const mode = document.querySelector(`#${prefix}-toggle .np-toggle-btn.active`).dataset.target.split('-')[1];
+    fd.set(modeFieldName, mode);
+    if (mode !== 'default') fd.delete(selectFieldName);
+    if (mode !== 'file') {
+      fd.delete(fileFieldName);
+      document.getElementById(fileInputId).value = '';
+    }
+    if (mode !== 'link') fd.delete(urlFieldName);
+  }
+  if (isCompose) {
+    // OS イメージ用フィールドは送らない。bundle が未変更なら送らずサーバ側の現状維持に任せる。
+    ['kernel','rootfs','kernel_mode','rootfs_mode','kernel_url','rootfs_url',
+     'default_kernel_asset_id','default_rootfs_asset_id'].forEach(k => fd.delete(k));
+    if (!bundleChanged) fd.delete('bundle');
+    // docker-base 資産未選択（— 変更しない —）ならサーバ側の現状維持に任せるため送らない
+    if (!fd.get('base_rootfs_asset_id')) fd.delete('base_rootfs_asset_id');
+  } else {
+    // Compose バンドル用フィールドは送らない
+    fd.delete('bundle');
+    fd.delete('base_rootfs_asset_id');
     applyAssetIfChanged('kernel', kernelChanged, 'kernel_mode', 'default_kernel_asset_id', 'kernel', 'kernel-file-input', 'kernel_url');
     applyAssetIfChanged('rootfs', rootfsChanged, 'rootfs_mode', 'default_rootfs_asset_id', 'rootfs', 'rootfs-file-input', 'rootfs_url');
     if (!kernelChanged) fd.delete('kernel');
@@ -727,9 +813,7 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
         const pct = Math.round(ev.loaded / ev.total * 100);
         pb.style.width = pct + '%';
         if (pct >= 100) {
-          pl.textContent = isBridge
-            ? 'アップロードされたファイルを保存しています...'
-            : 'アップロードされたファイルを元にイメージを構築しています...';
+          pl.textContent = 'アップロードされたファイルを保存しています...';
         } else {
           pl.textContent = `更新中... ${pct}%`;
         }

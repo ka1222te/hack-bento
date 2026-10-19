@@ -13,7 +13,12 @@ from services.network import create_tap, delete_tap, _ip_pool, _get_bridge_subne
 logger = logging.getLogger(__name__)
 
 FC_SOCKET_DIR = "/tmp/fc-sockets"                       # VMごとのUnix socketディレクトリ
-FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs
+FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs（tmpfs運用を想定）
+# FC_ROOTFS_DIR が tmpfs の場合、サイズ上限（docker-compose.yml の tmpfs: size=）を
+# 運用者が変更すると容量不足になり得る。tmpfs の空きが足りない時は、このディレクトリ
+# （通常ディスク上・容量はホストディスク次第）へ自動的にフォールバックする。
+# tmpfs を使わない環境（FC_ROOTFS_DIR が通常ディスクの場合）ではこちらは使われない。
+FC_ROOTFS_DIR_FALLBACK = "/data/images/vm/runtime-rootfs-disk"
 
 # 実行中 Firecracker プロセスの vm_id → PID マップ（同一プロセス内でのみ有効）。
 # stop_vm 時に確実にプロセスを終了させるために保持する。
@@ -60,8 +65,12 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
     path = _vm_cgroup_path(vm_id)
     try:
         os.makedirs(path, exist_ok=True)
+        # memory.max はゲストメモリ + Firecracker 自身のオーバーヘッド分の余裕を持たせる。
+        # ゲストメモリちょうどに設定すると、ゲストが使い切った際に VMM(Firecracker)側の
+        # アロケーションが cgroup 上限に当たり、VM ごと OOM kill される恐れがあるため。
+        _MEM_OVERHEAD_MB = 128
         with open(os.path.join(path, "memory.max"), "w") as f:
-            f.write(str(memory_mb * 1024 * 1024))
+            f.write(str((memory_mb + _MEM_OVERHEAD_MB) * 1024 * 1024))
         with open(os.path.join(path, "pids.max"), "w") as f:
             f.write(str(settings.VM_PIDS_LIMIT))
         # cpu.max: "<quota> <period>" 。1コアあたり period=100000us とし、
@@ -141,30 +150,7 @@ class VMStartResult:
         self.ip = ip
 
 
-async def docker_load(archive_path: str) -> str:
-    cmd = ["docker", "load", "--input", archive_path]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-        if proc.returncode != 0:
-            logger.error(f"docker load failed: {stderr.decode().strip()}")
-            raise RuntimeError("docker load に失敗しました")
-        for line in stdout.decode().splitlines():
-            if line.startswith("Loaded image:"):
-                return line.split("Loaded image:", 1)[1].strip()
-            if line.startswith("Loaded image ID:"):
-                return line.split("Loaded image ID:", 1)[1].strip()
-        logger.error(f"docker load: unexpected output: {stdout.decode()!r}")
-        raise RuntimeError("docker load の出力からイメージ名を取得できませんでした")
-    except FileNotFoundError:
-        raise RuntimeError("docker コマンドが見つかりません。")
-
-
-# ---- Docker + macvlan バックエンド ----
+# ---- Firecracker (bridge) バックエンド ----
 
 _FALLBACK_GUEST_NETMASK = "255.255.240.0"  # /20 (ホストブリッジの subnet が取得できない場合のフォールバック。元のハードコード値を踏襲)
 
@@ -203,59 +189,14 @@ def _validate_ip(ip: str) -> None:
         raise ValueError(f"IP address not in pool: {ip}")
 
 
-async def _start_docker(oci_ref: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
-    _validate_ip(ip)
-    vm_id = str(uuid.uuid4())
-    logger.info(f"docker run: oci_ref={repr(oci_ref)} ip={ip}")
-
-    cmd = [
-        "docker", "run", "-d",
-        "--name", vm_id,
-        "--network", settings.MACVLAN_NETWORK,
-        "--ip", ip,
-        "--cpus", str(cpu),
-        "--memory", f"{memory_mb}m",
-        "--memory-swap", f"{memory_mb}m",
-        "--storage-opt", f"size={settings.VM_DISK_LIMIT_GB}g",
-        "--pids-limit", str(settings.VM_PIDS_LIMIT),
-        "--ulimit", "nofile=1024:1024",
-        "--ulimit", f"nproc={settings.VM_PIDS_LIMIT}:{settings.VM_PIDS_LIMIT}",
-        "--restart", "no",
-        oci_ref,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode != 0:
-        logger.error(f"docker run failed: {stderr.decode().strip()}")
-        raise RuntimeError("コンテナの起動に失敗しました")
-
-    container_id = stdout.decode().strip()
-    logger.info(f"Container started: {container_id[:12]} image={oci_ref} ip={ip}")
-    return VMStartResult(vm_id=container_id, ip=ip)
-
-
-async def _stop_docker(vm_id: str) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "rm", "-f", vm_id,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await asyncio.wait_for(proc.communicate(), timeout=30)
-    logger.info(f"Container removed: {vm_id[:12]}")
-
-
 # ---- Firecracker バックエンド（KVM必須）----
 
 def _fc_socket_path(vm_id: str) -> str:
     return os.path.join(FC_SOCKET_DIR, f"{vm_id}.sock")
 
 
-def _fc_rootfs_runtime_path(vm_id: str) -> str:
-    return os.path.join(FC_ROOTFS_DIR, f"{vm_id}.ext4")
+def _fc_rootfs_runtime_path(vm_id: str, base_dir: str = FC_ROOTFS_DIR) -> str:
+    return os.path.join(base_dir, f"{vm_id}.ext4")
 
 
 _FC_API_TIMEOUT = 10.0
@@ -403,6 +344,53 @@ def _write_resolv_conf(rootfs_path: str) -> None:
                 pass
 
 
+def _free_bytes(path: str) -> int | None:
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize
+
+
+def _select_rootfs_copy_dir(rootfs_path: str) -> str:
+    """rootfs の writable コピー先ディレクトリを選ぶ。
+
+    FC_ROOTFS_DIR（tmpfs運用を想定）の空きがコピー元サイズ+マージンを下回る場合、
+    docker-compose.yml の tmpfs size 設定を運用者が小さくした等の理由で容量不足に
+    なり得るため、通常ディスク上の FC_ROOTFS_DIR_FALLBACK へ自動的にフォールバック
+    する（起動そのものを容量不足だけで失敗させないため）。フォールバック先も
+    不足している場合はそこで RuntimeError を上げ、ディスクフルによるホスト全体への
+    波及を未然に防ぐ。
+    """
+    try:
+        need = os.path.getsize(rootfs_path)
+    except OSError:
+        return FC_ROOTFS_DIR  # サイズ取得不可なら確認をスキップ（起動は試みる）
+
+    margin = 512 * 1024 * 1024  # 512MiB の余裕
+    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
+    free = _free_bytes(FC_ROOTFS_DIR)
+    if free is None or free >= need + margin:
+        return FC_ROOTFS_DIR
+
+    logger.warning(
+        f"{FC_ROOTFS_DIR} の空き容量不足（必要 約{need // (1024*1024)}MiB、"
+        f"空き {free // (1024*1024)}MiB）のため {FC_ROOTFS_DIR_FALLBACK} にフォールバックします"
+    )
+    os.makedirs(FC_ROOTFS_DIR_FALLBACK, exist_ok=True)
+    fallback_free = _free_bytes(FC_ROOTFS_DIR_FALLBACK)
+    if fallback_free is None or fallback_free >= need + margin:
+        return FC_ROOTFS_DIR_FALLBACK
+
+    need_mb = need // (1024 * 1024)
+    fallback_free_mb = fallback_free // (1024 * 1024)
+    raise RuntimeError(
+        f"ホストのディスク空き容量が不足しています（必要 約{need_mb}MiB+余裕、"
+        f"フォールバック先の空き {fallback_free_mb}MiB）。"
+        " 停止済み環境の整理や不要な rootfs の削除を行ってください。"
+    )
+
+
 def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     """VM 専用の writable rootfs を作る。
 
@@ -417,8 +405,9 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     生成するため問題なく動作する。カスタム rootfs の場合は DNS 設定
     なしで起動する）。
     """
-    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
-    runtime_path = _fc_rootfs_runtime_path(vm_id)
+    copy_dir = _select_rootfs_copy_dir(rootfs_path)
+    os.makedirs(copy_dir, exist_ok=True)
+    runtime_path = _fc_rootfs_runtime_path(vm_id, copy_dir)
     tmp_path = runtime_path + ".tmp"
     try:
         if os.path.exists(tmp_path):
@@ -452,16 +441,42 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
 
 def _cleanup_writable_rootfs(vm_id: str) -> None:
     path = _fc_rootfs_paths.pop(vm_id, None)
-    if path is None:
-        path = _fc_rootfs_runtime_path(vm_id)
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    # オーケストレータ再起動後（_fc_rootfs_paths が空）の孤児整理等では、どちらの
+    # ディレクトリにコピーされたか記録が無いため、両方を確認して存在する方を消す。
+    candidates = [path] if path is not None else [
+        _fc_rootfs_runtime_path(vm_id, FC_ROOTFS_DIR),
+        _fc_rootfs_runtime_path(vm_id, FC_ROOTFS_DIR_FALLBACK),
+    ]
+    for p in candidates:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
-async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int) -> VMStartResult:
+_MANAGED_BOOT_ARG_PREFIXES = ("ip=", "init=", "console=", "root=", "reboot=", "panic=", "rw", "ro")
+
+
+def _sanitize_extra_boot_args(extra: str | None) -> str:
+    """プロジェクト指定の追加カーネル引数から、HackBento が管理する引数を除去する。
+
+    ip=/init=/console=/root=/reboot=/panic=/rw/ro を上書きさせない（ネットワーク・起動の
+    整合性を壊さないため）。それ以外（nokaslr, nosmep, nosmap, kpti=0 等）は許可する。
+    """
+    if not extra:
+        return ""
+    tokens = []
+    for tok in extra.split():
+        if any(tok == p or tok.startswith(p) for p in _MANAGED_BOOT_ARG_PREFIXES):
+            logger.warning(f"管理対象のカーネル引数を無視しました: {tok}")
+            continue
+        tokens.append(tok)
+    return " ".join(tokens)
+
+
+async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int,
+                             extra_boot_args: str | None = None) -> VMStartResult:
     """
     Firecracker microVM を起動する。
 
@@ -483,6 +498,9 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     if not os.path.exists("/dev/kvm"):
         raise RuntimeError("/dev/kvm が存在しません。KVM が有効か確認してください。")
 
+    # rootfs の writable コピー先の空き容量確認（tmpfs不足時は通常ディスクへ
+    # フォールバック）は _prepare_writable_rootfs（_select_rootfs_copy_dir）が行う。
+
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
     os.makedirs(FC_SOCKET_DIR, mode=0o700, exist_ok=True)
@@ -496,7 +514,8 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
 
     try:
         # TAP インターフェースを作成してゲストのネットワークに使用
-        tap = await create_tap(vm_id)
+        # （ip を渡して、割り当て IP/MAC 以外を名乗るフレームをホスト側で遮断する）
+        tap = await create_tap(vm_id, ip)
 
         # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
         _create_vm_cgroup(vm_id, cpu, memory_mb)
@@ -520,13 +539,17 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         # ip= フォーマット: <client>:<server>:<gw>:<mask>::<iface>:<autoconf>
         gw = settings.FC_GUEST_GATEWAY
         netmask = await _guest_netmask()
+        _extra = _sanitize_extra_boot_args(extra_boot_args)
+        boot_args = (
+            f"console=ttyS0 reboot=k panic=1 pci=off "
+            f"ip={ip}::{gw}:{netmask}::eth0:off "
+            "rw"
+        )
+        if _extra:
+            boot_args = f"{boot_args} {_extra}"
         await _fc_api(socket_path, "PUT", "/boot-source", {
             "kernel_image_path": kernel_path,
-            "boot_args": (
-                f"console=ttyS0 reboot=k panic=1 pci=off "
-                f"ip={ip}::{gw}:{netmask}::eth0:off "
-                "rw"
-            ),
+            "boot_args": boot_args,
         })
 
         # rootfs（VM ごとの writable copy を使用）
@@ -628,14 +651,45 @@ async def _stop_firecracker(vm_id: str) -> None:
     logger.info(f"Firecracker VM stopped: vm_id={vm_id[:8]}")
 
 
+def _pid_is_zombie(pid: int) -> bool:
+    """PID が zombie（defunct・終了済みだが未 reap）状態かを /proc から判定する。"""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read()
+        # "<pid> (comm) <state> ..." の state 文字。comm に空白/括弧があり得るため
+        # 最後の ')' 以降を見る。
+        rparen = data.rfind(b")")
+        if rparen == -1:
+            return False
+        state = data[rparen + 2:rparen + 3]
+        return state == b"Z"
+    except OSError:
+        return False
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    # プロセステーブルに存在しても zombie（終了済み）は「生きていない」とみなす
+    return not _pid_is_zombie(pid)
+
+
+def vm_is_alive(vm_id: str) -> bool:
+    """vm_id の Firecracker プロセスが実際に生きているか判定する。
+
+    メモリ上の _fc_pids を優先し、見つからなければ /proc 走査（_find_orphan_fc_pid）で
+    フォールバックする。watchdog が「DB 上 running なのに VM が死んでいる」状態
+    （カーネルパニック・ゲストの自発 poweroff 等）を検知するために使う。
+    """
+    pid = _fc_pids.get(vm_id)
+    if pid is not None:
+        return _pid_alive(pid)
+    # メモリ上に記録が無い場合でも、/proc 上に該当プロセスがあれば生存とみなす
+    return _find_orphan_fc_pid(vm_id) is not None
 
 
 async def _terminate_pid(pid: int | None, vm_id: str, grace_seconds: float = 3.0) -> None:
@@ -691,80 +745,27 @@ def _find_orphan_fc_pid(vm_id: str) -> int | None:
     return None
 
 
-async def _get_macvlan_container_ids() -> set[str]:
-    """hackbento-vm（macvlan）ネットワークに接続中のコンテナIDを取得する。"""
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "ps", "-aq", "--filter", f"network={settings.MACVLAN_NETWORK}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return set()
-    if proc.returncode != 0:
-        return set()
-    return {line.strip() for line in stdout.decode().splitlines() if line.strip()}
-
-
-async def _cleanup_orphaned_docker_vms() -> None:
-    """オーケストレータ起動時に、前回プロセスが残した Docker コンテナ・DBレコードを後始末する。
-
-    双方向で突き合わせる:
-      1. DB が starting/running のままだが対応コンテナが実在しない → 異常終了とみなし stopped にする
-      2. macvlan ネットワーク上にコンテナは実在するが DB に対応する有効な Environment が無い
-         → IP・リソースを占有し続ける孤児として強制削除する（docker rm -f）
-    """
-    from database import AsyncSessionLocal
-    from models import Environment, EnvStatus
-    from sqlalchemy import select
-
-    container_ids = await _get_macvlan_container_ids()
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            # stopping は前回プロセスが停止処理の途中でクラッシュした場合に残り得るため、
-            # starting/running と同様に後始末の対象に含める（孤児化防止）。
-            select(Environment).where(Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]))
-        )
-        stale = result.scalars().all()
-
-        tracked_ids: set[str] = set()
-        for env in stale:
-            vm_id = env.vm_id
-            if vm_id and vm_id in container_ids:
-                tracked_ids.add(vm_id)
-                continue
-            # DB 上は起動中だが対応するコンテナが存在しない（異常終了）
-            logger.warning(f"対応コンテナが見つからない孤立環境を後始末します: env_id={env.id} vm_id={(vm_id or '')[:12]}")
-            env.status = EnvStatus.stopped
-        if stale:
-            await db.commit()
-
-    # DB に追跡されていないが macvlan 上に残っているコンテナを削除する
-    # （IPプールやリソース上限を圧迫するゾンビコンテナのため）
-    orphan_ids = container_ids - tracked_ids
-    for cid in orphan_ids:
-        logger.warning(f"DBに記録の無い孤立コンテナを削除します: container={cid[:12]}")
-        try:
-            await _stop_docker(cid)
-        except Exception as e:
-            logger.error(f"孤立コンテナの削除に失敗しました: container={cid[:12]}: {e}")
-
-
 async def cleanup_orphaned_vms() -> None:
-    """オーケストレータ起動時に、前回プロセスが残した VM・コンテナ・TAP・DBレコードを後始末する。
+    """オーケストレータ起動時に、前回プロセスが残した VM・TAP・DBレコードを後始末する。
 
     プロセス再起動でメモリ上の状態（_fc_pids など）は失われるため、
-    DB 上 starting/running のまま残っている Environment と実際の VM/コンテナの
+    DB 上 starting/running のまま残っている Environment と実際の VM の
     状態を突き合わせ、不整合を解消する。
     """
-    if settings.VM_BACKEND != "bridge":
-        await _cleanup_orphaned_docker_vms()
-        return
-
     _cleanup_stale_vm_cgroups()
+
+    # 起動直後は稼働中の VM は存在しないため、残っている anti-spoof テーブル
+    # （bridge hb_*）は全て前回の残骸とみなして掃除する。
+    from services.network import cleanup_orphaned_antispoof
+    await cleanup_orphaned_antispoof(active_vm_ids=set())
+
+    # 前回のビルド VM が残した作業ディレクトリ（rootfs コピー等）を掃除する。
+    # ビルド用 cgroup（build-*）は _cleanup_stale_vm_cgroups が空 leaf として回収する。
+    try:
+        from services.image_build import cleanup_stale_build_work
+        cleanup_stale_build_work()
+    except Exception as e:
+        logger.warning(f"ビルド作業ディレクトリの掃除に失敗しました（続行）: {e}")
 
     from database import AsyncSessionLocal
     from models import Environment, EnvStatus
@@ -822,18 +823,13 @@ def _ip_to_mac(ip: str) -> str:
 
 async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024) -> VMStartResult:
     """
-    Image レコードの backend に応じて必要なデータ（oci_ref または kernel/rootfs）を
-    取り出し、ホストの VM_BACKEND に対応する実行パスへ渡す。
-
-    backend と VM_BACKEND は本来一致している前提（ホストは一方のモードのみで運用）。
+    Image レコードのゲストカーネル・rootfs を Firecracker microVM として起動する。
     """
-    if settings.VM_BACKEND == "bridge":
-        return await _start_firecracker(image.kernel_path, image.rootfs_path, ip, cpu, memory_mb)
-    return await _start_docker(image.oci_ref, ip, cpu, memory_mb)
+    return await _start_firecracker(
+        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb,
+        extra_boot_args=getattr(image, "extra_boot_args", None),
+    )
 
 
 async def stop_vm(vm_id: str) -> None:
-    if settings.VM_BACKEND == "bridge":
-        await _stop_firecracker(vm_id)
-    else:
-        await _stop_docker(vm_id)
+    await _stop_firecracker(vm_id)
