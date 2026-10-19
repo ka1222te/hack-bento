@@ -849,7 +849,15 @@ async def update_image(
         # Compose バンドルの再アップロード。POST /upload の compose 経路と同じ受付検査・
         # 保存パターンを踏襲し、新しいバンドルを pending にして bundle_build ワーカーに委ねる。
         image_max_bytes = settings.UPLOAD_IMAGE_MAX_MB * 1024 * 1024
-        new_base_asset_id = await _resolve_docker_base_asset(base_rootfs_asset_id, db)
+        # 編集画面での docker-base 未選択は「サーバ既定を使う」ではなく「現在の設定を維持する」
+        # 意味（CLAUDE.md参照）。_resolve_docker_base_asset は None を「サーバ既定」と解釈するため、
+        # 編集時は None の場合にのみ現在値を使い、明示指定時だけ検証・差し替えを行う。
+        if base_rootfs_asset_id is not None:
+            new_base_asset_id = await _resolve_docker_base_asset(base_rootfs_asset_id, db)
+        else:
+            new_base_asset_id = image.base_rootfs_asset_id
+            if new_base_asset_id is None:
+                new_base_asset_id = await _resolve_docker_base_asset(None, db)
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         new_bundle_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}.bundle.tar")
         try:
