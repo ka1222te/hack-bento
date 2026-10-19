@@ -161,9 +161,11 @@ def _build_scratch_from_bundle(tar_path: str, project_name: str, scratch_path: s
         if os.path.exists(tmp_img):
             os.remove(tmp_img)
         import subprocess
-        subprocess.run(["dd", "if=/dev/zero", f"of={tmp_img}", "bs=1M", f"count={mb}"],
-                       check=True, capture_output=True)
-        subprocess.run(["mkfs.ext4", "-F", "-O", "^metadata_csum", "-d", root, tmp_img],
+        # dd if=/dev/zero でのゼロ埋めは不要: mkfs.ext4 に device + fs-size を渡すと
+        # 対象ファイルが無ければ自動でスパースファイルとして確保する。
+        # 事前ゼロ埋め（実データ分のディスク書き込み）をスキップすることで、
+        # このステップのディスクI/O量をほぼ半分に減らせる。
+        subprocess.run(["mkfs.ext4", "-F", "-O", "^metadata_csum", "-d", root, tmp_img, f"{mb}M"],
                        check=True, capture_output=True)
         os.replace(tmp_img, scratch_path)
     finally:

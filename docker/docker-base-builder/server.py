@@ -69,8 +69,8 @@ class ExportTarRequest(BaseModel):
     build_timeout_s: int = _BUILD_TIMEOUT_S
 
 
-# docker-base の /sbin/init。orchestrator/services/docker_base_assets.py の
-# _DOCKER_BASE_INIT_TEMPLATE と同一内容を保つこと（責務分離のため重複定義している）。
+# docker-base の /sbin/init。docker_base_assets.py からの委譲によりこのファイルが
+# 唯一の実装場所（orchestrator側には重複定義を持たない）。
 _DOCKER_BASE_INIT_TEMPLATE = r"""#!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 mount -t proc proc /proc 2>/dev/null || true
@@ -87,10 +87,17 @@ is_build=0
 if grep -q 'hb_build' /proc/cmdline 2>/dev/null; then is_build=1; fi
 
 start_dockerd() {
+    # ゲストカーネルに iptables の raw テーブルモジュール（ip_tables/iptable_raw）が
+    # 無く、Docker 29以降がコンテナのネットワーク作成時に有効化する「DIRECT ACCESS
+    # FILTERING」（iptables -t raw での直接アクセス遮断）が失敗し、コンテナ自体が
+    # 起動できなくなる（dockerd起動自体は成功するが個々のコンテナ作成で
+    # "Unable to enable DIRECT ACCESS FILTERING" エラーになる）。
+    # DOCKER_INSECURE_NO_IPTABLES_RAW=1 で raw テーブルへのルール作成だけを無効化
+    # する（公開ポート機能=filter/natテーブルは維持されるため -p は通常通り動く）。
     if [ "$1" = "build" ]; then
-        dockerd --iptables=false --ip6tables=false --bridge=none --userland-proxy=false >/var/log/dockerd.log 2>&1 &
+        DOCKER_INSECURE_NO_IPTABLES_RAW=1 dockerd --iptables=false --ip6tables=false --bridge=none --userland-proxy=false >/var/log/dockerd.log 2>&1 &
     else
-        dockerd --iptables=true --userland-proxy=false >/var/log/dockerd.log 2>&1 &
+        DOCKER_INSECURE_NO_IPTABLES_RAW=1 dockerd --iptables=true --userland-proxy=false >/var/log/dockerd.log 2>&1 &
     fi
     i=0
     while [ $i -lt 60 ]; do
@@ -137,6 +144,18 @@ if [ "$is_build" = "1" ]; then
     cp /var/log/dockerd.log /mnt/scratch/dockerd.log 2>/dev/null || true
     sync
     umount /mnt/scratch 2>/dev/null || true
+    # buildモードのdockerdは正常シャットダウンシーケンスを経ずに電源断されるため、
+    # /var/run/docker.pid が残ったままディスクに焼き込まれる。本番起動（runモード）
+    # で dockerd がこのPIDファイルを見て「まだ起動している」と誤認識し起動拒否する
+    # ("process with PID xxx is still running") ため、先にdockerdを止めて
+    # PIDファイルを確実に消してから電源断する。
+    kill "$(cat /var/run/docker.pid 2>/dev/null)" 2>/dev/null || true
+    for i in 1 2 3 4 5; do
+        [ -f /var/run/docker.pid ] || break
+        sleep 1
+    done
+    rm -f /var/run/docker.pid
+    sync
     echo o > /proc/sysrq-trigger
 else
     printf '__RESOLV_CONF__' > /etc/resolv.conf
@@ -213,8 +232,9 @@ async def _run_convert_to_ext4(tar_path: str, dest_path: str, size_mb: int) -> N
         tmp_img = dest_path + ".tmp"
         if os.path.exists(tmp_img):
             os.remove(tmp_img)
-        await _run(["dd", "if=/dev/zero", f"of={tmp_img}", "bs=1M", f"count={size_mb}"], timeout=300)
-        await _run(["mkfs.ext4", "-F", "-O", "^metadata_csum", "-d", root, tmp_img], timeout=600)
+        # dd if=/dev/zero での事前ゼロ埋めは不要: mkfs.ext4 に device + fs-size を渡せば
+        # ファイルが無ければ自動でスパースファイルとして確保される（ディスクI/O削減）。
+        await _run(["mkfs.ext4", "-F", "-O", "^metadata_csum", "-d", root, tmp_img, f"{size_mb}M"], timeout=600)
         os.replace(tmp_img, dest_path)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

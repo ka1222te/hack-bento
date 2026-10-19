@@ -268,12 +268,12 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
         def _prepare_disks() -> None:
             # input: tar の生バイト列をそのままコピーしたファイル（ブロックデバイスとして渡す）
             shutil.copy2(tar_path, input_disk)
-            # scratch: 空の ext4（ここに tar を展開した結果がそのまま最終 rootfs になる）
-            run_sync(["dd", "if=/dev/zero", f"of={scratch_disk}", "bs=1M", f"count={image_mb}"])
-            run_sync(["mkfs.ext4", "-F", "-O", "^metadata_csum", scratch_disk])
+            # scratch: 空の ext4（ここに tar を展開した結果がそのまま最終 rootfs になる）。
+            # dd if=/dev/zero での事前ゼロ埋めは不要: mkfs.ext4 に device + fs-size を渡せば
+            # ファイルが無ければ自動でスパースファイルとして確保される（ディスクI/O削減）。
+            run_sync(["mkfs.ext4", "-F", "-O", "^metadata_csum", scratch_disk, f"{image_mb}M"])
             # status: 結果報告用の小さな ext4
-            run_sync(["dd", "if=/dev/zero", f"of={status_disk}", "bs=1M", "count=4"])
-            run_sync(["mkfs.ext4", "-F", "-O", "^metadata_csum", status_disk])
+            run_sync(["mkfs.ext4", "-F", "-O", "^metadata_csum", status_disk, "4M"])
 
         await loop.run_in_executor(None, _prepare_disks)
 
@@ -352,17 +352,18 @@ async def convert_tar_to_ext4_host_unsafe(tar_path: str, dest_path: str, size_mb
         tmp_image = dest_path + ".tmp"
         if os.path.exists(tmp_image):
             os.remove(tmp_image)
-        await run(["dd", "if=/dev/zero", f"of={tmp_image}", "bs=1M", f"count={image_mb}"])
         # metadata_csum を無効化してから -d で populate する。
         # libext2fs の populate 経路は大きい/深いツリー（docker export された Debian 等）で
         # "Directory block checksum does not match" を起こすことがあり、
         # ディレクトリブロックのチェックサム機能を切ることで回避する。
         # （loop マウントでの展開は CAP_SYS_ADMIN が必要で、このコンテナでは使えない）
+        # dd if=/dev/zero での事前ゼロ埋めは不要: mkfs.ext4 に device + fs-size を渡せば
+        # ファイルが無ければ自動でスパースファイルとして確保される（ディスクI/O削減）。
         await run([
             "mkfs.ext4", "-F",
             "-O", "^metadata_csum",
             "-d", rootfs_root,
-            tmp_image,
+            tmp_image, f"{image_mb}M",
         ])
         os.replace(tmp_image, dest_path)
     finally:
