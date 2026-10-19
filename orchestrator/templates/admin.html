@@ -398,7 +398,7 @@ document.addEventListener('click', e => {
   } else if (btn.classList.contains('js-force-stop')) {
     forceStop(Number(btn.dataset.eid));
   } else if (btn.classList.contains('js-delete-vm-asset')) {
-    deleteVmAsset(btn.dataset.kind, Number(btn.dataset.aid));
+    deleteVmAsset(btn.dataset.kind, Number(btn.dataset.aid), btn);
   }
 });
 
@@ -478,7 +478,10 @@ function _renderRootfsLikeTable(tbodyId, assets, deleteKind) {
         <td>${escHtml(a.label)}</td>
         <td>${badge}</td>
         <td>${fmt(a.created_at)}</td>
-        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${deleteKind}" data-aid="${a.id}">削除</button></td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="${deleteKind}" data-aid="${a.id}">
+          <span class="btn-spinner hidden"></span>
+          <span class="btn-text">削除</span>
+        </button></td>
       </tr>
     `;
   }).join('') || '<tr><td colspan="5" class="empty-cell">登録されている資産がありません</td></tr>';
@@ -494,7 +497,10 @@ async function loadVmAssets() {
         <td>${a.id}</td>
         <td>${escHtml(a.label)}</td>
         <td>${fmt(a.created_at)}</td>
-        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="kernels" data-aid="${a.id}">削除</button></td>
+        <td><button class="btn btn-xs btn-danger js-delete-vm-asset" data-kind="kernels" data-aid="${a.id}">
+          <span class="btn-spinner hidden"></span>
+          <span class="btn-text">削除</span>
+        </button></td>
       </tr>
     `).join('') || '<tr><td colspan="4" class="empty-cell">登録されている資産がありません</td></tr>';
   }
@@ -514,11 +520,37 @@ async function loadVmAssets() {
   _maybeToggleVmAssetPolling(pollTargets);
 }
 
-async function deleteVmAsset(kind, assetId) {
+// ボタンにスピナー表示をセット/解除する（HTML構造は <span class="btn-spinner">+<span class="btn-text"> 前提）。
+function _setBtnBusy(btn, busyLabel) {
+  if (!btn) return;
+  btn.disabled = true;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.remove('hidden');
+  if (text) text.textContent = busyLabel;
+  else btn.textContent = busyLabel;
+}
+function _clearBtnBusy(btn, idleLabel) {
+  if (!btn) return;
+  btn.disabled = false;
+  const spinner = btn.querySelector('.btn-spinner');
+  const text = btn.querySelector('.btn-text');
+  if (spinner) spinner.classList.add('hidden');
+  if (text) text.textContent = idleLabel;
+  else btn.textContent = idleLabel;
+}
+
+async function deleteVmAsset(kind, assetId, btn) {
   if (!confirm('この資産を削除しますか？')) return;
-  const res = await API.del(`/api/admin/default-assets/${kind}/${assetId}`);
-  if (res.ok) { showToast('削除しました', 'success'); loadVmAssets(); }
-  else { const d = await res.json(); showToast(d.detail || 'エラーが発生しました', 'error'); }
+  _setBtnBusy(btn, '削除中...');
+  try {
+    const res = await API.del(`/api/admin/default-assets/${kind}/${assetId}`);
+    if (res.ok) { showToast('削除しました', 'success'); loadVmAssets(); return; }
+    const d = await res.json(); showToast(d.detail || 'エラーが発生しました', 'error');
+  } catch {
+    showToast('通信エラーが発生しました', 'error');
+  }
+  _clearBtnBusy(btn, '削除');
 }
 
 // ---- docker-base ビルド ----
