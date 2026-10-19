@@ -163,7 +163,10 @@
         </p>
       </div>
       <div class="modal-actions">
-        <button type="submit" class="btn btn-primary">ビルドを開始</button>
+        <button type="submit" class="btn btn-primary" id="btn-submit-docker-base">
+          <span class="btn-spinner hidden"></span>
+          <span class="btn-text">ビルドを開始</span>
+        </button>
         <button type="button" class="btn btn-ghost js-close-modal" data-modal="modal-docker-base">キャンセル</button>
       </div>
     </form>
@@ -557,6 +560,7 @@ async function deleteVmAsset(kind, assetId, btn) {
 document.getElementById('btn-build-docker-base-asset').addEventListener('click', async () => {
   document.getElementById('form-docker-base').reset();
   document.getElementById('form-docker-base-error').classList.add('hidden');
+  _clearBtnBusy(document.getElementById('btn-submit-docker-base'), 'ビルドを開始');
   const select = document.getElementById('docker-base-image-select');
   select.innerHTML = '<option value="">読み込み中...</option>';
   document.getElementById('modal-docker-base').classList.remove('hidden');
@@ -573,21 +577,30 @@ document.getElementById('form-docker-base').addEventListener('submit', async e =
   e.preventDefault();
   const errBox = document.getElementById('form-docker-base-error');
   errBox.classList.add('hidden');
+  const btn = document.getElementById('btn-submit-docker-base');
+  if (btn.disabled) return;  // 二重送信防止（連打で複数ジョブが作られるのを防ぐ）
+  _setBtnBusy(btn, 'ビルド開始中...');
   const fd = new FormData(e.target);
-  const res = await fetch('/api/admin/default-assets/docker-base/build', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${API.token()}` },
-    body: fd,
-  });
-  if (res.ok) {
-    document.getElementById('modal-docker-base').classList.add('hidden');
-    showToast('docker-base のビルドを開始しました（数分〜数十分かかります）', 'success');
-    loadVmAssets();
-  } else {
+  try {
+    const res = await fetch('/api/admin/default-assets/docker-base/build', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${API.token()}` },
+      body: fd,
+    });
+    if (res.ok) {
+      document.getElementById('modal-docker-base').classList.add('hidden');
+      showToast('docker-base のビルドを開始しました（数分〜数十分かかります）', 'success');
+      loadVmAssets();
+      return;
+    }
     const d = await res.json();
     errBox.textContent = d.detail || 'エラーが発生しました';
     errBox.classList.remove('hidden');
+  } catch {
+    errBox.textContent = '通信エラーが発生しました';
+    errBox.classList.remove('hidden');
   }
+  _clearBtnBusy(btn, 'ビルドを開始');
 });
 
 document.getElementById('form-vm-asset').addEventListener('submit', async e => {
