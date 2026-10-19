@@ -84,7 +84,7 @@
   - 既存 macvlan プロジェクトはマイグレーション時に削除 or 無効化。
 - [ ] `routers/images.py`: `host_backend` フィルタを削除。
 - [ ] `routers/envs.py`: backend ミスマッチの 400 チェック（`envs.py:97` 付近）を削除。
-- [ ] `routers/admin.py`: デフォルト資産まわりで backend 前提があれば整理。
+- [ ] `routers/admin.py`: デフォルトまわりで backend 前提があれば整理。
 - [ ] `services/network.py`: macvlan 実使用 IP 確認（`allocate_ip` の macvlan 分岐）を削除し、bridge 経路のみに。
 - [ ] `setup.sh`: バックエンド選択の対話・macvlan 用 `docker-compose.override.yml` 生成経路・`ATTACK_MACHINE_ENABLED=false` 強制を削除。bridge セットアップのみに単純化。
 - [ ] テンプレート: `new_project.html` / `edit_project.html` の backend 選択 UI を削除。
@@ -140,9 +140,9 @@
 
 **代わりに実施した被害極小化**:
 - **docker.sock マウントを撤去**（`docker-compose.yml`）。orchestrator はホスト Docker デーモン（＝実質ホスト root）へ到達できなくなり、Firecracker 脱出や orchestrator 侵害時の被害が大幅に縮小。実機で「コンテナ内から `docker ps` 不可・`/var/run/docker.sock` 不在」を確認。
-- docker.sock の唯一の用途は**デフォルト/Attack Machine rootfs の初回自動ビルド**（`firecracker_setup._build_default_rootfs`/`_build_attack_rootfs`）。資産が既に存在すれば未使用のため、定常運用でマウント不要。`_docker_available()` ガードを追加し、ソケット不在時はビルドのみ明確なメッセージで失敗（VM 起動には影響しない）。初回だけマウントを有効化して資産生成後に外す運用を compose にコメントで明記。
+- docker.sock の唯一の用途は**デフォルト/Attack Machine rootfs の初回自動ビルド**（`firecracker_setup._build_default_rootfs`/`_build_attack_rootfs`）。が既に存在すれば未使用のため、定常運用でマウント不要。`_docker_available()` ガードを追加し、ソケット不在時はビルドのみ明確なメッセージで失敗（VM 起動には影響しない）。初回だけマウントを有効化して生成後に外す運用を compose にコメントで明記。
 - **Firecracker の既定 seccomp フィルタは有効**（`--no-seccomp` を付けていない）。jailer 無しでも FC プロセスのシステムコールは制限される。これが FC 脱出に対する実効的な緩和。
-- 実機検証: docker.sock 無しで orchestrator が正常起動（資産存在のため build 未実行・エラーなし）・`/health` OK・Phase2 anti-spoof と VM 起動パスに退行なし。
+- 実機検証: docker.sock 無しで orchestrator が正常起動（存在のため build 未実行・エラーなし）・`/health` OK・Phase2 anti-spoof と VM 起動パスに退行なし。
 
 **将来（Phase 4-6 で解消）**: rootfs ビルドはビルド用 VM へ移行し、docker.sock を恒久的に不要化する。それまでは初回のみ一時マウントで対応。
 
@@ -199,7 +199,7 @@
 
 ## フェーズ 5: docker-base.ext4 の作成 ✅ 実装・実機検証完了
 
-**目的**: compose を載せる共通土台 rootfs を1つ用意する。管理者が「デフォルト VM 資産」として登録し、全 compose バンドルで共有する。
+**目的**: compose を載せる共通土台 rootfs を1つ用意する。管理者が「デフォルト VM 」として登録し、全 compose バンドルで共有する。
 
 **実施メモ**:
 - init は**自作シェル方式**（ユーザ選択）。`_DOCKER_BASE_INIT_TEMPLATE` が build/run 2 モードで動く。`firecracker_setup.py` に `_build_docker_base_rootfs()`（Debian bookworm + docker-ce + compose plugin を `docker run`→`docker export`→ext4 変換）、`_build_docker_base_init_script()`、`_register_docker_base_asset()` を追加。`ensure_default_vm_assets` から独立 try で呼ぶ（失敗しても OS イメージ運用に影響しない）。
@@ -210,7 +210,7 @@
   2. `--storage-driver` を CLI と daemon.json で二重指定 → dockerd 起動拒否。CLI から除去。
   3. `userland-proxy-path not set` 検証エラー → `--userland-proxy=false`。
   4. PID1 が PATH を継承せず `containerd not found in $PATH` → init 冒頭で `export PATH=...`。
-- **エンドツーエンド検証**: docker-base を一時 docker.sock で構築（2.0GB, ~5分）→ nginx compose + `docker save` した `images.tar` の scratch を作成 → `run_build_vm(docker-base, scratch, hb_build=1)` を実行。**status=0・10秒で自己 poweroff・正常終了**。scratch から `compose.json`（正規化済み・公開ポート 80 入り）/`images.list`/`loaded.list` を回収＝**Phase 4+5 パイプライン成立**。DB に kind=docker-base 資産が登録されたことを確認。検証後 docker.sock 無しの安全構成へ復帰。
+- **エンドツーエンド検証**: docker-base を一時 docker.sock で構築（2.0GB, ~5分）→ nginx compose + `docker save` した `images.tar` の scratch を作成 → `run_build_vm(docker-base, scratch, hb_build=1)` を実行。**status=0・10秒で自己 poweroff・正常終了**。scratch から `compose.json`（正規化済み・公開ポート 80 入り）/`images.list`/`loaded.list` を回収＝**Phase 4+5 パイプライン成立**。DB に kind=docker-base が登録されたことを確認。検証後 docker.sock 無しの安全構成へ復帰。
 - 残: `tools/build-docker-base.sh`（管理者がホストで再現ビルドする手順スクリプト）と admin UI の docker-base 登録タブは Phase 7（UI）とあわせて対応予定。初回自動ビルド（`ensure_default_vm_assets`）は実装済み。
 
 **docker-base の中身**
@@ -225,7 +225,7 @@
 **変更箇所**
 - [ ] 新規 `tools/build-docker-base.sh`: docker-base.ext4 をホストで作る手順スクリプト（管理者用、再現可能に）。
 - [ ] `models.py`: `DefaultRootfsAsset` に `kind`（`os` / `docker-base`）を追加。
-- [ ] `routers/admin.py` / `admin.html`: デフォルト資産タブで docker-base を登録・一覧・削除できるように。
+- [ ] `routers/admin.py` / `admin.html`: デフォルトタブで docker-base を登録・一覧・削除できるように。
 - [ ] `firecracker_setup.py`: 初回起動時に docker-base を自動構築 or 案内（`ensure_default_vm_assets` の拡張。失敗してもアプリ起動はブロックしない既存方針を踏襲）。
 
 **検証**: docker-base から VM を起動し、中で `docker version` / `docker compose version` が通ること。legacy iptables で `docker run -p` が機能すること。
@@ -311,7 +311,7 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 **目的**: 作成者の導線を「OS イメージ」と「Compose バンドル」に分ける。
 
 **実施メモ**:
-- アップロードルータ `upload_image` に `rootfs_kind`(os/compose)・`bundle`・`base_rootfs_asset_id` を追加。compose 経路では共有デフォルトカーネルを解決（`_resolve_default_kernel`）、docker-base 資産を解決（`_resolve_docker_base_asset`）、バンドル tar を保存して `_detect_archive_kind == "compose-bundle"` を確認、成果物 rootfs パスを採番し `pending`+`rootfs_kind='compose'` で Image 作成（＝Phase 6 ワーカーが処理）。
+- アップロードルータ `upload_image` に `rootfs_kind`(os/compose)・`bundle`・`base_rootfs_asset_id` を追加。compose 経路では共有デフォルトカーネルを解決（`_resolve_default_kernel`）、docker-base を解決（`_resolve_docker_base_asset`）、バンドル tar を保存して `_detect_archive_kind == "compose-bundle"` を確認、成果物 rootfs パスを採番し `pending`+`rootfs_kind='compose'` で Image 作成（＝Phase 6 ワーカーが処理）。
 - `ImageResponse`/`_build_response` に `rootfs_kind`・`compose_summary`（JSON→dict）を追加。
 - `new_project.html`: 「登録する形式」トグル（OS イメージ / Compose バンドル）を追加し、`os-fields`/`compose-fields` を出し分け。バンドルアップロード欄・送信時のフィールド整理（compose 時は kernel/rootfs 系を送らない、os 時は bundle を送らない）。残っていた macvlan 時代の `isBridge` 分岐・`img-toggle` 参照を除去。
 - `project.html`: 変換ステータスのラベルを compose 用（ビルド待ち/ビルド中/ビルド失敗）に出し分け。pending/converting 中は起動ボタンを無効化（既存ロジック流用）。「Compose 構成」セクションで `compose_summary` のサービス・公開ポートをバッジ表示。
@@ -338,7 +338,7 @@ pending ─► ② ビルド用VM(フェーズ4)で組み立て
 - `tools/hackbento-pack`（bash, root 不要）: `--bundle <dir>` で compose プロジェクト → バンドル tar を生成。`docker compose config --format json` を検査（サーバ側 `_validate_compose` と同等: macvlan/ipvlan・固定 IP・`image:` 無しを拒否）→ `build`/`pull` → `docker save $(... --images)` で `images.tar` → `app/`/`images.tar`/`overlay/`/`hackbento-bundle.json` を tar 化。プロジェクト名を固定しサーバ側の `/opt/app` 展開でも `build:` のイメージ名解決が一致。
 - `tools/sample-bundle/`（nginx 公開 + redis 内部 + overlay フラグ）と `tools/README.md` を同梱。
 - ヘルプページ `/docs/rootfs`（`templates/rootfs_help.html`, 要ログイン）: Compose バンドル / OS イメージの作り方・注意点・選び方。new_project.html の形式トグルから導線リンク。
-- 管理 API `GET /api/admin/default-assets/rootfs` の応答に `kind`(os/docker-base) を追加（admin が土台資産を識別できる）。
+- 管理 API `GET /api/admin/default-assets/rootfs` の応答に `kind`(os/docker-base) を追加（admin が土台を識別できる）。
 - **実機検証**: ホストで `hackbento-pack --bundle` を実行 → 検証通過・build/pull・docker save・37M バンドル生成。生成物をサーバの `_detect_archive_kind`→`compose-bundle`、`_validate_bundle_tar`→`project_name/has_overlay` で受理確認（ツールとサーバのフォーマット往復一致）。`/docs/rootfs` が HTTP 200 で描画。管理 API が docker-base/os を区別して返すことを確認。
 - 残（小・任意）: admin.html に docker-base を視覚的に区別表示するタブ装飾（API は対応済み・自動登録で機能は充足）。`tools/build-docker-base.sh`（管理者がホストで再現ビルドする手順。現状は初回自動ビルドで代替）。
 
@@ -423,7 +423,7 @@ Attack Machine は既に Firecracker 専用機能だが、改修の影響を受�
 - [ ] **nft ルールのアトミック適用と掃除**: VM ごとに独立した table を使い、起動失敗時・停止時・孤立時に確実に削除（フェーズ 1 のクリーンアップ追補と連動）。
 
 ### G. 設定・ドキュメントの同期（全フェーズ）
-- [ ] `.env.example`・`config.py`・`setup.sh`・`CLAUDE.md` の4点を、macvlan 削除と新規設定（docker-base 資産、ビルド用 VM 上限、起動引数など）に合わせて同時更新する。片方だけ更新して乖離させない。
+- [ ] `.env.example`・`config.py`・`setup.sh`・`CLAUDE.md` の4点を、macvlan 削除と新規設定（docker-base 、ビルド用 VM 上限、起動引数など）に合わせて同時更新する。片方だけ更新して乖離させない。
 - [ ] 初期管理者/既存ユーザへの移行手順（macvlan プロジェクトが消えることの告知）をドキュメント化。
 
 ---

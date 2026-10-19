@@ -300,7 +300,7 @@ async def _finish(row_id: int, status: str, error: str | None,
 
 
 async def _resolve_base_rootfs(row_id: int) -> str | None:
-    """Image.base_rootfs_asset_id から docker-base の file_path を得る。未指定なら docker-base 資産の既定を使う。"""
+    """Image.base_rootfs_asset_id から docker-base の file_path を得る。未指定なら docker-base の既定を使う。"""
     async with AsyncSessionLocal() as db:
         row = await db.get(Image, row_id)
         if row is None:
@@ -309,7 +309,7 @@ async def _resolve_base_rootfs(row_id: int) -> str | None:
             asset = await db.get(DefaultRootfsAsset, row.base_rootfs_asset_id)
             if asset is not None and os.path.exists(asset.file_path):
                 return asset.file_path
-        # 既定の docker-base 資産
+        # 既定の docker-base 
         res = await db.execute(
             select(DefaultRootfsAsset).where(DefaultRootfsAsset.kind == "docker-base",
                                              DefaultRootfsAsset.is_active == True).limit(1)
@@ -334,7 +334,7 @@ async def _process_one(row_id: int) -> None:
             raise BundleError("バンドルの保存パスがありません")
         base = await _resolve_base_rootfs(row_id)
         if base is None:
-            raise BundleError("docker-base 資産が見つかりません（管理者がデフォルトVM資産に登録してください）")
+            raise BundleError("docker-base が見つかりません（管理者がデフォルトVMに登録してください）")
 
         # 1) 受付検査（展開しない。build_phase は _claim_pending で validating 済み）
         info = _validate_bundle_tar(tar_path)

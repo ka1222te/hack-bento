@@ -11,7 +11,7 @@
       <button class="tab-btn active" data-tab="envs">起動中の環境</button>
       <button class="tab-btn" data-tab="users">ユーザ管理</button>
       <button class="tab-btn" data-tab="images">プロジェクト管理</button>
-      <button class="tab-btn" data-tab="vm-assets">デフォルトVM資産</button>
+      <button class="tab-btn" data-tab="vm-assets">デフォルトVM</button>
     </div>
 
     <!-- Running Envs -->
@@ -118,7 +118,7 @@
 <div id="modal-vm-asset" class="modal hidden">
   <div class="modal-backdrop js-close-modal" data-modal="modal-vm-asset"></div>
   <div class="modal-box">
-    <h3 class="modal-title" id="modal-vm-asset-title">デフォルト資産を追加</h3>
+    <h3 class="modal-title" id="modal-vm-asset-title">デフォルトを追加</h3>
     <form id="form-vm-asset">
       <input type="hidden" name="kind" id="vm-asset-kind" />
       <div id="form-vm-asset-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
@@ -487,7 +487,7 @@ function _renderRootfsLikeTable(tbodyId, assets, deleteKind) {
         </button></td>
       </tr>
     `;
-  }).join('') || '<tr><td colspan="5" class="empty-cell">登録されている資産がありません</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="empty-cell">登録されているがありません</td></tr>';
   return assets;
 }
 
@@ -505,7 +505,7 @@ async function loadVmAssets() {
           <span class="btn-text">削除</span>
         </button></td>
       </tr>
-    `).join('') || '<tr><td colspan="4" class="empty-cell">登録されている資産がありません</td></tr>';
+    `).join('') || '<tr><td colspan="4" class="empty-cell">登録されているがありません</td></tr>';
   }
 
   let pollTargets = [];
@@ -517,7 +517,7 @@ async function loadVmAssets() {
   const dockerBaseRes = await API.get('/api/admin/default-assets/docker-base');
   if (dockerBaseRes.ok) {
     const assets = await dockerBaseRes.json();
-    // docker-base 資産も削除は DELETE /default-assets/rootfs/{id}（モデルは同じ DefaultRootfsAsset）
+    // docker-base も削除は DELETE /default-assets/rootfs/{id}（モデルは同じ DefaultRootfsAsset）
     pollTargets = pollTargets.concat(_renderRootfsLikeTable('docker-base-assets-tbody', assets, 'rootfs'));
   }
   _maybeToggleVmAssetPolling(pollTargets);
@@ -544,7 +544,7 @@ function _clearBtnBusy(btn, idleLabel) {
 }
 
 async function deleteVmAsset(kind, assetId, btn) {
-  if (!confirm('この資産を削除しますか？')) return;
+  if (!confirm('このを削除しますか？')) return;
   _setBtnBusy(btn, '削除中...');
   try {
     const res = await API.del(`/api/admin/default-assets/${kind}/${assetId}`);
@@ -618,7 +618,7 @@ document.getElementById('form-vm-asset').addEventListener('submit', async e => {
     body: fd,
   });
   if (res.ok) {
-    showToast('資産を追加しました', 'success');
+    showToast('を追加しました', 'success');
     closeModal('modal-vm-asset');
     loadVmAssets();
   } else {

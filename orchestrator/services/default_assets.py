@@ -1,7 +1,7 @@
 """デフォルトのゲストカーネル・デフォルト rootfs・rootfs 変換専用ベースの準備。
 
 services/firecracker_setup.py から分離した責務のひとつ。
-通常のOSイメージプロジェクト作成時に「デフォルト資産を使う」を選んだ場合に
+通常のOSイメージプロジェクト作成時に「デフォルトを使う」を選んだ場合に
 参照される最小構成（Alpine + sshd）と、rootfs tar→ext4 変換（rootfs_tar.py）が
 内部で使う変換専用ベースの、ビルド処理をまとめる。
 """
@@ -249,7 +249,7 @@ async def build_rootfs_converter_base() -> None:
 
 
 async def register_builtin_asset_records() -> None:
-    """組み込みデフォルトカーネル/rootfs を選択肢として使えるよう、DB に資産レコードを登録する（無ければ作成）。"""
+    """組み込みデフォルトカーネル/rootfs を選択肢として使えるよう、DB にレコードを登録する（無ければ作成）。"""
     from database import AsyncSessionLocal
     from models import DefaultKernelAsset, DefaultRootfsAsset
     from sqlalchemy import select
@@ -263,7 +263,7 @@ async def register_builtin_asset_records() -> None:
             asset = existing.scalar_one_or_none()
             if asset is None:
                 db.add(DefaultKernelAsset(label=DEFAULT_KERNEL_LABEL, file_path=DEFAULT_KERNEL_PATH))
-                logger.info("組み込みデフォルトカーネルを資産として登録しました")
+                logger.info("組み込みデフォルトカーネルをとして登録しました")
             elif asset.label != DEFAULT_KERNEL_LABEL:
                 # 過去のバージョンで登録されたラベルを最新の表示形式に揃える
                 asset.label = DEFAULT_KERNEL_LABEL
@@ -275,7 +275,7 @@ async def register_builtin_asset_records() -> None:
             asset = existing.scalar_one_or_none()
             if asset is None:
                 db.add(DefaultRootfsAsset(label=DEFAULT_ROOTFS_LABEL, file_path=DEFAULT_ROOTFS_PATH))
-                logger.info("組み込みデフォルト rootfs を資産として登録しました")
+                logger.info("組み込みデフォルト rootfs をとして登録しました")
             elif asset.label != DEFAULT_ROOTFS_LABEL:
                 asset.label = DEFAULT_ROOTFS_LABEL
 

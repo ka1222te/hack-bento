@@ -1,11 +1,11 @@
-"""rootfs tar と ext4 の相互変換、および資産ビルド共通の小さな実行ヘルパー。
+"""rootfs tar と ext4 の相互変換、およびビルド共通の小さな実行ヘルパー。
 
-services/firecracker_setup.py から分離した責務のひとつ。他の資産ビルド処理
+services/firecracker_setup.py から分離した責務のひとつ。他のビルド処理
 （デフォルト rootfs・docker-base・Attack Machine・rootfs 変換専用ベース）が
 共通して使う _run/_run_to_file/run_builder_job もここに置く。
 
 orchestrator は Firecracker 脱出時の被害を抑えるため docker.sock を一切持たない
-（CLAUDE.md 参照）。Docker 操作が必要な資産ビルドはすべて run_builder_job 経由で
+（CLAUDE.md 参照）。Docker 操作が必要なビルドはすべて run_builder_job 経由で
 docker-base-builder コンテナへ委譲する。
 
 アーカイブ種別判定（_detect_archive_kind）・tar→ext4 変換（convert_tar_to_ext4）は
@@ -36,7 +36,7 @@ async def run_builder_job(
 ) -> None:
     """docker-base-builder へジョブを依頼し、完了（ready/failed）までポーリングする共通処理。
 
-    orchestrator は docker.sock を一切持たないため、Docker を使う資産ビルド
+    orchestrator は docker.sock を一切持たないため、Docker を使うビルド
     （docker-base・default rootfs・rootfs変換専用ベース・Attack Machine）は
     すべて docker-base-builder コンテナへ HTTP 経由で委譲する（CLAUDE.md 参照）。
     start_path は "/build" または "/export-tar"。ジョブ状態の照会・削除は両方

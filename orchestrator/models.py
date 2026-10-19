@@ -110,7 +110,7 @@ class Image(Base):
     # "compose" の場合、rootfs_source_archive_path にバンドル tar を保持し、
     # ビルド用 VM（services.bundle_build）が base_rootfs（docker-base）を土台に ext4 を組み立てる。
     rootfs_kind = Column(String(16), default="os", nullable=False)
-    # Compose バンドルの土台に使う docker-base 資産への参照
+    # Compose バンドルの土台に使う docker-base への参照
     base_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     # ビルド用 VM が出力した正規化 compose 設定の要約（サービス名・公開ポート等。UI 表示用）
     compose_summary = Column(Text, nullable=True)
@@ -120,7 +120,7 @@ class Image(Base):
     # プロジェクト別の追加カーネル起動引数（カーネル exploit 問題で nokaslr 等を渡す用途）。
     # ip=/init=/console=/root= 等 HackBento が管理する引数はホスト側で除去・上書き不可。
     extra_boot_args = Column(String(512), nullable=True)
-    # 「default」モードで選択された共有デフォルト資産への参照（編集画面の初期表示用）
+    # 「default」モードで選択された共有デフォルトへの参照（編集画面の初期表示用）
     default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
     default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     readme_path = Column(String(512), nullable=True)
@@ -181,7 +181,7 @@ class DefaultRootfsAsset(Base):
     # kind="docker-base" をサーバ側でビルドして登録した場合のみ設定される
     # Docker イメージ参照（例: "debian:bookworm-slim"）。ビルドワーカー
     # （services.docker_base_assets.run_docker_base_build_worker）がこれを見て
-    # pending 行を処理する。アップロードで直接登録した資産（os 種別含む）では未設定。
+    # pending 行を処理する。アップロードで直接登録した（os 種別含む）では未設定。
     base_image = Column(String(256), nullable=True)
 
 

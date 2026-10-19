@@ -1,6 +1,6 @@
-"""VM 資産（カーネル・各種 rootfs）のパス・ラベル・既定値を集めた定数モジュール。
+"""VM （カーネル・各種 rootfs）のパス・ラベル・既定値を集めた定数モジュール。
 
-services/firecracker_setup.py から分離した責務のひとつ。各資産のビルド処理
+services/firecracker_setup.py から分離した責務のひとつ。各のビルド処理
 （default_assets.py・docker_base_assets.py・attack_machine_assets.py）と
 起動時オーケストレーション（firecracker_setup.py）の両方がこれらの定数を参照する。
 
@@ -17,7 +17,7 @@ DEFAULT_ROOTFS_PATH = os.path.join(DEFAULTS_DIR, "rootfs.ext4")
 
 KERNEL_URL = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128"
 
-# 資産一覧での表示ラベル。バージョン番号は KERNEL_URL のファイル名から取得し、
+# 一覧での表示ラベル。バージョン番号は KERNEL_URL のファイル名から取得し、
 # rootfs はログイン情報を明示してすぐに使えることが伝わるようにする
 # （認証情報は default_assets._ROOTFS_BUILD_SCRIPT で設定している値と一致させること）。
 DEFAULT_KERNEL_LABEL = os.path.basename(KERNEL_URL)

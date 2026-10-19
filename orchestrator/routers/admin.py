@@ -41,7 +41,7 @@ class DefaultAssetResponse(BaseModel):
     conversion_status: str = RootfsConversionStatus.ready.value
     conversion_error: Optional[str] = None
     # rootfs の種別: "os"（通常のゲスト rootfs）/ "docker-base"（Compose バンドル用土台）。
-    # kernel 資産や kind 未設定の行は "os" 扱い。
+    # kernel や kind 未設定の行は "os" 扱い。
     kind: str = "os"
 
     model_config = {"from_attributes": True}
@@ -270,7 +270,7 @@ async def list_docker_base_assets(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """docker-base（Compose バンドル用土台）種別の資産一覧。
+    """docker-base（Compose バンドル用土台）種別の一覧。
 
     GET /default-assets/{kind} より前に登録すること（FastAPI はルート登録順に評価するため、
     後ろにすると {kind}="docker-base" として動的ルートに吸われてしまう）。
@@ -388,7 +388,7 @@ async def build_docker_base_asset(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """docker-base rootfs をサーバ側でビルドして資産登録する（アップロードではなくビルド）。
+    """docker-base rootfs をサーバ側でビルドして登録する（アップロードではなくビルド）。
 
     docker-base は build/run 2モードで動く専用 init を強制的に埋め込む必要があるため、
     ユーザ/管理者が任意の ext4・tar をそのまま docker-base として登録することは許可しない
@@ -432,7 +432,7 @@ async def delete_default_asset(
     AssetModel = info["model"]
     asset = await db.get(AssetModel, asset_id)
     if not asset:
-        raise HTTPException(status_code=404, detail="資産が見つかりません")
+        raise HTTPException(status_code=404, detail="が見つかりません")
 
     ref_columns = [Image.default_kernel_asset_id] if kind == "kernels" else [Image.default_rootfs_asset_id, Image.base_rootfs_asset_id]
     for ref_column in ref_columns:
@@ -440,7 +440,7 @@ async def delete_default_asset(
             select(Image.id).where(ref_column == asset_id, Image.is_active == True)
         )
         if ref_result.first():
-            raise HTTPException(status_code=400, detail="このデフォルト資産を使用しているプロジェクトが存在するため削除できません")
+            raise HTTPException(status_code=400, detail="このデフォルトを使用しているプロジェクトが存在するため削除できません")
 
     paths_to_remove = [asset.file_path]
     source_archive_path = getattr(asset, "source_archive_path", None)

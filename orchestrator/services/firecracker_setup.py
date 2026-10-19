@@ -1,6 +1,6 @@
-"""VM 資産（デフォルトOS・docker-base・Attack Machine）の起動時オーケストレーション。
+"""VM （デフォルトOS・docker-base・Attack Machine）の起動時オーケストレーション。
 
-各資産の init/ビルドスクリプト・構築処理は責務ごとに分離済み:
+各の init/ビルドスクリプト・構築処理は責務ごとに分離済み:
   - services/vm_assets.py            パス・ラベル等の定数
   - services/rootfs_tar.py           tar⇄ext4 変換・共通実行ヘルパー
   - services/default_assets.py       デフォルトカーネル/rootfs・rootfs変換専用ベース
@@ -34,7 +34,7 @@ async def ensure_default_vm_assets() -> None:
     # rootfs 変換専用ベース（アップロードされた rootfs tar をビルド用VM内で安全に
     # 展開するための土台）を最初に準備する。convert_tar_to_ext4（デフォルト rootfs・
     # docker-base・Attack Machine の構築、および rootfs_convert からのユーザアップロード
-    # 変換すべてが内部で使う）がこのベースに依存するため、他のどの資産構築よりも先に
+    # 変換すべてが内部で使う）がこのベースに依存するため、他のどの構築よりも先に
     # 用意できていないと以降の変換が全て失敗する。
     try:
         await default_assets.build_rootfs_converter_base()

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 10
 
-# 変換対象となりうるテーブル・カラムの組（共有デフォルト資産／プロジェクトのrootfsの両方）。
+# 変換対象となりうるテーブル・カラムの組（共有デフォルト／プロジェクトのrootfsの両方）。
 # どちらも DefaultRootfsAsset と同じ4カラム構成（状態・エラー・変換元tarパス・実体パス）を持つ。
 _TARGETS = [
     {
@@ -48,7 +48,7 @@ async def _claim_pending() -> tuple[dict, int, str, str] | None:
             # 専用処理するため、tar→ext4 変換ワーカーは拾わない。
             if model is Image:
                 conds.append(Image.rootfs_kind != "compose")
-            # DefaultRootfsAsset の docker-base 行（管理者が /admin からビルド依頼した資産。
+            # DefaultRootfsAsset の docker-base 行（管理者が /admin からビルド依頼した。
             # source_archive_path を持たず base_image からビルドする）は
             # services.docker_base_assets.run_docker_base_build_worker が専用処理するため、
             # tar→ext4 変換ワーカーは拾わない。
@@ -102,7 +102,7 @@ async def _convert_one(target: dict, row_id: int, tar_path: str, dest_path: str)
 
 
 async def run_rootfs_conversion_worker() -> None:
-    """pending 状態の rootfs（共有デフォルト資産・プロジェクト個別の両方）を順次 ext4 へ変換する
+    """pending 状態の rootfs（共有デフォルト・プロジェクト個別の両方）を順次 ext4 へ変換する
     バックグラウンドループ。
 
     run_watchdog（services/watchdog.py）と同じ定期ポーリング構成だが、ユーザ操作起点の

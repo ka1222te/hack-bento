@@ -101,17 +101,17 @@ async def register_docker_base_asset() -> None:
             db.add(DefaultRootfsAsset(
                 label=DOCKER_BASE_LABEL, file_path=DOCKER_BASE_ROOTFS_PATH, kind="docker-base",
             ))
-            logger.info("docker-base rootfs を資産として登録しました")
+            logger.info("docker-base rootfs をとして登録しました")
         else:
             asset.label = DOCKER_BASE_LABEL
             asset.kind = "docker-base"
         await db.commit()
 
 
-# ---- 管理者が /admin から追加登録する docker-base 資産のビルドワーカー ----
+# ---- 管理者が /admin から追加登録する docker-base のビルドワーカー ----
 # rootfs_convert.py と同じ「pending を行ロックで claim → 処理 → ready/failed」パターン。
 # 対象は DefaultRootfsAsset(kind="docker-base") のうち base_image が設定されている行のみ
-# （起動時に ensure_default_vm_assets が用意する既定の docker-base 資産は base_image 不要で
+# （起動時に ensure_default_vm_assets が用意する既定の docker-base は base_image 不要で
 #  このワーカーの対象にはならない）。
 
 async def _claim_pending_docker_base() -> tuple[int, str, str] | None:
@@ -153,7 +153,7 @@ async def _finish_docker_base(row_id: int, status: str, error: str | None) -> No
 
 
 async def run_docker_base_build_worker() -> None:
-    """管理者が登録した docker-base 資産（pending）を順次ビルドするバックグラウンドループ。"""
+    """管理者が登録した docker-base （pending）を順次ビルドするバックグラウンドループ。"""
     logger.info("docker-base build worker started")
     while True:
         try:
@@ -164,11 +164,11 @@ async def run_docker_base_build_worker() -> None:
                 try:
                     await build_docker_base_rootfs_at(dest_path, base_image)
                     await _finish_docker_base(row_id, RootfsConversionStatus.ready.value, None)
-                    logger.info(f"docker-base 資産のビルドが完了しました: id={row_id} -> {dest_path}")
+                    logger.info(f"docker-base のビルドが完了しました: id={row_id} -> {dest_path}")
                 except Exception as e:
                     message = str(e).strip()[:512]
                     await _finish_docker_base(row_id, RootfsConversionStatus.failed.value, message)
-                    logger.error(f"docker-base 資産のビルドに失敗しました: id={row_id}: {e}")
+                    logger.error(f"docker-base のビルドに失敗しました: id={row_id}: {e}")
                 continue
         except Exception as e:
             logger.error(f"docker-base build worker error: {e}")
