@@ -8,6 +8,7 @@ docker export で取り出して ext4 へ変換する。
 orchestrator は Firecracker 脱出時の被害を抑えるため docker.sock を一切持たない
 （CLAUDE.md 参照）。このモジュールは HTTP 経由でジョブを依頼し、完了をポーリングするだけ。
 """
+import asyncio
 import logging
 import os
 import uuid
