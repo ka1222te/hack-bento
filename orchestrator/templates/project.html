@@ -552,6 +552,44 @@ async function loadReadme() {
 
   body.innerHTML = html;
   section.classList.remove('hidden');
+  addReadmeCopyButtons(body);
+}
+
+// README 内の各コードブロックにコピーボタンを付与する。README は marked.js の
+// 文字列レンダラーで HTML 化しており、DOM 操作ベースの highlightjs-copy プラグイン
+// （hljs.highlightElement の "after" フックに依存）は呼ばれないため、ここで自前に
+// ボタンを生成する（CSS は .readme-copy-button、スタイルは style.css 側）。
+function addReadmeCopyButtons(root) {
+  root.querySelectorAll('pre > code').forEach(code => {
+    const pre = code.parentElement;
+    if (pre.parentElement.classList.contains('readme-copy-wrapper')) return;
+
+    // pre 自体は overflow-x: auto で横スクロールするため、ボタンを pre の子要素に
+    // 置くと pre の範囲外に出した部分がクリッピングされて見切れる。pre を外側の
+    // div でラップし、ボタンはそのラッパー（overflow 制限なし）に対して配置する。
+    const wrapper = document.createElement('div');
+    wrapper.className = 'readme-copy-wrapper';
+    pre.parentElement.insertBefore(wrapper, pre);
+    wrapper.appendChild(pre);
+
+    const button = document.createElement('button');
+    button.className = 'readme-copy-button';
+    button.type = 'button';
+    button.textContent = 'コピー';
+    button.addEventListener('click', () => {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(code.innerText).then(() => {
+        button.textContent = 'コピーしました';
+        button.classList.add('copied');
+        setTimeout(() => {
+          button.textContent = 'コピー';
+          button.classList.remove('copied');
+        }, 2000);
+      });
+    });
+
+    wrapper.appendChild(button);
+  });
 }
 
 // ---- Collaborators ----
