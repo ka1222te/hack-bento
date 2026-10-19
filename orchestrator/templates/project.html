@@ -313,7 +313,7 @@ function renderLaunchPanel() {
             <div class="launch-panel-label">環境を起動しています</div>
             <div class="env-timer" id="proj-timer-${running.id}">
               <span class="spinner-inline"></span>
-              <span class="env-starting-label">&#x23F3; VM起動中...（ディスク状況により時間がかかる場合があります）</span>
+              <span class="env-starting-label">&#x23F3; VM起動中...</span>
             </div>
           </div>
         </div>
@@ -480,7 +480,7 @@ function _clearBtnBusy(btn, idleLabel) {
 }
 
 async function startEnv(imageId, btn) {
-  _setBtnBusy(btn, '起動中...（ディスク状況により時間がかかる場合があります）');
+  _setBtnBusy(btn, '起動中...');
   try {
     const res = await API.post(`/api/envs/${imageId}/start`);
     if (res.ok) {
