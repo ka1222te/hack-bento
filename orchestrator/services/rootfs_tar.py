@@ -2,27 +2,74 @@
 
 services/firecracker_setup.py から分離した責務のひとつ。他の資産ビルド処理
 （デフォルト rootfs・docker-base・Attack Machine・rootfs 変換専用ベース）が
-共通して使う _run/_run_to_file/_docker_available もここに置く。
+共通して使う _run/_run_to_file/run_builder_job もここに置く。
+
+orchestrator は Firecracker 脱出時の被害を抑えるため docker.sock を一切持たない
+（CLAUDE.md 参照）。Docker 操作が必要な資産ビルドはすべて run_builder_job 経由で
+docker-base-builder コンテナへ委譲する。
 
 アーカイブ種別判定（_detect_archive_kind）・tar→ext4 変換（convert_tar_to_ext4）は
 他モジュール（routers/images.py, routers/admin.py, services/rootfs_convert.py,
 services/bundle_build.py）から直接 import されるため、関数名はそのまま維持する。
 """
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
 import tarfile
 import tempfile
 
+import httpx
+
 # rootfs tar → ext4 変換の既定サイズ（ホスト上展開版・VM経由版の双方で使う既定値）。
 ROOTFS_SIZE_MB = 512
 
-_DOCKER_SOCK = "/var/run/docker.sock"
+logger = logging.getLogger(__name__)
+
+_BUILDER_POLL_INTERVAL_S = 5
+_BUILDER_JOB_TIMEOUT_S = 1800
 
 
-def docker_available() -> bool:
-    return os.path.exists(_DOCKER_SOCK)
+async def run_builder_job(
+    builder_url: str, start_path: str, payload: dict, job_id: str, timeout_s: int = _BUILDER_JOB_TIMEOUT_S,
+) -> None:
+    """docker-base-builder へジョブを依頼し、完了（ready/failed）までポーリングする共通処理。
+
+    orchestrator は docker.sock を一切持たないため、Docker を使う資産ビルド
+    （docker-base・default rootfs・rootfs変換専用ベース・Attack Machine）は
+    すべて docker-base-builder コンテナへ HTTP 経由で委譲する（CLAUDE.md 参照）。
+    start_path は "/build" または "/export-tar"。ジョブ状態の照会・削除は両方
+    共通で "/build/{job_id}" を使う（docker-base-builder 側で単一のジョブ辞書を
+    共有しているため）。
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            resp = await client.post(f"{builder_url}{start_path}", json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"docker-base-builder サービスに接続できません（{builder_url}）: {e}") from e
+
+        elapsed = 0
+        try:
+            while True:
+                await asyncio.sleep(_BUILDER_POLL_INTERVAL_S)
+                elapsed += _BUILDER_POLL_INTERVAL_S
+                if elapsed > timeout_s:
+                    raise RuntimeError("docker-base-builder のジョブがタイムアウトしました")
+                status_resp = await client.get(f"{builder_url}/build/{job_id}")
+                status_resp.raise_for_status()
+                job = status_resp.json()
+                if job["status"] == "running":
+                    continue
+                if job["status"] == "failed":
+                    raise RuntimeError(job.get("error") or "docker-base-builder のジョブに失敗しました")
+                break
+        finally:
+            try:
+                await client.delete(f"{builder_url}/build/{job_id}")
+            except Exception:
+                pass
 
 
 async def run(cmd: list[str], timeout: int = 600) -> None:

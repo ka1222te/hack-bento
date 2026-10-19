@@ -11,10 +11,10 @@ services:
       - ./data:/data
       # 注意: ホストの docker.sock は意図的にマウントしていない。
       # docker.sock はコンテナからホスト Docker デーモン＝実質ホスト root へ到達でき、
-      # Firecracker 脱出等の際の被害を大きくするため、定常運用では外す。
-      # デフォルト/Attack Machine rootfs の初回自動ビルドのみ docker.sock が必要なため、
-      # 自動ビルドが必要な初回だけ、下行のコメントを外して資産生成後に再度外すこと:
-      #- /var/run/docker.sock:/var/run/docker.sock
+      # Firecracker 脱出等の際の被害を大きくするため持たせない。
+      # デフォルト/docker-base/Attack Machine rootfs など Docker 操作が必要な資産ビルドは
+      # すべて docker-base-builder コンテナへ HTTP 経由で委譲する（services/rootfs_tar.py
+      # の run_builder_job 参照）。手動でのマウント切替は不要。
     tmpfs:
       # VM起動ごとのwritable rootfsコピー先（services/smolvm.py: FC_ROOTFS_DIR）をtmpfs化。
       # HDD環境では2GB前後のコピーが数十秒〜それ以上かかりディスクI/Oを飽和させるため、
@@ -34,10 +34,11 @@ services:
       retries: 3
       start_period: 15s
 
-  # docker-base rootfs（Compose バンドル用の共通土台）のビルド専用コンテナ。
-  # /var/run/docker.sock を持つのはこのコンテナのみで、orchestrator からは完全に分離する。
-  # 127.0.0.1 の内部ポートにのみバインドするため、同一ホスト上の orchestrator
-  # （network_mode: host）からのみ到達可能。
+  # Docker 操作が必要な全資産ビルド（docker-base・デフォルトrootfs・rootfs変換専用
+  # ベース・Attack Machine）を代行する専用コンテナ。/var/run/docker.sock を持つのは
+  # このコンテナのみで、orchestrator からは完全に分離する。127.0.0.1 の内部ポートに
+  # のみバインドするため、同一ホスト上の orchestrator（network_mode: host）からのみ
+  # 到達可能。
   docker-base-builder:
     build:
       context: ./docker/docker-base-builder

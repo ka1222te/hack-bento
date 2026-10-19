@@ -33,6 +33,10 @@ _EXPORT_TIMEOUT_S = 900
 # ALLOWED_DOCKER_BASE_IMAGES と同じ内容を保つこと（docker_base_assets.py 参照）。
 ALLOWED_BASE_IMAGES = {"debian:bookworm-slim"}
 
+# /export-tar で使える固定のベースイメージ（default_assets.py・attack_machine_assets.py が
+# 内部で使う、管理者操作由来の信頼済みイメージのみ。ユーザーが選べる対象ではない）。
+ALLOWED_EXPORT_BASE_IMAGES = {"alpine:3.19", "kalilinux/kali-rolling"}
+
 _jobs: dict[str, dict] = {}
 
 
@@ -42,6 +46,27 @@ class BuildRequest(BaseModel):
     resolv_conf: str
     dest_filename: str  # OUTPUT_DIR 配下に書き出すファイル名（パストラバーサル対策で basename のみ許可）
     size_mb: int = 1536
+
+
+class ExportTarRequest(BaseModel):
+    """汎用のtar取り出しジョブ（default rootfs・rootfs変換専用ベース・Attack Machine用）。
+
+    orchestrator はビルドスクリプトを固定の信頼済みコード（管理者操作由来、
+    ユーザー入力を含まない）としてのみ送る。docker-base-builder は 127.0.0.1
+    限定で orchestrator からしか到達できないため、外部からの不正な
+    シェルスクリプト注入はできない。
+    """
+    job_id: str
+    base_image: str
+    build_script: str  # コンテナ内で実行するシェルスクリプト（bash -c で渡す）
+    dest_filename: str  # OUTPUT_DIR 配下に書き出す tar ファイル名
+    # "export": docker export でコンテナ全体を取り出す
+    # "cp": コンテナ内の cp_src_path を docker cp で取り出す（すでに tar 済みのファイル）
+    method: str = "export"
+    cp_src_path: Optional[str] = None
+    # "docker run" 本体のタイムアウト（秒）。Attack Machine（Kali）のような大きい
+    # イメージは数十分〜2時間程度かかることがあるため、呼び出し側で調整できるようにする。
+    build_timeout_s: int = _BUILD_TIMEOUT_S
 
 
 # docker-base の /sbin/init。orchestrator/services/docker_base_assets.py の
@@ -225,6 +250,74 @@ async def _do_build(job_id: str, base_image: str, resolv_conf: str, dest_path: s
         except Exception:
             pass
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def _do_export_tar(
+    job_id: str, base_image: str, build_script: str, dest_path: str, method: str,
+    cp_src_path: Optional[str], build_timeout_s: int,
+) -> None:
+    """default rootfs・rootfs変換専用ベース・Attack Machine用 rootfs の共通ビルド処理。
+
+    ベースイメージ上でビルドスクリプトを実行し、結果を tar として dest_path に書き出す。
+    ext4 への変換は行わない（orchestrator 側が Firecracker 安全変換 VM で行う）。
+    """
+    job = _jobs[job_id]
+    container_name = f"hackbento-export-build-{job_id}"
+    try:
+        try:
+            await _run(["docker", "rm", "-f", container_name], timeout=30)
+        except Exception:
+            pass
+        await _run(
+            ["docker", "run", "--name", container_name, base_image, "sh", "-c", build_script],
+            timeout=build_timeout_s,
+        )
+        if method == "cp":
+            if not cp_src_path:
+                raise RuntimeError("method='cp' には cp_src_path が必要です")
+            await _run(["docker", "cp", f"{container_name}:{cp_src_path}", dest_path], timeout=_EXPORT_TIMEOUT_S)
+        else:
+            await _run_to_file(["docker", "export", container_name], dest_path, timeout=_EXPORT_TIMEOUT_S)
+        job["status"] = "ready"
+        logger.info(f"job {job_id}: tar exported -> {dest_path}")
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e).strip()[:1024]
+        if os.path.exists(dest_path):
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+        logger.error(f"job {job_id}: failed: {e}")
+    finally:
+        try:
+            await _run(["docker", "rm", "-f", container_name], timeout=30)
+        except Exception:
+            pass
+
+
+@app.post("/export-tar")
+async def start_export_tar(req: ExportTarRequest):
+    if req.base_image not in ALLOWED_EXPORT_BASE_IMAGES:
+        raise HTTPException(status_code=400, detail=f"許可されていないベースイメージです: {req.base_image}")
+    dest_filename = os.path.basename(req.dest_filename)
+    if not dest_filename or dest_filename != req.dest_filename:
+        raise HTTPException(status_code=400, detail="dest_filename が不正です")
+    if req.method not in ("export", "cp"):
+        raise HTTPException(status_code=400, detail="method は export または cp を指定してください")
+    if req.job_id in _jobs:
+        raise HTTPException(status_code=409, detail="同じ job_id のジョブが既に存在します")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    dest_path = os.path.join(OUTPUT_DIR, dest_filename)
+    _jobs[req.job_id] = {"status": "running", "error": None}
+    asyncio.create_task(
+        _do_export_tar(
+            req.job_id, req.base_image, req.build_script, dest_path,
+            req.method, req.cp_src_path, req.build_timeout_s,
+        )
+    )
+    return {"job_id": req.job_id, "status": "running"}
 
 
 @app.post("/build")

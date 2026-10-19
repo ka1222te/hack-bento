@@ -8,14 +8,12 @@ docker export で取り出して ext4 へ変換する。
 orchestrator は Firecracker 脱出時の被害を抑えるため docker.sock を一切持たない
 （CLAUDE.md 参照）。このモジュールは HTTP 経由でジョブを依頼し、完了をポーリングするだけ。
 """
-import asyncio
 import logging
 import os
 import uuid
 
-import httpx
-
 from config import settings
+from services.rootfs_tar import run_builder_job
 from services.vm_assets import (
     DEFAULTS_DIR,
     DOCKER_BASE_DEBIAN_IMAGE,
@@ -25,9 +23,6 @@ from services.vm_assets import (
 )
 
 logger = logging.getLogger(__name__)
-
-_BUILDER_POLL_INTERVAL_S = 5
-_BUILDER_BUILD_TIMEOUT_S = 1800
 
 # 管理者が /admin から docker-base をビルドする際に選べるベースイメージ。
 # _DOCKER_BASE_BUILD_SCRIPT が apt-get + docker-ce 公式リポジトリ（Debian系専用）を
@@ -67,44 +62,18 @@ async def build_docker_base_rootfs_at(dest_path: str, base_image: str = DOCKER_B
     job_id = uuid.uuid4().hex
     dest_filename = os.path.basename(dest_path)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            resp = await client.post(
-                f"{settings.DOCKER_BASE_BUILDER_URL}/build",
-                json={
-                    "job_id": job_id,
-                    "base_image": base_image,
-                    "resolv_conf": _resolv_conf_for_builder(),
-                    "dest_filename": dest_filename,
-                    "size_mb": DOCKER_BASE_ROOTFS_SIZE_MB,
-                },
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise RuntimeError(
-                f"docker-base-builder サービスに接続できません（{settings.DOCKER_BASE_BUILDER_URL}）: {e}"
-            ) from e
-
-        elapsed = 0
-        try:
-            while True:
-                await asyncio.sleep(_BUILDER_POLL_INTERVAL_S)
-                elapsed += _BUILDER_POLL_INTERVAL_S
-                if elapsed > _BUILDER_BUILD_TIMEOUT_S:
-                    raise RuntimeError("docker-base rootfs のビルドがタイムアウトしました")
-                status_resp = await client.get(f"{settings.DOCKER_BASE_BUILDER_URL}/build/{job_id}")
-                status_resp.raise_for_status()
-                job = status_resp.json()
-                if job["status"] == "running":
-                    continue
-                if job["status"] == "failed":
-                    raise RuntimeError(job.get("error") or "docker-base rootfs のビルドに失敗しました")
-                break
-        finally:
-            try:
-                await client.delete(f"{settings.DOCKER_BASE_BUILDER_URL}/build/{job_id}")
-            except Exception:
-                pass
+    await run_builder_job(
+        settings.DOCKER_BASE_BUILDER_URL,
+        "/build",
+        {
+            "job_id": job_id,
+            "base_image": base_image,
+            "resolv_conf": _resolv_conf_for_builder(),
+            "dest_filename": dest_filename,
+            "size_mb": DOCKER_BASE_ROOTFS_SIZE_MB,
+        },
+        job_id,
+    )
 
     logger.info(f"docker-base rootfs を保存しました: {dest_path}")
 

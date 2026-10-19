@@ -5,11 +5,10 @@ services/firecracker_setup.py から分離した責務のひとつ。Kali rootfs
 """
 import logging
 import os
-import shutil
-import tempfile
+import uuid
 
 from config import settings
-from services.rootfs_tar import convert_tar_to_ext4, docker_available, run as _run, run_to_file as _run_to_file
+from services.rootfs_tar import convert_tar_to_ext4, run_builder_job
 from services import vm_assets
 from services.vm_assets import (
     ATTACK_MACHINE_NAME,
@@ -310,41 +309,38 @@ mv /tmp/hackbento-init /sbin/init
 
 
 async def build_attack_rootfs() -> None:
+    """Attack Machine 用 rootfs（Kali + XFCE + TigerVNC）を構築する。
+
+    ビルド（Docker 操作）自体は docker-base-builder コンテナへ委譲する。
+    数十分〜2時間程度かかることがあるため、ビルダー側のタイムアウトも長めに取る。
+    """
     if os.path.exists(ATTACK_ROOTFS_PATH):
         logger.info(f"Attack Machine 用 rootfs は既に存在します: {ATTACK_ROOTFS_PATH}")
         vm_assets.attack_rootfs_build_status = "ready"
-        return
-    if not docker_available():
-        vm_assets.attack_rootfs_build_status = "failed"
-        vm_assets.attack_rootfs_build_error = (
-            "Attack Machine の rootfs 構築には Docker (docker.sock) が必要ですが、"
-            "/var/run/docker.sock が見つかりません。資産ビルド時のみ docker.sock マウントを有効にしてください。"
-        )
-        logger.warning(vm_assets.attack_rootfs_build_error)
         return
     logger.info("Attack Machine 用 rootfs (Kali) を構築中...")
     vm_assets.attack_rootfs_build_status = "building"
     vm_assets.attack_rootfs_build_error = None
 
-    tmpdir = tempfile.mkdtemp(prefix="hackbento-attack-rootfs-")
-    container_name = f"hackbento-attack-rootfs-build-{os.path.basename(tmpdir)}"
+    build_script = _ATTACK_ROOTFS_BUILD_SCRIPT.format(init_script=_build_attack_init_script())
+    job_id = uuid.uuid4().hex
+    tar_filename = f"{job_id}.tar"
+    tar_path = os.path.join(DEFAULTS_DIR, tar_filename)
     try:
-        build_script = _ATTACK_ROOTFS_BUILD_SCRIPT.format(init_script=_build_attack_init_script())
-        await _run(["docker", "rm", "-f", container_name])  # 残骸があれば除去（失敗は無視）
-    except Exception:
-        pass
-    try:
-        await _run([
-            "docker", "run", "--name", container_name,
-            KALI_DOCKER_IMAGE,
-            "sh", "-c", build_script,
-        ], timeout=7200)
-
-        # コンテナ内で tar を作ると書き込みレイヤーにファイルシステム全体が二重に乗り
-        # ディスクを圧迫するため、`docker export` でホスト側に直接ストリーミング出力する。
-        tar_path = os.path.join(tmpdir, "attack-rootfs.tar")
-        await _run_to_file(["docker", "export", container_name], tar_path, timeout=600)
-
+        await run_builder_job(
+            settings.DOCKER_BASE_BUILDER_URL,
+            "/export-tar",
+            {
+                "job_id": job_id,
+                "base_image": KALI_DOCKER_IMAGE,
+                "build_script": build_script,
+                "dest_filename": tar_filename,
+                "method": "export",
+                "build_timeout_s": 7200,
+            },
+            job_id,
+            timeout_s=7200,
+        )
         await convert_tar_to_ext4(tar_path, ATTACK_ROOTFS_PATH, size_mb=ATTACK_ROOTFS_SIZE_MB)
         logger.info(f"Attack Machine 用 rootfs を保存しました: {ATTACK_ROOTFS_PATH}")
         vm_assets.attack_rootfs_build_status = "ready"
@@ -353,11 +349,11 @@ async def build_attack_rootfs() -> None:
         vm_assets.attack_rootfs_build_error = str(e)
         raise
     finally:
-        try:
-            await _run(["docker", "rm", "-f", container_name])
-        except Exception:
-            pass
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if os.path.exists(tar_path):
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
 
 
 async def register_attack_machine_image() -> None:

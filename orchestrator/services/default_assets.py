@@ -7,15 +7,14 @@ services/firecracker_setup.py から分離した責務のひとつ。
 """
 import logging
 import os
-import shutil
-import tempfile
+import uuid
 
 from config import settings
 from services.rootfs_tar import (
     convert_tar_to_ext4,
     convert_tar_to_ext4_host_unsafe,
-    docker_available,
     run as _run,
+    run_builder_job,
 )
 from services.vm_assets import (
     DEFAULT_KERNEL_PATH,
@@ -167,94 +166,86 @@ async def download_default_kernel() -> None:
 
 
 async def build_default_rootfs() -> None:
+    """デフォルト rootfs（Alpine + sshd）を構築する。
+
+    ビルド（Docker 操作）自体は docker-base-builder コンテナへ委譲し、結果の
+    tar は DEFAULTS_DIR 配下（docker-base-builder の /output と同じボリューム）に
+    書き出される。ext4 への変換は orchestrator 側（Firecracker 安全変換 VM）で行う。
+    """
     if os.path.exists(DEFAULT_ROOTFS_PATH):
         logger.info(f"デフォルト rootfs は既に存在します: {DEFAULT_ROOTFS_PATH}")
         return
-    if not docker_available():
-        raise RuntimeError(
-            "デフォルト rootfs の構築には Docker (docker.sock) が必要ですが、"
-            "/var/run/docker.sock が見つかりません。資産ビルド時のみ docker-compose.yml の "
-            "docker.sock マウントを有効にするか、rootfs を手動でアップロードしてください。"
-        )
     logger.info("デフォルト rootfs を構築中...")
 
-    # オーケストレータは Docker-in-Docker (ホストの docker.sock を共有) で動作しており、
-    # ホスト側 dockerd から見たパスとコンテナ内パスが一致しないため bind mount は使えない。
-    # コンテナ内でビルドしたファイルは `docker cp` で取り出す。
-    tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-")
-    container_name = f"hackbento-rootfs-build-{os.path.basename(tmpdir)}"
+    build_script = _ROOTFS_BUILD_SCRIPT.format(init_script=_build_init_script())
+    job_id = uuid.uuid4().hex
+    tar_filename = f"{job_id}.tar"
+    tar_path = os.path.join(DEFAULTS_DIR, tar_filename)
     try:
-        build_script = _ROOTFS_BUILD_SCRIPT.format(init_script=_build_init_script())
-        await _run(["docker", "rm", "-f", container_name])  # 残骸があれば除去（失敗は無視）
-    except Exception:
-        pass
-    try:
-        await _run([
-            "docker", "run", "--name", container_name,
-            "alpine:3.19",
-            "sh", "-c", build_script,
-        ], timeout=900)
-
-        tar_path = os.path.join(tmpdir, "rootfs.tar")
-        await _run(["docker", "cp", f"{container_name}:/rootfs.tar", tar_path])
-
+        await run_builder_job(
+            settings.DOCKER_BASE_BUILDER_URL,
+            "/export-tar",
+            {
+                "job_id": job_id,
+                "base_image": "alpine:3.19",
+                "build_script": build_script,
+                "dest_filename": tar_filename,
+                "method": "cp",
+                "cp_src_path": "/rootfs.tar",
+            },
+            job_id,
+        )
         await convert_tar_to_ext4(tar_path, DEFAULT_ROOTFS_PATH)
         logger.info(f"デフォルト rootfs を保存しました: {DEFAULT_ROOTFS_PATH}")
     finally:
-        try:
-            await _run(["docker", "rm", "-f", container_name])
-        except Exception:
-            pass
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if os.path.exists(tar_path):
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
 
 
 async def build_rootfs_converter_base() -> None:
     """rootfs 変換専用ベース（tar コマンドのみの最小 Alpine）を構築する。
 
-    この資産自体はビルド時に docker.sock（信頼できる管理者操作）を使って作るが、
+    ビルド（Docker 操作）自体は docker-base-builder コンテナへ委譲する。
     出来上がったベースは「ユーザがアップロードする信用できない rootfs tar」を
     ビルド用VMの中で展開するための土台として使う（services.rootfs_tar から利用）。
     """
     if os.path.exists(ROOTFS_CONVERTER_BASE_PATH):
         logger.info(f"rootfs 変換専用ベースは既に存在します: {ROOTFS_CONVERTER_BASE_PATH}")
         return
-    if not docker_available():
-        raise RuntimeError(
-            "rootfs 変換専用ベースの構築には Docker (docker.sock) が必要ですが、"
-            "/var/run/docker.sock が見つかりません。資産ビルド時のみ docker.sock マウントを有効にしてください。"
-        )
     logger.info("rootfs 変換専用ベースを構築中...")
 
-    tmpdir = tempfile.mkdtemp(prefix="hackbento-rootfs-converter-")
-    container_name = f"hackbento-rootfs-converter-build-{os.path.basename(tmpdir)}"
+    build_script = _ROOTFS_CONVERTER_BASE_BUILD_SCRIPT.format(init_script=_ROOTFS_CONVERTER_INIT_SCRIPT)
+    job_id = uuid.uuid4().hex
+    tar_filename = f"{job_id}.tar"
+    tar_path = os.path.join(DEFAULTS_DIR, tar_filename)
     try:
-        build_script = _ROOTFS_CONVERTER_BASE_BUILD_SCRIPT.format(
-            init_script=_ROOTFS_CONVERTER_INIT_SCRIPT
+        await run_builder_job(
+            settings.DOCKER_BASE_BUILDER_URL,
+            "/export-tar",
+            {
+                "job_id": job_id,
+                "base_image": "alpine:3.19",
+                "build_script": build_script,
+                "dest_filename": tar_filename,
+                "method": "cp",
+                "cp_src_path": "/rootfs.tar",
+            },
+            job_id,
         )
-        await _run(["docker", "rm", "-f", container_name])
-    except Exception:
-        pass
-    try:
-        await _run([
-            "docker", "run", "--name", container_name,
-            "alpine:3.19",
-            "sh", "-c", build_script,
-        ], timeout=300)
-
-        tar_path = os.path.join(tmpdir, "rootfs.tar")
-        await _run(["docker", "cp", f"{container_name}:/rootfs.tar", tar_path])
-
         # 変換専用ベース自身の初回ビルドは「ニワトリと卵」（まだベースが無い）のため、
-        # この1箇所だけはホスト上展開版を使う。入力は HackBento 自身が docker.sock
+        # この1箇所だけはホスト上展開版を使う。入力は HackBento 自身が docker-base-builder
         # 経由で生成した tar（内容を把握できる）であり、ユーザアップロードではない。
         await convert_tar_to_ext4_host_unsafe(tar_path, ROOTFS_CONVERTER_BASE_PATH, size_mb=ROOTFS_CONVERTER_BASE_SIZE_MB)
         logger.info(f"rootfs 変換専用ベースを保存しました: {ROOTFS_CONVERTER_BASE_PATH}")
     finally:
-        try:
-            await _run(["docker", "rm", "-f", container_name])
-        except Exception:
-            pass
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if os.path.exists(tar_path):
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
 
 
 async def register_builtin_asset_records() -> None:
