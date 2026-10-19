@@ -13,7 +13,12 @@ from services.network import create_tap, delete_tap, _ip_pool, _get_bridge_subne
 logger = logging.getLogger(__name__)
 
 FC_SOCKET_DIR = "/tmp/fc-sockets"                       # VMごとのUnix socketディレクトリ
-FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs
+FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs（tmpfs運用を想定）
+# FC_ROOTFS_DIR が tmpfs の場合、サイズ上限（docker-compose.yml の tmpfs: size=）を
+# 運用者が変更すると容量不足になり得る。tmpfs の空きが足りない時は、このディレクトリ
+# （通常ディスク上・容量はホストディスク次第）へ自動的にフォールバックする。
+# tmpfs を使わない環境（FC_ROOTFS_DIR が通常ディスクの場合）ではこちらは使われない。
+FC_ROOTFS_DIR_FALLBACK = "/data/images/vm/runtime-rootfs-disk"
 
 # 実行中 Firecracker プロセスの vm_id → PID マップ（同一プロセス内でのみ有効）。
 # stop_vm 時に確実にプロセスを終了させるために保持する。
@@ -190,8 +195,8 @@ def _fc_socket_path(vm_id: str) -> str:
     return os.path.join(FC_SOCKET_DIR, f"{vm_id}.sock")
 
 
-def _fc_rootfs_runtime_path(vm_id: str) -> str:
-    return os.path.join(FC_ROOTFS_DIR, f"{vm_id}.ext4")
+def _fc_rootfs_runtime_path(vm_id: str, base_dir: str = FC_ROOTFS_DIR) -> str:
+    return os.path.join(base_dir, f"{vm_id}.ext4")
 
 
 _FC_API_TIMEOUT = 10.0
@@ -339,29 +344,51 @@ def _write_resolv_conf(rootfs_path: str) -> None:
                 pass
 
 
-def _ensure_free_space_for(rootfs_path: str) -> None:
-    """rootfs の writable コピー先に十分な空き容量があるか確認する。
+def _free_bytes(path: str) -> int | None:
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize
 
-    コピー元 rootfs と同等サイズ + マージンを要求する。不足時は RuntimeError を上げ、
-    ディスクフルによるホスト全体への波及を未然に防ぐ。
+
+def _select_rootfs_copy_dir(rootfs_path: str) -> str:
+    """rootfs の writable コピー先ディレクトリを選ぶ。
+
+    FC_ROOTFS_DIR（tmpfs運用を想定）の空きがコピー元サイズ+マージンを下回る場合、
+    docker-compose.yml の tmpfs size 設定を運用者が小さくした等の理由で容量不足に
+    なり得るため、通常ディスク上の FC_ROOTFS_DIR_FALLBACK へ自動的にフォールバック
+    する（起動そのものを容量不足だけで失敗させないため）。フォールバック先も
+    不足している場合はそこで RuntimeError を上げ、ディスクフルによるホスト全体への
+    波及を未然に防ぐ。
     """
     try:
         need = os.path.getsize(rootfs_path)
     except OSError:
-        return  # サイズ取得不可なら確認をスキップ（起動は試みる）
-    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
-    try:
-        st = os.statvfs(FC_ROOTFS_DIR)
-    except OSError:
-        return
-    free = st.f_bavail * st.f_frsize
+        return FC_ROOTFS_DIR  # サイズ取得不可なら確認をスキップ（起動は試みる）
+
     margin = 512 * 1024 * 1024  # 512MiB の余裕
-    if free < need + margin:
-        need_mb, free_mb = need // (1024 * 1024), free // (1024 * 1024)
-        raise RuntimeError(
-            f"ホストのディスク空き容量が不足しています（必要 約{need_mb}MiB+余裕、空き {free_mb}MiB）。"
-            " 停止済み環境の整理や不要な rootfs の削除を行ってください。"
-        )
+    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
+    free = _free_bytes(FC_ROOTFS_DIR)
+    if free is None or free >= need + margin:
+        return FC_ROOTFS_DIR
+
+    logger.warning(
+        f"{FC_ROOTFS_DIR} の空き容量不足（必要 約{need // (1024*1024)}MiB、"
+        f"空き {free // (1024*1024)}MiB）のため {FC_ROOTFS_DIR_FALLBACK} にフォールバックします"
+    )
+    os.makedirs(FC_ROOTFS_DIR_FALLBACK, exist_ok=True)
+    fallback_free = _free_bytes(FC_ROOTFS_DIR_FALLBACK)
+    if fallback_free is None or fallback_free >= need + margin:
+        return FC_ROOTFS_DIR_FALLBACK
+
+    need_mb = need // (1024 * 1024)
+    fallback_free_mb = fallback_free // (1024 * 1024)
+    raise RuntimeError(
+        f"ホストのディスク空き容量が不足しています（必要 約{need_mb}MiB+余裕、"
+        f"フォールバック先の空き {fallback_free_mb}MiB）。"
+        " 停止済み環境の整理や不要な rootfs の削除を行ってください。"
+    )
 
 
 def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
@@ -378,8 +405,9 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
     生成するため問題なく動作する。カスタム rootfs の場合は DNS 設定
     なしで起動する）。
     """
-    os.makedirs(FC_ROOTFS_DIR, exist_ok=True)
-    runtime_path = _fc_rootfs_runtime_path(vm_id)
+    copy_dir = _select_rootfs_copy_dir(rootfs_path)
+    os.makedirs(copy_dir, exist_ok=True)
+    runtime_path = _fc_rootfs_runtime_path(vm_id, copy_dir)
     tmp_path = runtime_path + ".tmp"
     try:
         if os.path.exists(tmp_path):
@@ -413,13 +441,18 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
 
 def _cleanup_writable_rootfs(vm_id: str) -> None:
     path = _fc_rootfs_paths.pop(vm_id, None)
-    if path is None:
-        path = _fc_rootfs_runtime_path(vm_id)
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    # オーケストレータ再起動後（_fc_rootfs_paths が空）の孤児整理等では、どちらの
+    # ディレクトリにコピーされたか記録が無いため、両方を確認して存在する方を消す。
+    candidates = [path] if path is not None else [
+        _fc_rootfs_runtime_path(vm_id, FC_ROOTFS_DIR),
+        _fc_rootfs_runtime_path(vm_id, FC_ROOTFS_DIR_FALLBACK),
+    ]
+    for p in candidates:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 _MANAGED_BOOT_ARG_PREFIXES = ("ip=", "init=", "console=", "root=", "reboot=", "panic=", "rw", "ro")
@@ -465,9 +498,8 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     if not os.path.exists("/dev/kvm"):
         raise RuntimeError("/dev/kvm が存在しません。KVM が有効か確認してください。")
 
-    # rootfs の writable コピーを作る前に、出力先の空き容量を確認する。
-    # コピー先が枯渇するとディスクフル状態でホスト全体に波及するため、起動前に弾く。
-    _ensure_free_space_for(rootfs_path)
+    # rootfs の writable コピー先の空き容量確認（tmpfs不足時は通常ディスクへ
+    # フォールバック）は _prepare_writable_rootfs（_select_rootfs_copy_dir）が行う。
 
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
