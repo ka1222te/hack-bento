@@ -184,21 +184,35 @@ if [ "$is_build" = "1" ]; then
                 rm -rf /opt/app; mkdir -p /opt/app
                 cp -a /mnt/scratch/app/. /opt/app/
             fi
+            LOAD_OK=1
             if [ -f /mnt/scratch/images.tar ]; then
-                docker load -i /mnt/scratch/images.tar
+                # docker load はディスク容量不足等で一部のイメージだけ読み込みに失敗することがある
+                # （dockerd/tar 側はエラーを返すが、後続の docker compose config 自体は
+                # 参照先イメージの有無を見ないため正常終了してしまう）。終了コードを明示的に
+                # 検知し、ロード失敗を「イメージが images.tar に含まれていません」という
+                # 紛らわしい後続エラーより先に、はっきりした原因として報告する。
+                if ! docker load -i /mnt/scratch/images.tar; then
+                    LOAD_OK=0
+                fi
             fi
-            if [ -d /mnt/scratch/overlay ]; then
-                cp -a /mnt/scratch/overlay/. /
-            fi
-            PROJ="$(cat /mnt/scratch/project_name 2>/dev/null || echo app)"
-            if [ -f /opt/app/compose.yml ] || [ -f /opt/app/compose.yaml ] || [ -f /opt/app/docker-compose.yml ] || [ -f /opt/app/docker-compose.yaml ]; then
-                docker compose --project-directory /opt/app -p "$PROJ" config --format json > /mnt/scratch/compose.json 2>/mnt/scratch/compose.err && STATUS=0 || STATUS=2
-                docker compose --project-directory /opt/app -p "$PROJ" config --images > /mnt/scratch/images.list 2>/dev/null || true
+            if [ "$LOAD_OK" = "0" ]; then
+                echo "docker load に失敗しました（ディスク容量不足の可能性があります。dockerd.log・df -h の結果を確認してください）" > /mnt/scratch/compose.err
+                df -h >> /mnt/scratch/compose.err 2>&1
+                STATUS=5
             else
-                echo "compose ファイルが /opt/app に見つかりません" > /mnt/scratch/compose.err
-                STATUS=3
+                if [ -d /mnt/scratch/overlay ]; then
+                    cp -a /mnt/scratch/overlay/. /
+                fi
+                PROJ="$(cat /mnt/scratch/project_name 2>/dev/null || echo app)"
+                if [ -f /opt/app/compose.yml ] || [ -f /opt/app/compose.yaml ] || [ -f /opt/app/docker-compose.yml ] || [ -f /opt/app/docker-compose.yaml ]; then
+                    docker compose --project-directory /opt/app -p "$PROJ" config --format json > /mnt/scratch/compose.json 2>/mnt/scratch/compose.err && STATUS=0 || STATUS=2
+                    docker compose --project-directory /opt/app -p "$PROJ" config --images > /mnt/scratch/images.list 2>/dev/null || true
+                else
+                    echo "compose ファイルが /opt/app に見つかりません" > /mnt/scratch/compose.err
+                    STATUS=3
+                fi
+                docker images --format '{{.Repository}}:{{.Tag}}' > /mnt/scratch/loaded.list 2>/dev/null || true
             fi
-            docker images --format '{{.Repository}}:{{.Tag}}' > /mnt/scratch/loaded.list 2>/dev/null || true
         else
             echo "dockerd 起動失敗" > /mnt/scratch/compose.err
             STATUS=4
