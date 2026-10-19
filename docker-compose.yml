@@ -15,6 +15,13 @@ services:
       # デフォルト/Attack Machine rootfs の初回自動ビルドのみ docker.sock が必要なため、
       # 自動ビルドが必要な初回だけ、下行のコメントを外して資産生成後に再度外すこと:
       #- /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      # VM起動ごとのwritable rootfsコピー先（services/smolvm.py: FC_ROOTFS_DIR）をtmpfs化。
+      # HDD環境では2GB前後のコピーが数十秒〜それ以上かかりディスクI/Oを飽和させるため、
+      # RAM上に置いて起動を高速化する。サイズ上限はホストRAMに対して安全マージンを
+      # 取った値（MAX_ENVS_TOTAL × 想定rootfsサイズを超えないよう運用側で調整すること）。
+      # 上限を超えると書き込みがENOSPCで失敗する（ホストメモリを無制限に食うことはない）。
+      - /data/images/vm/runtime-rootfs:size=20G,mode=0755
     network_mode: host
     restart: unless-stopped
     depends_on:
