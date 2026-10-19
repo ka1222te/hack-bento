@@ -14,7 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from config import settings
-from database import init_db, AsyncSessionLocal
+from database import init_db, AsyncSessionLocal, AsyncSessionLocalReadonly
 from models import User, UserRole, AuthProvider, Image, Visibility, ImageCollaborator
 from services.auth_local import hash_password
 from services.watchdog import run_watchdog
@@ -241,7 +241,7 @@ async def _get_request_user(request: Request) -> Optional[User]:
         return None
     try:
         payload = decode_token(token)
-        async with AsyncSessionLocal() as db:
+        async with AsyncSessionLocalReadonly() as db:
             result = await db.execute(
                 select(User).where(User.id == int(payload["sub"]), User.is_active == True)
             )
@@ -252,7 +252,7 @@ async def _get_request_user(request: Request) -> Optional[User]:
 
 async def _can_view_project(owner: str, slug: str, user: Optional[User]) -> bool:
     """owner/slug のプロジェクトを user が閲覧できるか確認する。"""
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         owner_result = await db.execute(select(User).where(User.username == owner))
         owner_obj = owner_result.scalar_one_or_none()
         if not owner_obj:
@@ -290,7 +290,7 @@ async def _can_edit_project(owner: str, slug: str, user: Optional[User]) -> bool
     """owner/slug のプロジェクトを user が編集できるか確認する。"""
     if user is None:
         return False
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         owner_result = await db.execute(select(User).where(User.username == owner))
         owner_obj = owner_result.scalar_one_or_none()
         if not owner_obj:
@@ -413,7 +413,7 @@ async def user_profile_page(username: str, request: Request):
     user = await _get_request_user(request)
     if not user:
         return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
-    async with AsyncSessionLocal() as db:
+    async with AsyncSessionLocalReadonly() as db:
         result = await db.execute(select(User).where(User.username == username, User.is_active == True))
         target = result.scalar_one_or_none()
     if not target:

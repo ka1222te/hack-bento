@@ -9,8 +9,19 @@ logger = logging.getLogger(__name__)
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+# 読み取り専用リクエスト（GETエンドポイント等）専用の別エンジン。同じSQLiteファイルに
+# 複数接続を張ること自体はWALモードで問題ない。_do_begin（BEGIN IMMEDIATE）ではなく
+# 通常のBEGIN（DEFERRED）を使うことで、書き込みロックを取得しない。
+# 1つのエンジンで全リクエストにBEGIN IMMEDIATEを強制すると、読み取り専用のAPIまで
+# 書き込みロックの取得を要求してしまい、WALの「読み取りは書き込みをブロックしない」
+# という利点を失って、バックグラウンドワーカーのビルド処理中に通常のページ閲覧まで
+# 巻き込まれて失敗する事故が起きていた（読み取り/書き込みのエンジンを分離して解決）。
+engine_readonly = create_async_engine(settings.DATABASE_URL, echo=False)
+AsyncSessionLocalReadonly = async_sessionmaker(engine_readonly, expire_on_commit=False)
+
 
 @event.listens_for(engine.sync_engine, "connect")
+@event.listens_for(engine_readonly.sync_engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
     """WAL化 + busy_timeout で複数asyncioタスクからの同時書き込み時の "database is locked" を防ぐ。
     pysqlite/aiosqliteのデフォルトisolation_level("")はDML前に独自にBEGINを発行し、
@@ -35,8 +46,17 @@ def _do_begin(conn):
     効くのは排他ロック取得待ちのみで、昇格の競合は別経路で即時失敗し得る）。
     BEGIN IMMEDIATE にして書き込みトランザクション開始時点で排他ロックを取ろうとする
     ことで、取れない場合は busy_timeout の待機に確実に乗るようにする。
+
+    このエンジン（engine/AsyncSessionLocal）は書き込みを行うエンドポイント・
+    バックグラウンドワーカーが使う。読み取り専用には engine_readonly を使うこと。
     """
     conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+@event.listens_for(engine_readonly.sync_engine, "begin")
+def _do_begin_readonly(conn):
+    """読み取り専用エンジン用。通常のBEGIN（DEFERRED）で、書き込みロックを取得しない。"""
+    conn.exec_driver_sql("BEGIN")
 
 
 async def init_db():
@@ -85,5 +105,17 @@ async def _migrate(conn):
 
 
 async def get_db():
+    """書き込みを行うエンドポイント用（BEGIN IMMEDIATE）。POST/PATCH/DELETEや
+    バックグラウンドワーカーで使う。"""
     async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def get_db_readonly():
+    """読み取り専用エンドポイント用（通常のBEGIN）。GETで一覧・詳細取得のみ行う
+    エンドポイントはこちらを使うことで、書き込みロックの取得を避け、バックグラウンド
+    ビルド処理などの書き込みと衝突してページ閲覧まで失敗する事故を防ぐ。
+    セッション内で書き込み（INSERT/UPDATE/DELETE）を行わないこと。
+    """
+    async with AsyncSessionLocalReadonly() as session:
         yield session

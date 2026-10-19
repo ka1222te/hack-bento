@@ -3,7 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError
-from database import get_db
+from database import get_db_readonly
 from models import User, UserRole
 from services.jwt_utils import decode_token
 
@@ -13,7 +13,7 @@ bearer = HTTPBearer(auto_error=False)
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ) -> User:
     token = None
     if credentials:

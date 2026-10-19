@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
-from database import get_db
+from database import get_db, get_db_readonly
 from models import Image, Difficulty, Visibility, User, UserRole, ImageCollaborator, CollaboratorRole
 from deps import get_current_user, require_username_set
 from services.vm_assets import DEFAULTS_DIR
@@ -411,7 +411,7 @@ async def _get_optional_user(request: Request, db: AsyncSession) -> Optional[Use
 
 
 @router.get("/", response_model=list[ImageResponse])
-async def list_images(request: Request, db: AsyncSession = Depends(get_db)):
+async def list_images(request: Request, db: AsyncSession = Depends(get_db_readonly)):
     user = await _get_optional_user(request, db)
     result = await db.execute(
         select(Image)
@@ -429,7 +429,7 @@ async def list_images(request: Request, db: AsyncSession = Depends(get_db)):
 async def list_default_assets(
     kind: str,
     current_user: User = Depends(require_username_set),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     """bridge プロジェクト作成・編集時に選択可能なデフォルトカーネル/rootfs/docker-baseの一覧を返す。"""
     from models import DefaultKernelAsset, DefaultRootfsAsset
@@ -456,7 +456,7 @@ async def list_default_assets(
 
 
 @router.get("/{image_id}/readme")
-async def get_readme(image_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def get_readme(image_id: int, request: Request, db: AsyncSession = Depends(get_db_readonly)):
     user = await _get_optional_user(request, db)
     result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))
     image = result.scalar_one_or_none()
@@ -976,7 +976,7 @@ async def update_image(
 async def can_edit(
     image_id: int,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     """現在のユーザがこのイメージを編集できるか確認する。"""
     result = await db.execute(select(Image).where(Image.id == image_id, Image.is_active == True))

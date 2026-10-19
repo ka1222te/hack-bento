@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
-from database import get_db
+from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
 from services.smolvm import start_vm, stop_vm
@@ -75,7 +75,7 @@ async def _get_attack_image(db: AsyncSession) -> Image:
 @router.get("/", response_model=AttackMachineStatusResponse)
 async def get_my_attack_machine(
     user: User = Depends(require_username_set),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     result = await db.execute(
         select(Image).where(Image.is_attack_machine == True, Image.is_active == True)

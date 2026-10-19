@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 from typing import Optional
 
-from database import get_db
+from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
@@ -63,7 +63,7 @@ def _to_response(env: Environment) -> EnvResponse:
 @router.get("/", response_model=list[EnvResponse])
 async def list_my_envs(
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     result = await db.execute(
         select(Environment)

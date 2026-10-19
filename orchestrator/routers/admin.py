@@ -10,7 +10,7 @@ from typing import Optional
 from datetime import datetime
 
 from config import settings
-from database import get_db
+from database import get_db, get_db_readonly
 from models import (
     User, UserRole, AuthProvider, Environment, EnvStatus, Image, ImageCollaborator,
     DefaultKernelAsset, DefaultRootfsAsset, RootfsConversionStatus,
@@ -102,7 +102,7 @@ class EnvAdminResponse(BaseModel):
 
 
 @router.get("/users", response_model=list[UserResponse])
-async def list_users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def list_users(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db_readonly)):
     result = await db.execute(select(User).order_by(User.id))
     return result.scalars().all()
 
@@ -228,7 +228,7 @@ async def delete_user(
 
 
 @router.get("/envs", response_model=list[EnvAdminResponse])
-async def list_all_envs(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def list_all_envs(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db_readonly)):
     result = await db.execute(
         select(Environment)
         .options(selectinload(Environment.user), selectinload(Environment.image))
@@ -268,7 +268,7 @@ async def force_stop_env(
 @router.get("/default-assets/docker-base", response_model=list[DefaultAssetResponse])
 async def list_docker_base_assets(
     _: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     """docker-base（Compose バンドル用土台）種別の一覧。
 
@@ -287,7 +287,7 @@ async def list_docker_base_assets(
 async def list_default_assets(
     kind: str,
     _: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_readonly),
 ):
     info = _DEFAULT_ASSET_KINDS.get(kind)
     if not info:
