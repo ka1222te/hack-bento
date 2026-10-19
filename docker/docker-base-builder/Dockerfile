@@ -24,4 +24,8 @@ WORKDIR /app
 COPY server.py .
 
 EXPOSE 8300
-CMD ["uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8300"]
+# --timeout-keep-alive: 既定5秒だと、orchestrator側のポーリング間隔（5秒）と近すぎて
+# クライアントが接続を再利用しようとした瞬間にサーバが先にkeep-aliveを閉じ、
+# 「Server disconnected without sending a response」でビルドが失敗することがあった。
+# ポーリング間隔より十分長くして事故を回避する。
+CMD ["uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8300", "--timeout-keep-alive", "30"]
