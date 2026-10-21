@@ -180,7 +180,11 @@ async def delete_user(
     if user.role == UserRole.admin:
         raise HTTPException(status_code=400, detail="管理者ユーザは削除できません。先に一般ユーザに降格してください")
 
-    # 起動中の環境を強制停止（行ロックで watchdog 等との二重停止を防ぐ）
+    # 起動中の環境を強制停止（行ロックで watchdog 等との二重停止を防ぐ）。
+    # destroy_env は実VM停止（Firecracker終了・TAP削除・cgroup削除）という重い
+    # I/O を行うため、完了ごとに commit して行ロックを早期に解放する。ここで
+    # commit せず関数末尾まで保持すると、他リクエスト（watchdog のタイムアウト
+    # 処理・他ユーザーの停止操作等）がその間ブロックされ続けてしまう。
     env_result = await db.execute(
         select(Environment.id).where(
             Environment.user_id == user_id,
@@ -191,6 +195,7 @@ async def delete_user(
         env = await claim_env_for_stop(db, env_id)
         if env is not None:
             await destroy_env(env)
+            await db.commit()
 
     # ユーザが所有するイメージのコラボレーター・環境・イメージ本体を削除
     img_result = await db.execute(select(Image).where(Image.owner_id == user_id))
@@ -208,6 +213,7 @@ async def delete_user(
                 env = await claim_env_for_stop(db, env_id)
                 if env is not None:
                     await destroy_env(env)
+                    await db.commit()
             except Exception:
                 pass
         await db.execute(delete(Environment).where(Environment.image_id == img.id))
