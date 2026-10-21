@@ -1,27 +1,28 @@
 # HackBento
 
-社内研修・脆弱性再現用のオンプレミス環境プラットフォーム。  
-Docker イメージ、または Firecracker microVM 用のゲストカーネル・rootfs をアップロード・登録し、ユーザが独立したコンテナ/microVM 環境を即座に起動できるシステムです。完全オンプレ・内部ネットワーク完結で動作します。
+社内研修・脆弱性再現用のオンプレミス環境プラットフォームです。
+ユーザがゲスト OS イメージ（カーネル + rootfs）または Compose バンドルをアップロード・登録し、他のユーザがそれを選択して独立した Firecracker microVM 環境として起動できます。TryHackMe ライクな UX を完全オンプレ・内部ネットワーク完結で実現します。
 
 > **本プロジェクトは、社内ネットワーク・プライベート IP 空間でのデプロイを前提として設計されています。
 > インターネットに直接公開する用途は想定していません。**
 
-HackBento は **コンテナ/VM への直接 IP 付与**（macvlan または bridge ネットワーク）を採用することで、ポートマッピングや Bastion ホストを必要とせず、ユーザが払い出された IP に直接 SSH できる設計を実現しています。
+HackBento は **microVM への直接 IP 付与**（Linux ブリッジ経由）を採用することで、ポートマッピングや Bastion ホストを必要とせず、ユーザが払い出された IP に直接 SSH できる設計を実現しています。
 
 ![HackBento Overview](assets/overview.png)
 
 ## 特徴
 
-- **ワンクリック起動** — プロジェクトを選択してボタンを押すだけで環境が立ち上がり、IP アドレスが払い出される
-- **IP 直アクセス** — ユーザは払い出された IP に直接 SSH・curl・nmap できる（Bastion/VPN 不要）。ただし、立ち上げる環境が SSH・curl・nmap に対応している必要があります。
-- **2種類のバックエンドから選択**:
-  - **macvlan + Docker コンテナ**（KVM不要・OCIイメージを起動）
-  - **bridge + Firecracker microVM**（KVM必須・カーネルレベルの分離・ゲストカーネル/rootfsを起動）
-  - ホストにつきどちらか一方を選択（`setup.sh` が対話的に構成）。コンテナ/VM に物理ネットワーク上の IP を直接付与（ポートマッピング不要）
-- **rootfs の tar→ext4 自動変換**（bridgeモード） — `docker export` 形式の単純な tar をアップロードすると、バックグラウンドで自動的に ext4 イメージへ変換
-- **タイムアウト管理** — 一定時間で環境を自動削除、延長ボタンで時間リセット
+- **ワンクリック起動** — プロジェクトを選択してボタンを押すだけで Firecracker microVM が立ち上がり、IP アドレスが即座に払い出される
+- **IP 直アクセス** — ユーザは払い出された IP に直接 SSH・curl・nmap できる（Bastion/VPN 不要）
+- **Firecracker microVM（KVM必須）** — 全ての環境がカーネルレベルで分離された Firecracker microVM として起動する。物理ネットワーク上の IP は Linux ブリッジ + TAP インターフェース経由で直接付与される（ポートマッピング不要）。CPU・メモリ・プロセス数の上限はホスト側の cgroup v2 委譲ツリーで強制され、TAP anti-spoof（nftables）により、VM 内で root を取られても IP/MAC を書き換えてブリッジに出ることはできない
+- **2種類の登録形式**:
+  - **OSイメージ**（`rootfs_kind=os`） — ゲストカーネル + rootfs（ext4）。中で Docker を使わない1台構成（カーネル CVE 問題等）向け
+  - **Compose バンドル**（`rootfs_kind=compose`） — `tools/hackbento-pack` でパッケージ化した複数コンテナの compose プロジェクトを VM イメージに焼き込み、ゲスト内の dockerd で実行する。VM の IP は1つで、`ports:` で公開したポートがそのまま待ち受ける
+- **rootfs の tar→ext4 自動変換** — `docker export` 形式の単純な tar をアップロードすると、バックグラウンドで自動的に ext4 イメージへ変換
+- **柔軟なタイムアウト設定** — タイムアウトの候補（分）を環境変数で設定可能。`0` を指定すると無制限として扱える
+- **Attack Machine** — 各ユーザが自分専用の Kali Linux + XFCE microVM を起動し、ホーム画面に埋め込まれた GUI（Apache Guacamole / VNC）から直接操作できる
 - **3種の認証** — ローカル認証 / LDAP / Google OAuth2 をサポート
-- **プロジェクト管理** — GitHub ライクなオーナー/slug URL でプロジェクトを管理・共有
+- **プロジェクト管理** — GitHub ライクなオーナー/slug URL でプロジェクトを管理・共有。公開設定・コラボレーターにも対応
 
 ## ユースケース
 
@@ -33,24 +34,23 @@ HackBento は **コンテナ/VM への直接 IP 付与**（macvlan または bri
 ## アーキテクチャ
 
 ```
-【内部ネットワーク】
+【内部ネットワーク（例: 192.168.181.0/24）】
 
 社内ユーザ端末
   │
   ├─ ブラウザ → HackBento Web UI（ライフサイクル管理）
   │
-  └─ ssh user@192.168.180.200  ← IP直打ち（Bastion不要）
+  └─ ssh user@192.168.181.200  ← IP直打ち（Bastion不要）
                 │
                 ▼
-         Dockerコンテナ or Firecracker microVM
-         （macvlan または bridge 経由でIPを直付与）
+         Firecracker microVM（bridgeネットワーク経由でIP直付与・KVM必須）
 
 【Webサーバの立ち位置】
-  HackBento ──Docker API / Firecracker REST API──► コンテナ/VM ランタイム
-  （管理APIのみ）                                     │
-                                                     ├─ env-001: 192.168.180.200
-                                                     ├─ env-002: 192.168.180.201
-                                                     └─ env-003: 192.168.180.202
+  HackBento ──Firecracker REST API──► VM ランタイム
+  （管理APIのみ）                       │
+                                      ├─ env-001: 192.168.181.200
+                                      ├─ env-002: 192.168.181.201
+                                      └─ env-003: 192.168.181.202
 ```
 
 ## 技術スタック
@@ -61,17 +61,16 @@ HackBento は **コンテナ/VM への直接 IP 付与**（macvlan または bri
 | フロントエンド | Jinja2 テンプレート + バニラ JS |
 | DB | SQLite（aiosqlite 非同期）|
 | 認証 | JWT（Cookie + Bearer）/ LDAP / Google OAuth2 |
-| 環境ランタイム | Docker + macvlan ネットワーク、または Firecracker + bridge ネットワーク（KVM必須）|
+| 環境ランタイム | Firecracker microVM + Linux bridge ネットワーク（KVM必須）|
+| GUIアクセス（Attack Machine） | Apache Guacamole（HackBento自身がリバースプロキシ）|
 | デプロイ | Docker Compose（network_mode: host）|
 
 ## 必要要件
 
 - Linux ホスト
 - Docker Engine / Docker Compose
-- **macvlan モード**: macvlan ドライバが使える NIC
-- **bridge モード**（Firecracker microVM・カーネルレベルの分離）: KVM（`/dev/kvm`、BIOSでSVM/VT-x有効化）・`iproute2`・systemd
-
-ホスト1台につきどちらか一方のバックエンドを選択します（後述のセットアップスクリプトが対話的に選択・構成します）。
+- KVM（`/dev/kvm`、BIOSでSVM/VT-x有効化）— 全環境（Firecracker microVM）に必須
+- ホスト上に Linux ブリッジを作成できること（`iproute2`・`netplan`・systemd）
 
 ## セットアップ
 
@@ -84,7 +83,7 @@ cd hack-bento
 
 ### 2. セットアップスクリプトを実行
 
-対話式スクリプト `setup.sh`（要 root 権限）が、バックエンドの選択からネットワーク構成・`.env`/`docker-compose.override.yml` の生成までを自動化します。
+対話式スクリプト `setup.sh`（要 root 権限）が、ネットワーク構成から `.env`/`docker-compose.override.yml` の生成までを自動化します。
 
 ```bash
 sudo ./setup.sh
@@ -92,13 +91,15 @@ sudo ./setup.sh
 
 スクリプトが行うこと:
 
-- `/dev/kvm` の有無と bridge 作成可否をチェックし、利用可能なバックエンド（`bridge`/`macvlan`）を提示・選択
+- `/dev/kvm` の有無と bridge 作成可否をチェック（どちらも必須。使えない場合はエラー終了）
 - 物理 NIC・サブネット・ゲートウェイ・DNS の検出/聞き取り
-- **macvlan モード**: `hackbento-vm` という名前の macvlan ネットワーク定義を含む `docker-compose.override.yml` を生成
-- **bridge モード**: ホスト OS 側に Linux ブリッジを作成して物理 NIC を接続し、`netplan` で永続化。さらに Firecracker VM のリソース上限（メモリ・PID数・CPU使用率）を強制するための cgroup v2 委譲ツリーと、それを再起動時に再構成する systemd サービスをセットアップ
-- `.env` の生成（`.env.example` からコピー）と `VM_BACKEND`・ネットワーク関連変数の設定
+- ホスト OS 側に Linux ブリッジ（`vmbr-hackbento`）を作成して物理 NIC を接続し、ホストIPをブリッジへ移設、`netplan` で永続化（再起動後も維持）
+- VM ごとのリソース上限（メモリ・PID数・CPU使用率）を強制するための cgroup v2 委譲ツリー（`/sys/fs/cgroup/hackbento-vms`）と、再起動時に再構成する systemd サービス（`hackbento-vm-cgroup.service`）をセットアップ
+- `.env` の生成（`.env.example` からコピー）と `BRIDGE_NAME`・`FC_GUEST_GATEWAY`・`IP_POOL_START`/`IP_POOL_END` の設定
+- Firecracker に必要なデバイス・cgroup マウント（`/dev/kvm`・`/dev/net/tun`・`NET_ADMIN`・`cgroup: host`）を含む `docker-compose.override.yml` を生成
+- **Attack Machine**（Kali Linux + Guacamole GUI）を有効にするか対話的に確認。有効にした場合は `GUACAMOLE_JSON_SECRET_KEY` を生成し、`docker-compose.override.yml` に `guacd`/`guacamole` サービス定義を追記
 
-> ネットワーク設定を変更したい場合は `docker compose -f docker-compose.yml -f docker-compose.override.yml down` の後に `sudo ./setup.sh` を再実行してください（`docker-compose.override.yml` を再生成します）。
+> ネットワーク設定を変更したい場合は `docker compose -f docker-compose.yml -f docker-compose.override.yml down` の後に `sudo ./setup.sh` を再実行してください（`docker-compose.override.yml` を再生成します）。cgroup 委譲ツリーだけ再セットアップしたい場合は `sudo ./setup.sh --vm-cgroup-only` が使えます。
 
 ### 3. .env を確認・編集
 
@@ -113,7 +114,7 @@ PORT=8000
 SECRET_KEY=$(openssl rand -hex 32)
 ```
 
-IP プール（`IP_POOL_START`/`IP_POOL_END`）は `setup.sh` が検出したサブネット内のアドレス空間に自動設定されますが、必要に応じて調整してください。範囲外の IP を指定した場合、コンテナ/VM の起動に失敗します。
+IP プール（`IP_POOL_START`/`IP_POOL_END`）は `setup.sh` が検出したサブネット内のアドレス空間に自動設定されますが、必要に応じて調整してください。範囲外の IP を指定した場合、VM の起動に失敗します。
 
 ### 4. 起動
 
@@ -127,14 +128,14 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 http://<DOMAIN>:<PORT>/
 ```
 
-初期管理者アカウント: `admin` / `admin`
+初期管理者アカウント: `admin` / `admin`（初回起動時に自動作成）
 
-**初回ログイン後すぐにパスワードを変更してください。**  
+**初回ログイン後すぐにパスワードを変更してください。**
 パスワードの変更は右上のユーザアイコン → **ユーザ設定** から行えます（ローカルユーザのみ）。
 
 ### LDAP / Google OAuth2 ユーザの初回ログイン
 
-LDAP または Google OAuth2 でログインした場合、初回のみユーザ名設定画面（`/setup-username`）に遷移します。  
+LDAP または Google OAuth2 でログインした場合、初回のみユーザ名設定画面（`/setup-username`）に遷移します。
 任意のユーザ名を設定すると通常のホーム画面に移動します。一度設定したユーザ名は変更できません。
 
 ## 認証設定
@@ -173,29 +174,49 @@ OAUTH_ALLOWED_DOMAINS=example.com  # 空にすると全Googleアカウントを�
 
 ### プロジェクト管理
 
-プロジェクトはホストの `VM_BACKEND` に応じた種類のを保持します（ホストと種類が一致するプロジェクトのみ起動可能）。
+プロジェクトは全て Firecracker microVM として起動します。新規作成画面のトグルで選ぶ2種類の登録形式（`Image.rootfs_kind`）があります。
 
-- **macvlan バックエンド**: Docker イメージ（`.tar` / `.tar.gz` / `.tgz` / `.tar.zst`）をアップロード、または Docker Hub URL を指定して登録
-- **bridge バックエンド**（Firecracker microVM）: ゲストカーネルと rootfs（ext4）をそれぞれ「アップロード」「URLリンク」「管理者が登録した共有デフォルトから選択」のいずれかで用意
-  - rootfs として `docker export` 形式の単純な tar をアップロードした場合、バックグラウンドで自動的に ext4 イメージへ変換されます（変換中はステータスバッジが表示され、完了まで環境の起動はブロックされます）
+#### OSイメージ（`rootfs_kind=os`）
+
+中で Docker を使わない1台構成（カーネル CVE 問題、OS に直接サービスを入れた VM 等）向け。
+
+- ゲストカーネルと rootfs（ext4）をそれぞれ「アップロード」「URLリンク」「管理者が登録した共有デフォルト資産から選択」（`/admin` の「デフォルトVM資産」タブ）のいずれかで用意
+- rootfs として `docker export` 形式の単純な tar をアップロードした場合、バックグラウンドで自動的に ext4 イメージへ変換されます（変換中はステータスバッジが表示され、完了まで環境の起動はブロックされます）
+- カーネル exploit 問題向けに、プロジェクト別の追加カーネル起動引数（`nokaslr`/`nosmep`/`nosmap`/`kpti=0` 等）を設定できる
+
+#### Compose バンドル（`rootfs_kind=compose`）
+
+中で Docker を動かし、複数コンテナ（Web + DB + LB 等）を1台の VM・1つの IP で提供する場合向け。
+
+- 作成者が手元で `tools/hackbento-pack --bundle <dir>`（root不要）を実行し、compose プロジェクトをバンドル tar にパッケージ化
+- 新規作成画面でアップロードすると、バックグラウンドワーカーがネットワーク分離されたビルド用 VM の中でバンドルを VM イメージへ焼き込み、`docker compose config` の出力を検査する（macvlan/ipvlanネット・外部ネット・固定IP・未収録イメージ等は拒否）
+- 本番起動時はゲストが dockerd を起動し `docker compose up -d` を実行する
+
+共通のプロジェクト設定:
+
 - `/{owner}/{slug}` 形式の URL でプロジェクトにアクセス
-- 公開設定: `public`（全員）/ `protected`（ログイン済み）/ `private`（限定）
+- 公開設定: `public`（全員）/ `protected`（ログイン済み）/ `private`（オーナー・管理者・コラボレーターのみ）
 - コラボレーター: `Read`（閲覧・起動）/ `Read-Write`（閲覧・起動・編集）
 
 ### 環境管理
 
 - ワンクリックで環境を起動、IP アドレスが即座に払い出される
-- デフォルト 60 分でタイムアウト、「延長する（+60分）」で延長可能
-- 残り 10 分で警告表示
-- 1 ユーザあたり最大 2 環境、システム全体で最大 20 環境（設定変更可能）
-- 各環境にメモリ上限・プロセス数上限・CPU使用率上限を適用し、悪意あるイメージ/VMによるホストへの影響を軽減（macvlanはDockerのリソース制限機構、bridgeはホスト側のcgroup v2委譲ツリーで強制）
+- タイムアウトの候補（分）は `TIMEOUT_MINUTES_OPTIONS`（カンマ区切り）で設定可能。`0` は無制限を表す特別値で、負値・数値に変換できない値は無視される
+- 残り `TIMEOUT_WARNING_MINUTES` 分で警告表示（無制限環境では表示されない）
+- 1 ユーザあたり最大 `MAX_ENVS_PER_USER` 環境、システム全体で最大 `MAX_ENVS_TOTAL` 環境（管理者は両方の上限を受けない）
+- 各環境にCPU・メモリ・プロセス数の上限を、ホスト側の cgroup v2 委譲ツリーで強制し、悪意あるイメージ/VM によるホストへの影響を軽減
+- バックグラウンドの watchdog が30秒ごとに期限切れ・クラッシュした環境を検知して自動的に後始末する
+
+### Attack Machine
+
+`ATTACK_MACHINE_ENABLED=true` の場合、各ユーザが自分専用の Kali Linux + XFCE microVM を（1ユーザにつき同時に1台まで）ホーム画面から起動し、Apache Guacamole による埋め込みGUIから操作できます（Guacamoleへの通信は HackBento 自身がリバースプロキシするため、Guacamoleのポートを外部に公開する必要はありません）。
 
 ### 管理画面（`/admin`）
 
 - **起動中の環境**: 全ユーザの環境一覧・強制停止
 - **ユーザ管理**: ローカルユーザ追加・有効化/無効化・ロール変更・パスワードリセット・削除
 - **プロジェクト管理**: 全プロジェクト一覧・削除
-- **デフォルトVM**（bridgeバックエンド）: bridgeプロジェクト作成時に選択できる共有のゲストカーネル・rootfsを登録・管理。rootfsはtarアップロード時に自動でext4へ変換される
+- **デフォルトVM資産**: プロジェクト作成時に選択できる共有のゲストカーネル・rootfsを登録・管理。rootfsはtarアップロード時に自動でext4へ変換される
 
 ## 環境変数一覧
 
@@ -209,21 +230,26 @@ OAUTH_ALLOWED_DOMAINS=example.com  # 空にすると全Googleアカウントを�
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | JWT の有効期限（分）|
 | `DATABASE_URL` | SQLite | DB 接続 URL |
 | `DEFAULT_TIMEOUT_MINUTES` | `60` | 環境のデフォルトタイムアウト（分）|
+| `TIMEOUT_MINUTES_OPTIONS` | `15,30,45,60,75,90,105,120` | 選択可能なタイムアウト候補（分・カンマ区切り）。`0` は無制限を表す。負値・数値でない値は無視され、空になった場合は既定候補にフォールバック |
 | `TIMEOUT_WARNING_MINUTES` | `10` | タイムアウト警告を出す残り時間（分）|
-| `MAX_ENVS_PER_USER` | `2` | 1 ユーザあたりの最大同時起動数 |
-| `MAX_ENVS_TOTAL` | `20` | システム全体の最大同時起動数 |
+| `MAX_ENVS_PER_USER` | `2` | 1 ユーザあたりの最大同時起動数（管理者は対象外）|
+| `MAX_ENVS_TOTAL` | `20` | システム全体の最大同時起動数（管理者は対象外）|
 | `VM_CPU_LIMIT` | `1` | 1 環境あたりの CPU 上限（コア）|
 | `VM_MEMORY_LIMIT_MB` | `1024` | 1 環境あたりのメモリ上限（MB）|
 | `VM_DISK_LIMIT_GB` | `10` | 1 環境あたりのディスク上限（GB）|
 | `VM_PIDS_LIMIT` | `256` | 1 環境あたりの最大プロセス数（fork bomb 対策）|
-| `UPLOAD_IMAGE_MAX_MB` | `6144` | Docker イメージのアップロードサイズ上限（MB）|
+| `UPLOAD_IMAGE_MAX_MB` | `6144` | イメージ/バンドルファイルのアップロードサイズ上限（MB）|
 | `UPLOAD_README_MAX_MB` | `10` | README ファイルのアップロードサイズ上限（MB）|
-| `VM_BACKEND` | `macvlan` | `macvlan` または `bridge`（`setup.sh` が設定）|
-| `MACVLAN_NETWORK` | `hackbento-vm` | macvlan ネットワーク名 |
-| `BRIDGE_NAME` | `vmbr-hackbento` | bridge モード: TAP を接続するホストブリッジ名（`setup.sh` が作成）|
-| `FC_GUEST_GATEWAY` | `192.168.180.1` | bridge モード: ゲストにルーティングするゲートウェイ（ホストのブリッジIP）|
+| `BRIDGE_NAME` | `vmbr-hackbento` | TAP を接続するホストブリッジ名（`setup.sh` が作成）|
+| `FC_GUEST_GATEWAY` | `192.168.180.1` | ゲストにルーティングするゲートウェイ（ホストのブリッジIP）|
+| `FC_GUEST_DNS` | `8.8.8.8,8.8.4.4` | ゲストに設定するDNSサーバ（カンマ区切りで複数指定可）|
 | `IP_POOL_START` | `192.168.181.200` | IP プール開始アドレス（subnet 内に収めること）|
 | `IP_POOL_END` | `192.168.181.230` | IP プール終了アドレス（subnet 内に収めること）|
+| `ATTACK_MACHINE_ENABLED` | `false` | Attack Machine 機能（Kali Linux + Guacamole GUI）の有効化 |
+| `ATTACK_MACHINE_CPU_LIMIT` | `2` | Attack Machine の CPU 上限（コア）|
+| `ATTACK_MACHINE_MEMORY_LIMIT_MB` | `2048` | Attack Machine のメモリ上限（MB）|
+| `ATTACK_MACHINE_TIMEOUT_MINUTES` | `60` | Attack Machine のタイムアウト（分）。`0` は無制限。初回起動時に一度だけ読み込まれ、以後固定される |
+| `GUACAMOLE_JSON_SECRET_KEY` | （Attack Machine有効時は要設定）| Guacamole自動ログイントークンの署名に使うAES鍵。`setup.sh`が生成 |
 | `LDAP_ENABLED` | `false` | LDAP 認証の有効化 |
 | `LDAP_URI` | `ldap://...` | LDAP サーバの URI |
 | `LDAP_TOP_DOMAIN` | `dc=example,dc=com` | BaseDN |
@@ -266,6 +292,8 @@ Google OAuth2 を使う場合は Google Cloud Console のリダイレクト URI 
 
 - **社内ネットワーク・プライベート IP 空間**（RFC 1918 アドレス: 10.x.x.x / 172.16-31.x.x / 192.168.x.x）
 - **インターネットから隔離されたクローズドネットワーク**
+
+HackBento は意図的に脆弱なゲストイメージを扱うため、公開ネットワークに露出させると第三者による不正アクセスのリスクがあります。
 
 ## 貢献
 
