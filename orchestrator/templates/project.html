@@ -132,6 +132,7 @@ const API = {
 };
 
 const isLoggedIn = !!API.token();
+let isAdmin = false;
 initNavbar();
 
 const diffLabel  = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
@@ -150,6 +151,8 @@ async function init() {
   if (isLoggedIn) {
     const envRes = await API.get('/api/envs/');
     myEnvs = envRes.ok ? await envRes.json() : [];
+    const meRes = await API.get('/api/auth/me');
+    if (meRes.ok) { const me = await meRes.json(); isAdmin = me.role === 'admin'; }
   }
 
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
@@ -259,7 +262,7 @@ function renderLaunchPanel() {
   }
 
   const running = myEnvs.find(e => e.image_id === imageData.id);
-  const atLimit = myEnvs.length >= MAX_ENVS;
+  const atLimit = !isAdmin && myEnvs.length >= MAX_ENVS;
 
   const _isCompose = imageData.rootfs_kind === 'compose';
   const _ROOTFS_CONVERSION_LABELS = _isCompose
