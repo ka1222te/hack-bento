@@ -388,6 +388,10 @@ async def register_attack_machine_image() -> None:
             image.kernel_path = DEFAULT_KERNEL_PATH
             image.rootfs_path = ATTACK_ROOTFS_PATH
             image.is_active = True
+            # timeout_minutes（ATTACK_MACHINE_TIMEOUT_MINUTES）はコンテナ起動時に毎回
+            # .env の値へ同期する（CPU/メモリ上限は起動中VMのcgroup設定と紐づくため
+            # 初回作成時の値を維持する）。
+            image.timeout_minutes = settings.ATTACK_MACHINE_TIMEOUT_MINUTES
         await db.commit()
 
 

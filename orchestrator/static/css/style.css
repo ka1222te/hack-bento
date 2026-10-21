@@ -425,6 +425,11 @@ body::before {
   padding: 1px 6px;
   border-radius: 3px;
 }
+.unlimited-badge {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent2);
+}
 .ssh-hint {
   background: var(--bg);
   border: 1px solid var(--border);

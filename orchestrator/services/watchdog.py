@@ -55,10 +55,11 @@ async def run_watchdog() -> None:
             async with AsyncSessionLocal() as db:
                 now = datetime.utcnow()
 
-                # 期限切れ running 環境を停止
+                # 期限切れ running 環境を停止（is_unlimited の環境はタイムアウト判定の対象外）
                 result = await db.execute(
                     select(Environment.id).where(
                         Environment.status == EnvStatus.running,
+                        Environment.is_unlimited == False,
                         Environment.expires_at <= now,
                     )
                 )

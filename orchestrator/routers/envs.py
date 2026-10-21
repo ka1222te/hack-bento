@@ -32,6 +32,7 @@ class EnvResponse(BaseModel):
     expires_at: datetime
     seconds_remaining: int
     timeout_minutes: int
+    is_unlimited: bool
     warning: bool
     is_attack_machine: bool
 
@@ -41,7 +42,8 @@ class EnvResponse(BaseModel):
 def _to_response(env: Environment) -> EnvResponse:
     now = datetime.utcnow()
     remaining = max(0, int((env.expires_at - now).total_seconds()))
-    timeout = env.image.timeout_minutes if env.image and env.image.timeout_minutes else settings.DEFAULT_TIMEOUT_MINUTES
+    img_timeout = env.image.timeout_minutes if env.image else None
+    timeout = img_timeout if img_timeout is not None else settings.DEFAULT_TIMEOUT_MINUTES
     owner = env.image.owner.username if env.image and env.image.owner else None
     return EnvResponse(
         id=env.id,
@@ -55,7 +57,8 @@ def _to_response(env: Environment) -> EnvResponse:
         expires_at=env.expires_at,
         seconds_remaining=remaining,
         timeout_minutes=timeout,
-        warning=remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
+        is_unlimited=env.is_unlimited,
+        warning=not env.is_unlimited and remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
         is_attack_machine=env.image.is_attack_machine if env.image else False,
     )
 
@@ -106,7 +109,11 @@ async def start_env(
             detail="rootfs の変換に失敗しています。プロジェクト編集画面から rootfs を再アップロードしてください",
         )
 
-    timeout = image.timeout_minutes or settings.DEFAULT_TIMEOUT_MINUTES
+    timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.DEFAULT_TIMEOUT_MINUTES
+    is_unlimited = timeout == 0
+    # is_unlimited=True の環境では expires_at は watchdog の判定対象外になるため
+    # 実質無意味な値だが、カラムが NOT NULL のため placeholder を入れておく。
+    placeholder_minutes = timeout if not is_unlimited else settings.DEFAULT_TIMEOUT_MINUTES
     env: Environment | None = None
 
     async def _reserve(ip: str) -> None:
@@ -142,7 +149,8 @@ async def start_env(
             ip_address=ip,
             status=EnvStatus.starting,
             started_at=now,
-            expires_at=now + timedelta(minutes=timeout),
+            expires_at=now + timedelta(minutes=placeholder_minutes),
+            is_unlimited=is_unlimited,
         )
         db.add(env)
         await db.flush()
@@ -188,8 +196,9 @@ async def start_env(
 
         env.status = EnvStatus.running
         # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
-        # running に遷移した時点から timeout 分のカウントを開始する。
-        env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
+        # running に遷移した時点から timeout 分のカウントを開始する
+        # （is_unlimited=True の場合 expires_at は watchdog の判定対象外になる placeholder）。
+        env.expires_at = datetime.utcnow() + timedelta(minutes=placeholder_minutes)
         await db.commit()
     except HTTPException:
         raise
@@ -245,8 +254,14 @@ async def extend_env(
                 detail=f"延長回数の上限（{max_extend}回）に達しています",
             )
 
-        # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）
-        extend_minutes = env.image.timeout_minutes if env.image and env.image.timeout_minutes else settings.DEFAULT_TIMEOUT_MINUTES
+        if env.is_unlimited:
+            raise HTTPException(status_code=400, detail="この環境は無制限のため延長の必要はありません")
+
+        # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）。
+        # プロジェクト編集で後から無制限(0)に変更されていた場合は DEFAULT にフォールバックする
+        # （この env 自体は起動時点では有限なので is_unlimited=False のまま）。
+        img_timeout = env.image.timeout_minutes if env.image else None
+        extend_minutes = img_timeout if img_timeout else settings.DEFAULT_TIMEOUT_MINUTES
         env.expires_at = datetime.utcnow() + timedelta(minutes=extend_minutes)
         env.extended_count += 1
         await db.commit()

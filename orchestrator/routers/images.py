@@ -506,8 +506,8 @@ async def upload_image(
         raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{settings.VM_CPU_LIMIT} の範囲で指定してください")
     if memory_limit_mb < 128 or memory_limit_mb > settings.VM_MEMORY_LIMIT_MB:
         raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{settings.VM_MEMORY_LIMIT_MB} の範囲で指定してください")
-    if timeout_minutes < 1 or timeout_minutes > 1440:
-        raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
+    if timeout_minutes not in settings.TIMEOUT_MINUTES_OPTIONS:
+        raise HTTPException(status_code=400, detail="timeout_minutes は許可された候補の中から指定してください")
     if len(name) > 128:
         raise HTTPException(status_code=400, detail="name は 128 文字以内で指定してください")
     if description and len(description) > 512:
@@ -910,8 +910,8 @@ async def update_image(
             raise HTTPException(status_code=400, detail=f"無効なカテゴリです: {category}")
         image.category = category or None
     if timeout_minutes is not None:
-        if timeout_minutes < 1 or timeout_minutes > 1440:
-            raise HTTPException(status_code=400, detail="timeout_minutes は 1〜1440 の範囲で指定してください")
+        if timeout_minutes not in settings.TIMEOUT_MINUTES_OPTIONS:
+            raise HTTPException(status_code=400, detail="timeout_minutes は許可された候補の中から指定してください")
         image.timeout_minutes = timeout_minutes
     if extra_boot_args is not None:
         if len(extra_boot_args) > 512:

@@ -156,9 +156,18 @@ async function init() {
     return;
   }
 
-  extendBtn.disabled = false;
-  extendBtn.onclick = extend;
-  startCountdown(machine.seconds_remaining, machine.timeout_minutes * 60);
+  if (machine.is_unlimited) {
+    if (_consoleTimer) { clearInterval(_consoleTimer); _consoleTimer = null; }
+    const timerEl = document.getElementById('am-console-timer');
+    timerEl.textContent = '無制限';
+    timerEl.className = 'am-console-timer am-console-timer-blue';
+    timerEl.classList.remove('hidden');
+    extendBtn.disabled = true;
+  } else {
+    extendBtn.disabled = false;
+    extendBtn.onclick = extend;
+    startCountdown(machine.seconds_remaining, machine.timeout_minutes * 60);
+  }
 
   if (!iframeEl.classList.contains('hidden')) return; // 既に接続済み
 

@@ -97,6 +97,7 @@ class EnvAdminResponse(BaseModel):
     status: str
     started_at: datetime
     expires_at: datetime
+    is_unlimited: bool
 
     model_config = {"from_attributes": True}
 
@@ -247,6 +248,7 @@ async def list_all_envs(_: User = Depends(require_admin), db: AsyncSession = Dep
             status=env.status.value,
             started_at=env.started_at,
             expires_at=env.expires_at,
+            is_unlimited=env.is_unlimited,
         ))
     return out
 

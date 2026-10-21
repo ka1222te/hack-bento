@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     # タイムアウト・制限
     DEFAULT_TIMEOUT_MINUTES: int = 60
+    # VM起動・延長時に選択できるタイムアウト（分）の候補リスト。0 は無制限を表す。
+    # 負の値・数値に変換できない値は無視する。空になった場合は既定値にフォールバックする。
+    TIMEOUT_MINUTES_OPTIONS: Union[List[int], str] = [15, 30, 45, 60, 75, 90, 105, 120]
     MAX_ENVS_PER_USER: int = 2
     MAX_ENVS_TOTAL: int = 20
 
@@ -51,6 +54,21 @@ class Settings(BaseSettings):
             return v
         return [d.strip() for d in str(v).split(",") if d.strip()]
 
+    @field_validator("TIMEOUT_MINUTES_OPTIONS", mode="before")
+    @classmethod
+    def parse_timeout_options(cls, v):
+        raw = v if isinstance(v, list) else str(v).split(",")
+        options = set()
+        for item in raw:
+            try:
+                n = int(str(item).strip())
+            except (TypeError, ValueError):
+                continue
+            if n < 0:
+                continue
+            options.add(n)
+        return sorted(options) or [15, 30, 45, 60, 75, 90, 105, 120]
+
     # ---- ネットワーク設定 ----
     BRIDGE_NAME: str = "vmbr-hackbento"               # TAP を接続するホスト bridge 名
 
@@ -68,7 +86,18 @@ class Settings(BaseSettings):
     ATTACK_MACHINE_ENABLED: bool = False
     ATTACK_MACHINE_CPU_LIMIT: int = 2
     ATTACK_MACHINE_MEMORY_LIMIT_MB: int = 2048
+    # Attack Machine のタイムアウト（分）。0 は無制限を表す。
+    # 負の値・数値に変換できない値は無視し、既定値（60分）にフォールバックする。
     ATTACK_MACHINE_TIMEOUT_MINUTES: int = 60
+
+    @field_validator("ATTACK_MACHINE_TIMEOUT_MINUTES", mode="before")
+    @classmethod
+    def parse_attack_machine_timeout(cls, v):
+        try:
+            n = int(str(v).strip())
+        except (TypeError, ValueError):
+            return 60
+        return n if n >= 0 else 60
 
     # ---- docker-base builder ----
     # orchestrator コンテナから見た docker-base-builder への接続先。orchestrator は
