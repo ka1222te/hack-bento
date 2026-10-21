@@ -103,7 +103,7 @@ async function init() {
           <p class="profile-project-name">${escHtml(img.name)}</p>
           ${img.description ? `<p class="profile-project-desc">${escHtml(img.description)}</p>` : ''}
           <div class="profile-project-meta">
-            <span>&#x23F0; タイムアウト ${img.timeout_minutes}分</span>
+            <span>&#x23F0; タイムアウト ${img.timeout_minutes === 0 ? '無制限' : img.timeout_minutes + '分'}</span>
           </div>
         </div>
         <div class="profile-project-action">

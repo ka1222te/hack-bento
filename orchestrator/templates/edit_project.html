@@ -80,14 +80,9 @@
         <div class="np-field" style="max-width:240px">
           <label class="np-label">タイムアウト</label>
           <select class="np-input" name="timeout_minutes" id="proj-timeout">
-            <option value="15">15 分</option>
-            <option value="30">30 分</option>
-            <option value="45">45 分</option>
-            <option value="60">60 分</option>
-            <option value="75">75 分</option>
-            <option value="90">90 分</option>
-            <option value="105">105 分</option>
-            <option value="120">120 分</option>
+            {% for m in settings.TIMEOUT_MINUTES_OPTIONS %}
+            <option value="{{ m }}">{% if m == 0 %}無制限{% else %}{{ m }} 分{% endif %}</option>
+            {% endfor %}
           </select>
         </div>
 
@@ -394,7 +389,7 @@ async function init() {
   document.getElementById('proj-name').value        = imageData.name || '';
   document.getElementById('proj-desc').value        = imageData.description || '';
   document.getElementById('proj-difficulty').value  = imageData.difficulty || 'none';
-  document.getElementById('proj-timeout').value     = String(imageData.timeout_minutes || 60);
+  document.getElementById('proj-timeout').value     = String(imageData.timeout_minutes ?? 60);
   if (imageData.category) document.getElementById('proj-category').value = imageData.category;
   // 既存の追加カーネル起動引数をチェックボックスに反映
   const _currentBootArgs = (imageData.extra_boot_args || '').split(/\s+/).filter(Boolean);

@@ -95,6 +95,7 @@ async def _migrate(conn):
         ("images", "is_attack_machine", "ALTER TABLE images ADD COLUMN is_attack_machine BOOLEAN NOT NULL DEFAULT 0"),
         ("default_rootfs_assets", "base_image", "ALTER TABLE default_rootfs_assets ADD COLUMN base_image VARCHAR(256)"),
         ("images", "build_phase", "ALTER TABLE images ADD COLUMN build_phase VARCHAR(32)"),
+        ("environments", "is_unlimited", "ALTER TABLE environments ADD COLUMN is_unlimited BOOLEAN NOT NULL DEFAULT 0"),
     ]
     for table, column, ddl in migrations:
         result = await conn.execute(text(f"PRAGMA table_info({table})"))

@@ -36,6 +36,7 @@ class AttackMachineResponse(BaseModel):
     expires_at: datetime
     seconds_remaining: int
     timeout_minutes: int
+    is_unlimited: bool
 
     model_config = {"from_attributes": True}
 
@@ -59,6 +60,7 @@ def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineRespons
         expires_at=env.expires_at,
         seconds_remaining=remaining,
         timeout_minutes=timeout_minutes,
+        is_unlimited=env.is_unlimited,
     )
 
 
@@ -98,7 +100,8 @@ async def get_my_attack_machine(
     env = env_result.scalar_one_or_none()
     machine = None
     if env is not None:
-        machine = _to_response(env, image.timeout_minutes or settings.ATTACK_MACHINE_TIMEOUT_MINUTES)
+        img_timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
+        machine = _to_response(env, img_timeout)
     return AttackMachineStatusResponse(rootfs_status="ready", rootfs_error=None, machine=machine)
 
 
@@ -119,7 +122,11 @@ async def start_attack_machine(
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="Attack Machine は既に起動しています")
 
-    timeout = image.timeout_minutes or settings.ATTACK_MACHINE_TIMEOUT_MINUTES
+    timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
+    is_unlimited = timeout == 0
+    # is_unlimited=True の場合 expires_at は watchdog の判定対象外になるため実質無意味だが、
+    # カラムが NOT NULL のため placeholder を入れておく。
+    placeholder_minutes = timeout if not is_unlimited else settings.DEFAULT_TIMEOUT_MINUTES
     env: Environment | None = None
 
     async def _reserve(ip: str) -> None:
@@ -153,7 +160,8 @@ async def start_attack_machine(
             ip_address=ip,
             status=EnvStatus.starting,
             started_at=now,
-            expires_at=now + timedelta(minutes=timeout),
+            expires_at=now + timedelta(minutes=placeholder_minutes),
+            is_unlimited=is_unlimited,
         )
         db.add(env)
         await db.flush()
@@ -162,11 +170,9 @@ async def start_attack_machine(
     if not ip or env is None:
         raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
 
-    # start_vm() はVM起動完了まで数十秒かかる。ここでcommitして"starting"状態を
-    # 確定させないと、他のリクエスト（GET /api/attack-machine/ のポーリングや
-    # ページ再読み込み）からこのレコードが見えず、起動中にもかかわらず
-    # 「VM起動」ボタンが再度押せる状態に見えてしまう。
-    await db.commit()
+    # status=starting の行自体は allocate_ip 内で既に commit 済み（他リクエストの
+    # user_count/total_count チェックに即座に反映されるようにするため）。
+    # ここでの commit は env への以降の変更（なければ no-op）を確定させる保険。
 
     try:
         vm_result = await start_vm(
@@ -198,8 +204,9 @@ async def start_attack_machine(
 
     env.status = EnvStatus.running
     # start_vm() の起動処理（数十秒かかる場合がある）の間はタイマーを消費させず、
-    # running に遷移した時点から timeout 分のカウントを開始する。
-    env.expires_at = datetime.utcnow() + timedelta(minutes=timeout)
+    # running に遷移した時点から timeout 分のカウントを開始する
+    # （is_unlimited=True の場合 expires_at は watchdog の判定対象外になる placeholder）。
+    env.expires_at = datetime.utcnow() + timedelta(minutes=placeholder_minutes)
     await db.commit()
     return _to_response(env, timeout)
 
@@ -231,7 +238,13 @@ async def extend_attack_machine(
                 detail=f"延長回数の上限（{max_extend}回）に達しています",
             )
 
-        extend_minutes = image.timeout_minutes or settings.ATTACK_MACHINE_TIMEOUT_MINUTES
+        if env.is_unlimited:
+            raise HTTPException(status_code=400, detail="この Attack Machine は無制限のため延長の必要はありません")
+
+        # 延長時間 = イメージのタイムアウト設定（上限もこれに揃える）。
+        # プロジェクト編集で後から無制限(0)に変更されていた場合は ATTACK_MACHINE_TIMEOUT_MINUTES
+        # にフォールバックする（この env 自体は起動時点では有限なので is_unlimited=False のまま）。
+        extend_minutes = image.timeout_minutes if image.timeout_minutes else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
         env.expires_at = datetime.utcnow() + timedelta(minutes=extend_minutes)
         env.extended_count += 1
         await db.commit()

@@ -425,6 +425,11 @@ body::before {
   padding: 1px 6px;
   border-radius: 3px;
 }
+.unlimited-badge {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent2);
+}
 .ssh-hint {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1125,12 +1130,33 @@ textarea { resize: vertical; min-height: 70px; }
 .markdown-body pre {
   background: var(--bg); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 1rem;
-  overflow-x: auto; margin: 1em 0;
+  overflow-x: auto; margin: 0;
 }
 .markdown-body pre code {
-  background: none; border: none; padding: 0;
+  /* highlight.js のテーマ CSS（pre code.hljs { padding: 1em }）が style.css より
+     後に読み込まれ、同じ詳細度のため上書きされてしまう。padding だけ !important
+     で確実に無効化する（pre 側の padding: 1rem だけで十分な余白になる）。 */
+  background: none; border: none; padding: 0 !important;
   font-size: 0.875rem; color: var(--text);
 }
+/* README のコピーボタン（addReadmeCopyButtons が付与する）。pre 自体は
+   overflow-x: auto で横スクロールするため、pre の子要素に置いたボタンを外側へ
+   出そうとしても overflow でクリッピングされて見切れる。そのため pre を
+   .readme-copy-wrapper で包み、margin もここに持たせた上でボタンはラッパー
+   （overflow 制限なし）基準で配置する。 */
+.markdown-body .readme-copy-wrapper {
+  position: relative; margin: 1.6em 0 1em;
+}
+.markdown-body .readme-copy-button {
+  /* pre の内側（コード領域）ではなく外側・右上に出す。コードが pre の上端近くまで
+     詰まっている場合でも文字と重ならないようにするため。 */
+  position: absolute; top: -0.9rem; right: 0.5rem;
+  padding: 0.25rem 0.6rem; font-size: 0.75rem; line-height: 1.4;
+  color: var(--text3); background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer; opacity: 0.85;
+}
+.markdown-body .readme-copy-button:hover { opacity: 1; background: var(--bg3); }
+.markdown-body .readme-copy-button.copied { color: var(--green); border-color: var(--green); opacity: 1; }
 .markdown-body ul, .markdown-body ol { padding-left: 1.75em; margin: 0.75em 0; }
 .markdown-body li { margin: 0.3em 0; }
 .markdown-body blockquote {

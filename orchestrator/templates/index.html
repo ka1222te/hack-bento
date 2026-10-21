@@ -30,6 +30,8 @@ const API = {
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
 };
 
+let isAdmin = false;
+
 (async () => {
   // sessionStorageにトークンがない場合はCookie認証を試みてsessionStorageを同期する
   if (!API.token()) {
@@ -39,8 +41,12 @@ const API = {
     if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
     // CookieのJWTをsessionStorageに同期してAPI呼び出しを統一する
     sessionStorage.setItem('hb_token', me.access_token);
+    isAdmin = me.role === 'admin';
   } else if (sessionStorage.getItem('hb_needs_setup') === 'true') {
     window.location.href = '/setup-username'; return;
+  } else {
+    const res = await API.get('/api/auth/me');
+    if (res.ok) { const me = await res.json(); isAdmin = me.role === 'admin'; }
   }
   initNavbar();
   loadMyEnvs();
@@ -66,10 +72,15 @@ async function loadMyEnvs() {
 }
 
 function renderMyEnvs() {
-  // カウントバッジ更新
+  // カウントバッジ更新（管理者は同時起動数の上限を受けないため非表示）
   const badge = document.getElementById('env-count-badge');
-  badge.textContent = `${myEnvs.length} / ${MAX_ENVS}`;
-  badge.className = 'env-count-badge' + (myEnvs.length >= MAX_ENVS ? ' env-count-full' : '');
+  if (isAdmin) {
+    badge.classList.add('hidden');
+  } else {
+    badge.classList.remove('hidden');
+    badge.textContent = `${myEnvs.length} / ${MAX_ENVS}`;
+    badge.className = 'env-count-badge' + (myEnvs.length >= MAX_ENVS ? ' env-count-full' : '');
+  }
 
   const grid  = document.getElementById('my-envs-grid');
   const empty = document.getElementById('my-envs-empty');
@@ -93,19 +104,23 @@ function renderMyEnvs() {
         ${env.status === 'starting' ? `
         <span class="spinner-inline"></span>
         <span class="env-starting-label">&#x23F3; VM起動中...</span>
+        ` : env.is_unlimited ? `
+        <span class="unlimited-badge">&#x267E; 無制限</span>
         ` : `
         <span>残り</span>
         <span class="countdown"></span>
         <span class="warn-badge hidden" id="warn-${env.id}">⚠ まもなく終了</span>
         `}
       </div>
-      ${env.status === 'starting' ? '' : `<div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>`}
+      ${env.status === 'starting' || env.is_unlimited ? '' : `<div class="timer-bar"><div class="timer-bar-inner" id="tbar-inner-${env.id}"></div></div>`}
       <div class="env-actions">
         ${env.status === 'starting' ? '' : `
+        ${env.is_unlimited ? '' : `
         <button class="btn btn-sm btn-extend js-extend-env" data-eid="${env.id}" data-timeout="${env.timeout_minutes}">
           <span class="btn-spinner hidden"></span>
           <span class="btn-text">&#x23F1; 延長 (+${env.timeout_minutes}分)</span>
         </button>
+        `}
         <button class="btn btn-sm btn-danger js-stop-env" data-eid="${env.id}">
           <span class="btn-spinner hidden"></span>
           <span class="btn-text">&#x23F9; 停止</span>
@@ -117,8 +132,9 @@ function renderMyEnvs() {
 
   // カウントダウン開始（延長後リセットのため毎回新規）。
   // starting中はVMが実際に起動完了するまでタイマーが開始されないため、表示もしない。
+  // 無制限（is_unlimited）の環境もカウントダウン対象外。
   myEnvs.forEach(env => {
-    if (env.status === 'starting') {
+    if (env.status === 'starting' || env.is_unlimited) {
       if (timers[env.id]) { clearInterval(timers[env.id]); delete timers[env.id]; }
       return;
     }

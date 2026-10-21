@@ -117,13 +117,15 @@ initNavbar();
 
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
 let allImages = [], myEnvs = [];
+let isAdmin = false;
 
 async function init() {
   const requests = [API.get('/api/images/')];
-  if (isLoggedIn) requests.push(API.get('/api/envs/'));
-  const [imgRes, envRes] = await Promise.all(requests);
+  if (isLoggedIn) requests.push(API.get('/api/envs/'), API.get('/api/auth/me'));
+  const [imgRes, envRes, meRes] = await Promise.all(requests);
   if (imgRes.ok) allImages = await imgRes.json();
   if (envRes && envRes.ok) myEnvs = await envRes.json();
+  if (meRes && meRes.ok) { const me = await meRes.json(); isAdmin = me.role === 'admin'; }
 
   ['diff-select', 'cat-select', 'vis-select'].forEach(id =>
     document.getElementById(id).addEventListener('change', renderImages)
@@ -154,7 +156,7 @@ function renderImages() {
   empty.classList.add('hidden');
 
   const activeEnvImageIds = new Set(myEnvs.map(e => e.image_id));
-  const atLimit   = myEnvs.length >= MAX_ENVS;
+  const atLimit   = !isAdmin && myEnvs.length >= MAX_ENVS;
   const diffLabel = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
   const visIcon   = { public: '🌍', protected: '🔒', private: '🔐' };
 
@@ -175,7 +177,7 @@ function renderImages() {
           </div>
           <p class="project-row-desc">${escHtml(img.description || '説明なし')}</p>
           <div class="project-row-meta">
-            <span>&#x23F0; タイムアウト ${img.timeout_minutes}分</span>
+            <span>&#x23F0; タイムアウト ${img.timeout_minutes === 0 ? '無制限' : img.timeout_minutes + '分'}</span>
           </div>
         </div>
         <div class="project-row-action">

@@ -212,6 +212,9 @@ class Environment(Base):
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     extended_count = Column(Integer, default=0, nullable=False)
+    # Image.timeout_minutes が 0（無制限）だった時点のスナップショット。
+    # True の間、watchdog は expires_at によるタイムアウト判定を行わない。
+    is_unlimited = Column(Boolean, default=False, nullable=False)
 
     user = relationship("User", back_populates="environments")
     image = relationship("Image", back_populates="environments")

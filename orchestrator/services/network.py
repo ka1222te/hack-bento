@@ -74,11 +74,17 @@ async def _get_bridge_used_ips() -> set[str]:
 
 
 async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
-    """IP を確保し、lock 保持中に flush_record() を呼んで DB に仮記録する。
+    """IP を確保し、lock 保持中に flush_record() を呼んで DB に仮記録・commit する。
 
     flush_record は async callable で、割り当てた IP を受け取り
-    Environment レコードを db に add して flush する責務を持つ。
-    これにより lock 解放前に DB が更新されるため TOCTOU を防ぐ。
+    Environment レコードを db に add して flush する責務を持つ（同時起動数の
+    上限チェックもこの中で行う）。
+
+    flush だけでは SQLite の別トランザクション（他リクエストの db セッション）
+    からはまだ見えないため、_lock 保持中に commit まで完了させる。これを
+    やらないと、flush 止まりの行が他リクエストの user_count/total_count
+    チェックに反映されず、_lock で直列化していても上限チェックをすり抜けて
+    同時に多重起動されてしまう（flush だけでは TOCTOU を防げない）。
     """
     async with _lock:
         pool = _ip_pool()
@@ -103,6 +109,7 @@ async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
         for ip in pool:
             if ip not in used:
                 await flush_record(ip)
+                await db.commit()
                 return ip
         return None
 

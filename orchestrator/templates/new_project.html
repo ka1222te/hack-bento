@@ -92,14 +92,9 @@
         <div class="np-field" style="max-width:240px">
           <label class="np-label">タイムアウト <span class="np-required">*</span></label>
           <select class="np-input" name="timeout_minutes">
-            <option value="15">15 分</option>
-            <option value="30">30 分</option>
-            <option value="45">45 分</option>
-            <option value="60" selected>60 分</option>
-            <option value="75">75 分</option>
-            <option value="90">90 分</option>
-            <option value="105">105 分</option>
-            <option value="120">120 分</option>
+            {% for m in settings.TIMEOUT_MINUTES_OPTIONS %}
+            <option value="{{ m }}" {% if m == settings.DEFAULT_TIMEOUT_MINUTES %}selected{% endif %}>{% if m == 0 %}無制限{% else %}{{ m }} 分{% endif %}</option>
+            {% endfor %}
           </select>
         </div>
 

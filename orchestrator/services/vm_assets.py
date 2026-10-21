@@ -38,7 +38,13 @@ ROOTFS_CONVERTER_BASE_LABEL = "rootfs 変換用ベース（内部専用・選択
 #   run モード (通常起動): dockerd を起動し /opt/app の compose を up して居座る。
 # ゲストカーネル(6.1)に nftables が無いため iptables は legacy に固定する。
 DOCKER_BASE_ROOTFS_PATH = os.path.join(DEFAULTS_DIR, "docker-base.ext4")
-DOCKER_BASE_ROOTFS_SIZE_MB = 2048   # Debian + docker-ce の最小構成（convert_tar_to_ext4 が実サイズで自動拡張）
+# この ext4 のサイズが、Compose バンドルビルド時に書き込み可能コピーとして使われる
+# 容量の上限そのものになる（_prepare_build_rootfs は単純な shutil.copy2 でファイルシステム
+# サイズを変えずに複製するため、ビルド対象のバンドルが何であれここで決まる容量しか使えない）。
+# ベース OS（Debian + docker-ce、数百MB）に加え、バンドルの images.tar を docker load した
+# 展開後レイヤー（圧縮前の実データ量）を載せられる余裕が必要。2048MB では複数の中〜大型
+# イメージ（例: Samba + PHP/Apache 系）を含むバンドルで容量不足になったため拡大した。
+DOCKER_BASE_ROOTFS_SIZE_MB = 4096
 DOCKER_BASE_LABEL = "Debian + Docker + compose (Compose バンドル用土台)"
 DOCKER_BASE_DEBIAN_IMAGE = "debian:bookworm-slim"
 
