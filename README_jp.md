@@ -305,6 +305,20 @@ HackBento は意図的に脆弱なゲストイメージを扱うため、公開�
 
 本ソフトウェアを使用する場合は、利用者自身の責任において適切な環境・権限のもとで行ってください。
 
+## サードパーティソフトウェア
+
+HackBento 自体は GPL-3.0 で配布していますが、ビルド時・実行時にいくつかのサードパーティ OSS を利用しています。これらは本リポジトリのソースとして同梱・再配布しているのではなく、Docker ビルド時またはコンテナ起動時に各公式の配布元からダウンロード・プルして使用しているもので、それぞれ独自のライセンスが適用されます。
+
+| コンポーネント | ライセンス | 補足 |
+|---|---|---|
+| [Firecracker](https://github.com/firecracker-microvm/firecracker) | Apache License 2.0 | microVM ランタイム本体。`orchestrator/Dockerfile` で公式リリースバイナリをダウンロードして使用 |
+| [Apache Guacamole](https://guacamole.apache.org/)（`guacamole`・`guacd`） | Apache License 2.0 | Attack Machine の埋め込みGUIに使用。公式イメージ `guacamole/guacamole`・`guacamole/guacd` をベースにしている（`docker/guacamole/Dockerfile` 参照） |
+| [guacamole-auth-json](https://guacamole.apache.org/doc/gug/json-auth.html) | Apache License 2.0 | 上記イメージに組み込むGuacamole拡張。パスワード不要のトークン自動ログインに使用 |
+| Python依存ライブラリ（FastAPI・SQLAlchemy・Jinja2・`ldap3`・Authlib・httpx 等） | 各種（多くはMIT/BSD/Apache-2.0。`ldap3` は LGPL-3.0）| 詳細は `orchestrator/requirements.txt` を参照。再配布する場合は各パッケージのライセンスを個別に確認すること |
+| Kali Linux / Debian ベースイメージ（Attack Machine の rootfs） | 各ディストリビューションのライセンスに準拠 | 初回起動時に自動ビルドされるもので、本リポジトリには同梱していない |
+
+Apache License 2.0 は、これらのコンポーネントを HackBento 自身の GPL-3.0 コードと並行して利用・集約する用途において GPL-3.0 と互換性があります。HackBento のソースコードは Firecracker・Guacamole のソースを派生・組み込んだものではありません。ビルド済みの HackBento イメージを再配布する場合は、同梱される各コンポーネントが求めるライセンス表示（Guacamole/Firecracker に同梱される `NOTICE` ファイル等）を保持してください。
+
 ## ライセンス
 
 [GNU General Public License v3.0](LICENSE)

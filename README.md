@@ -305,6 +305,20 @@ The authors and contributors are not liable for any damages arising from the use
 
 Use this software at your own risk, in an appropriate environment with proper authorization.
 
+## Third-Party Software
+
+HackBento is licensed under the GPL-3.0, but it builds on and runs several third-party open-source components at build time / runtime. These are not redistributed as part of this repository's source, but are downloaded/pulled from their official sources during the Docker build or at container startup. Their own licenses apply to those components:
+
+| Component | License | Notes |
+|---|---|---|
+| [Firecracker](https://github.com/firecracker-microvm/firecracker) | Apache License 2.0 | microVM runtime; the official release binary is downloaded in `orchestrator/Dockerfile` |
+| [Apache Guacamole](https://guacamole.apache.org/) (`guacamole`, `guacd`) | Apache License 2.0 | Used for the Attack Machine's embedded GUI; the official `guacamole/guacamole` and `guacamole/guacd` images are used as a base (see `docker/guacamole/Dockerfile`) |
+| [guacamole-auth-json](https://guacamole.apache.org/doc/gug/json-auth.html) | Apache License 2.0 | Guacamole extension bundled into the image above, used for passwordless token-based auto-login |
+| Python dependencies (FastAPI, SQLAlchemy, Jinja2, `ldap3`, Authlib, httpx, etc.) | Various (mostly MIT/BSD/Apache-2.0; `ldap3` is LGPL-3.0) | See `orchestrator/requirements.txt` for the full list and pin each package's own license before redistribution |
+| Kali Linux / Debian base images (Attack Machine rootfs) | Various (see each distribution's own licensing) | Built automatically on first startup; not bundled in this repository |
+
+Apache License 2.0 is compatible with GPL-3.0 for the purpose of using/aggregating these components alongside HackBento's own GPL-3.0 code; no HackBento source code is derived from or incorporates Firecracker/Guacamole source. If you redistribute a built HackBento image, make sure to retain the license notices required by each bundled component (e.g. any `NOTICE` file shipped with Guacamole/Firecracker).
+
 ## License
 
 [GNU General Public License v3.0](LICENSE)
