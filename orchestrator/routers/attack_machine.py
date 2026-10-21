@@ -170,11 +170,9 @@ async def start_attack_machine(
     if not ip or env is None:
         raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
 
-    # start_vm() はVM起動完了まで数十秒かかる。ここでcommitして"starting"状態を
-    # 確定させないと、他のリクエスト（GET /api/attack-machine/ のポーリングや
-    # ページ再読み込み）からこのレコードが見えず、起動中にもかかわらず
-    # 「VM起動」ボタンが再度押せる状態に見えてしまう。
-    await db.commit()
+    # status=starting の行自体は allocate_ip 内で既に commit 済み（他リクエストの
+    # user_count/total_count チェックに即座に反映されるようにするため）。
+    # ここでの commit は env への以降の変更（なければ no-op）を確定させる保険。
 
     try:
         vm_result = await start_vm(

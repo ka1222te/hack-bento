@@ -173,9 +173,10 @@ async def start_env(
         raise HTTPException(status_code=500, detail="VM起動に失敗しました")
 
     try:
-        # vm_id は取得後すぐに確定させる。ここで commit せずに後続処理中にオーケストレータが
-        # 落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL のまま残り、
-        # cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
+        # vm_id は取得後すぐに確定させる（status=starting の行自体は allocate_ip 内で
+        # 既に commit 済み）。ここで vm_id を確定・commit しないまま後続処理中に
+        # オーケストレータが落ちると、VM/コンテナは実在するのに DB 上は vm_id が NULL の
+        # まま残り、cleanup_orphaned_vms が vm_id で突き合わせできず孤児を検出できなくなる。
         # また、vm_id が確定する前に停止要求（watchdogのstuck-starting処理含む）が
         # 先行した場合、destroy_env が vm_id=None で実VM/TAP/cgroupを解放できず
         # 孤児が残ってしまうため、vm_id だけを先に確定・commitする。
