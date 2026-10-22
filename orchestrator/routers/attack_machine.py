@@ -102,7 +102,16 @@ async def get_my_attack_machine(
     if env is not None:
         img_timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
         machine = _to_response(env, img_timeout)
-    return AttackMachineStatusResponse(rootfs_status="ready", rootfs_error=None, machine=machine)
+    # Attack Machine 用の Image レコードは rootfs ビルド開始前（register_attack_machine_image）
+    # に作られるため、Image の存在だけでは rootfs の実体が揃っているとは限らない。
+    # 常に実際のビルド状況（vm_assets.attack_rootfs_build_status）を返す必要がある
+    # （無条件に "ready" を返すと、再ビルド中でも起動ボタンが押せてしまい
+    # 「rootfs が見つかりません」で起動失敗する）。
+    return AttackMachineStatusResponse(
+        rootfs_status=vm_assets.attack_rootfs_build_status,
+        rootfs_error=vm_assets.attack_rootfs_build_error,
+        machine=machine,
+    )
 
 
 @router.post("/start", response_model=AttackMachineResponse, status_code=status.HTTP_201_CREATED)
@@ -112,15 +121,11 @@ async def start_attack_machine(
 ):
     image = await _get_attack_image(db)
 
-    existing = await db.execute(
-        select(Environment).where(
-            Environment.user_id == user.id,
-            Environment.image_id == image.id,
-            Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]),
+    if vm_assets.attack_rootfs_build_status != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail="Attack Machine の rootfs を構築中です。完了までしばらくお待ちください",
         )
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail="Attack Machine は既に起動しています")
 
     timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
     is_unlimited = timeout == 0
@@ -131,6 +136,19 @@ async def start_attack_machine(
 
     async def _reserve(ip: str) -> None:
         nonlocal env
+        # Attack Machine の重複起動チェックは allocate_ip の _ip_lock 保持中（この
+        # コールバックの中）で行う必要がある。ロック外で先にチェックすると、
+        # 同時に2リクエストが来た場合どちらもチェック通過後にロックへ到達し、
+        # 2台のAttack Machineが作られてしまう（TOCTOU）。
+        existing = await db.execute(
+            select(Environment).where(
+                Environment.user_id == user.id,
+                Environment.image_id == image.id,
+                Environment.status.in_([EnvStatus.starting, EnvStatus.running, EnvStatus.stopping]),
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="Attack Machine は既に起動しています")
         if user.role != UserRole.admin:
             user_count = await db.execute(
                 select(func.count()).where(
