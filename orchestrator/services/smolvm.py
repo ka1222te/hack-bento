@@ -13,11 +13,12 @@ from services.network import create_tap, delete_tap, _ip_pool, _get_bridge_subne
 logger = logging.getLogger(__name__)
 
 FC_SOCKET_DIR = "/tmp/fc-sockets"                       # VMごとのUnix socketディレクトリ
-FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs（tmpfs運用を想定）
-# FC_ROOTFS_DIR が tmpfs の場合、サイズ上限（docker-compose.yml の tmpfs: size=）を
-# 運用者が変更すると容量不足になり得る。tmpfs の空きが足りない時は、このディレクトリ
-# （通常ディスク上・容量はホストディスク次第）へ自動的にフォールバックする。
-# tmpfs を使わない環境（FC_ROOTFS_DIR が通常ディスクの場合）ではこちらは使われない。
+FC_ROOTFS_DIR = "/data/images/vm/runtime-rootfs"        # Firecracker 起動時に作る VM ごとの writable rootfs（通常ディスク上）
+# 過去バージョンはここを tmpfs 運用していた（docker-compose.yml の tmpfs: size=）。
+# VM内でDockerを動かす等 rootfs への書き込みが増えるケースで、tmpfsがVM専用cgroupの
+# メモリ上限の外側からホストRAMを消費しOOMでホストごと巻き込む恐れがあったため廃止し、
+# 常に通常ディスク（/data ボリューム）を使う方式に変更した。このパスは、tmpfs運用
+# だった旧バージョンから残っている孤児コピーを掃除する目的でのみ参照する。
 FC_ROOTFS_DIR_FALLBACK = "/data/images/vm/runtime-rootfs-disk"
 
 # 実行中 Firecracker プロセスの vm_id → PID マップ（同一プロセス内でのみ有効）。
@@ -353,14 +354,10 @@ def _free_bytes(path: str) -> int | None:
 
 
 def _select_rootfs_copy_dir(rootfs_path: str) -> str:
-    """rootfs の writable コピー先ディレクトリを選ぶ。
+    """rootfs の writable コピー先ディレクトリ（FC_ROOTFS_DIR）の空き容量を確認する。
 
-    FC_ROOTFS_DIR（tmpfs運用を想定）の空きがコピー元サイズ+マージンを下回る場合、
-    docker-compose.yml の tmpfs size 設定を運用者が小さくした等の理由で容量不足に
-    なり得るため、通常ディスク上の FC_ROOTFS_DIR_FALLBACK へ自動的にフォールバック
-    する（起動そのものを容量不足だけで失敗させないため）。フォールバック先も
-    不足している場合はそこで RuntimeError を上げ、ディスクフルによるホスト全体への
-    波及を未然に防ぐ。
+    空きがコピー元サイズ+マージンを下回る場合は RuntimeError を上げ、ディスクフル
+    によるホスト全体への波及を未然に防ぐ（起動前に確実に弾く）。
     """
     try:
         need = os.path.getsize(rootfs_path)
@@ -373,20 +370,11 @@ def _select_rootfs_copy_dir(rootfs_path: str) -> str:
     if free is None or free >= need + margin:
         return FC_ROOTFS_DIR
 
-    logger.warning(
-        f"{FC_ROOTFS_DIR} の空き容量不足（必要 約{need // (1024*1024)}MiB、"
-        f"空き {free // (1024*1024)}MiB）のため {FC_ROOTFS_DIR_FALLBACK} にフォールバックします"
-    )
-    os.makedirs(FC_ROOTFS_DIR_FALLBACK, exist_ok=True)
-    fallback_free = _free_bytes(FC_ROOTFS_DIR_FALLBACK)
-    if fallback_free is None or fallback_free >= need + margin:
-        return FC_ROOTFS_DIR_FALLBACK
-
     need_mb = need // (1024 * 1024)
-    fallback_free_mb = fallback_free // (1024 * 1024)
+    free_mb = free // (1024 * 1024)
     raise RuntimeError(
         f"ホストのディスク空き容量が不足しています（必要 約{need_mb}MiB+余裕、"
-        f"フォールバック先の空き {fallback_free_mb}MiB）。"
+        f"空き {free_mb}MiB）。"
         " 停止済み環境の整理や不要な rootfs の削除を行ってください。"
     )
 
@@ -498,8 +486,8 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     if not os.path.exists("/dev/kvm"):
         raise RuntimeError("/dev/kvm が存在しません。KVM が有効か確認してください。")
 
-    # rootfs の writable コピー先の空き容量確認（tmpfs不足時は通常ディスクへ
-    # フォールバック）は _prepare_writable_rootfs（_select_rootfs_copy_dir）が行う。
+    # rootfs の writable コピー先の空き容量確認は _prepare_writable_rootfs
+    # （_select_rootfs_copy_dir）が行う。
 
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)

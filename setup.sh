@@ -326,6 +326,34 @@ persist_bridge_network() {
         red "[ERROR] netplan apply に失敗しました。"
         echo "        ${netplan_file} の内容を確認し、必要に応じて手動で 'sudo netplan apply' を実行してください。"
     fi
+
+    persist_bridge_nf_sysctl
+}
+
+# bridge-nf-call-iptables が有効（カーネルのデフォルト、または他の docker ホスト
+# コンポーネントが br_netfilter をロードした結果 1 になっている）だと、
+# BRIDGE_NAME 越しの L2 フレーム（VM↔外部ホスト間の通信を含む）まで通常の IP 用
+# iptables/nftables FORWARD チェーンにフックされてしまう。このホスト上で稼働する
+# Docker（docker-base-builder 等）が FORWARD ポリシーを DROP にしている場合、
+# ホスト自身の通信（INPUT/OUTPUT）には影響しないため setup 中の疎通確認は通るが、
+# 外部ホストから VM への ping/SSH だけが無言でタイムアウトする障害になる。
+# bridge を単純な L2 スイッチとして使う HackBento の前提に合わせ、必ず無効化する。
+persist_bridge_nf_sysctl() {
+    local sysctl_file="/etc/sysctl.d/90-hackbento-bridge-nf.conf"
+
+    {
+        echo "net.bridge.bridge-nf-call-iptables = 0"
+        echo "net.bridge.bridge-nf-call-ip6tables = 0"
+        echo "net.bridge.bridge-nf-call-arptables = 0"
+    } > "$sysctl_file"
+
+    if sysctl --system &>/dev/null; then
+        green "[OK] bridge-nf sysctl を無効化し永続化しました（${sysctl_file}）。"
+        echo "     （ブリッジ越しの通信が Docker 等の iptables FORWARD ルールに巻き込まれるのを防止）"
+    else
+        red "[ERROR] sysctl --system の適用に失敗しました。"
+        echo "        以下を手動で実行してください: sudo sysctl --system"
+    fi
 }
 
 # ---------- VM 用 cgroup 委譲ツリーのセットアップ ----------
