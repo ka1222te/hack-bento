@@ -76,6 +76,8 @@ apt-get install -y --no-install-recommends \
     openssh-client sudo bash dbus-x11 \
     kali-linux-core \
     iputils-ping nmap hydra enum4linux john gobuster dirb wireshark wordlists \
+    nano vim git curl wget unzip net-tools \
+    python3 python3-pip python3-venv \
     locales fonts-noto-cjk fonts-noto-cjk-extra firefox-esr-l10n-ja \
     fcitx5 fcitx5-mozc fcitx5-config-qt \
     fcitx5-frontend-gtk2 fcitx5-frontend-gtk3 fcitx5-frontend-qt5
@@ -327,6 +329,9 @@ async def build_attack_rootfs() -> None:
     tar_filename = f"{job_id}.tar"
     tar_path = os.path.join(DEFAULTS_DIR, tar_filename)
     try:
+        # nano/git/python3-pip等の追加パッケージがQt6系の依存を多数引き込み、
+        # unpackフェーズだけで実測1時間46分かかるようになったため、configure・
+        # tar化を含めた全体のタイムアウトを7200s(2時間)から14400s(4時間)に延長した。
         await run_builder_job(
             settings.DOCKER_BASE_BUILDER_URL,
             "/export-tar",
@@ -336,10 +341,10 @@ async def build_attack_rootfs() -> None:
                 "build_script": build_script,
                 "dest_filename": tar_filename,
                 "method": "export",
-                "build_timeout_s": 7200,
+                "build_timeout_s": 14400,
             },
             job_id,
-            timeout_s=7200,
+            timeout_s=14400,
         )
         await convert_tar_to_ext4(tar_path, ATTACK_ROOTFS_PATH, size_mb=ATTACK_ROOTFS_SIZE_MB)
         logger.info(f"Attack Machine 用 rootfs を保存しました: {ATTACK_ROOTFS_PATH}")
