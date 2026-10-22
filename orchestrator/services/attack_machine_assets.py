@@ -24,6 +24,12 @@ from services.vm_assets import (
 logger = logging.getLogger(__name__)
 
 _ATTACK_INIT_SCRIPT_TEMPLATE = """#!/bin/sh
+# カーネルから直接 exec される PID1 には PATH が設定されない（空、または
+# カーネル組み込みの最小限の値）ため、/usr/sbin 等にある各種コマンド
+# （ユーザーが後から apt install するdockerd・runc・containerd等を含む）を
+# 実行できず「executable file not found in $PATH」になる。明示的に設定する
+# （tools/ubuntu-ctf-rootfs/init.sh と同じ対策）。
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 sleep 1
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -31,6 +37,13 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mkdir -p /dev/pts /dev/shm
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+# Docker自体は事前インストールしないが、ユーザーが後から apt install
+# docker.io 等で入れて使う際に dockerd が cgroup v2 を必須とするため、
+# Firecracker ゲストカーネルが自動マウントしない /sys/fs/cgroup を
+# 先にマウントしておく（tools/ubuntu-ctf-rootfs/init.sh・
+# docker/docker-base-builder/server.py と同じ対策）。
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 printf '{resolv_conf}' > /etc/resolv.conf
 # /etc/resolv.conf が 0600 のままだと一般ユーザ(hackbento)での getaddrinfo が
@@ -48,6 +61,7 @@ echo "127.0.0.1 localhost hackbento" >> /etc/hosts
 # 「既に起動中」と誤認してエラー終了し、wait 対象が消えて init(PID1) が
 # 終了 -> kernel panic (Attempted to kill init!) になる。起動時に必ず除去する。
 rm -rf /tmp/.X11-unix /tmp/.X*-lock /tmp/.ICE-unix
+
 # vncserver はXサーバプロセスをforkしてデーモン化した後、ラッパー自身は
 # すぐにexit 0で終了するコマンドであり、バックグラウンドジョブとして
 # `wait` し続ける対象にはならない。`&` + `wait` のままだと vncserver
@@ -74,13 +88,24 @@ apt-get install -y --no-install-recommends \
     kali-desktop-xfce xfce4-terminal tigervnc-standalone-server tigervnc-tools \
     x11-xserver-utils \
     openssh-client sudo bash dbus-x11 \
-    kali-linux-core \
-    iputils-ping nmap hydra enum4linux john gobuster dirb wireshark wordlists \
+    iputils-ping nmap hydra enum4linux john gobuster dirb tshark wordlists \
     nano vim git curl wget unzip net-tools \
     python3 python3-pip python3-venv \
-    locales fonts-noto-cjk fonts-noto-cjk-extra firefox-esr-l10n-ja \
+    iptables \
+    locales fonts-noto-cjk firefox-esr-l10n-ja \
     fcitx5 fcitx5-mozc fcitx5-config-qt \
-    fcitx5-frontend-gtk2 fcitx5-frontend-gtk3 fcitx5-frontend-qt5
+    fcitx5-frontend-gtk2 fcitx5-frontend-gtk3
+
+# Docker自体は事前インストールしない（ユーザーが必要に応じて apt install
+# docker.io 等で入れる）。ただし、Firecrackerゲストカーネル（最小構成）は
+# iptablesのnftablesバックエンドが前提とするnf_tables系モジュールを
+# 持たないことが多く、Kaliデフォルトの iptables-nft のままだと後から
+# dockerdを起動した際に「Failed to initialize nft: Protocol not supported」
+# でブリッジ/NATチェーン作成に失敗する。この切替だけは事前に行っておく
+# （tools/ubuntu-ctf-rootfs/Dockerfile と同じ対策。iptables-legacyはDocker
+# が入っていなくても他のネットワーク設定に影響しない）。
+update-alternatives --set iptables /usr/sbin/iptables-legacy || true
+update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy || true
 
 # 日本語ロケール生成 + タイムゾーン設定（ターミナル・ブラウザの表示言語と時刻表示に反映される）
 sed -i "s/^# *ja_JP.UTF-8 UTF-8/ja_JP.UTF-8 UTF-8/" /etc/locale.gen
@@ -112,9 +137,10 @@ chmod u+s /usr/lib/nmap/nmap
 echo "root:hackbento" | chpasswd
 useradd -m -s /bin/bash hackbento
 echo "hackbento:hackbento" | chpasswd
-# wiresharkパッケージはnoninteractiveインストールではwiresharkグループのpostinst
-# 設定（dumpcapを非rootで実行可能にする）がスキップされ、グループ自体が
-# 作成されないため、明示的に作成してhackbentoユーザを追加する。
+# tsharkパッケージ（wiresharkのCLIキャプチャエンジンのみ）もnoninteractive
+# インストールではwiresharkグループのpostinst設定（dumpcapを非rootで実行
+# 可能にする）がスキップされ、グループ自体が作成されないため、明示的に
+# 作成してhackbentoユーザを追加する。
 getent group wireshark >/dev/null || groupadd wireshark
 usermod -aG sudo,wireshark hackbento
 if [ -x /usr/bin/dumpcap ]; then
