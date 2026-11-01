@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     UPLOAD_IMAGE_MAX_MB: int = 6144
     UPLOAD_README_MAX_MB: int = 10
 
+    # rootfs tar→ext4 自動変換時に追加できる余裕MBの最大値の初回起動時デフォルト値。
+    # アプリ初回起動時に GlobalSetting.rootfs_margin_max_mb の初期値として一度だけ投入され、
+    # 以後は /admin のデフォルトVMタブから動的に変更する（この値は再起動しないと反映されないため）。
+    # プロジェクト作成者は新規作成・編集画面で 0〜この最大値の範囲の余裕MBを選べる
+    # （Docker等を含む大きめのrootfsをアップロードする場合、VM起動後にゲスト内で
+    # apt install/docker pull等を行うとすぐ容量が尽きるため）。
+    ROOTFS_CONVERT_SIZE_MARGIN_MB: int = 256
+
     # 認証
     LDAP_ENABLED: bool = False
     LDAP_URI: str = "ldap://ldap.example.com:389"

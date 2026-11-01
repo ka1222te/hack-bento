@@ -218,15 +218,18 @@ def safe_extract_tar(tar_path: str, dest_dir: str) -> None:
             # isfile 以外（ソケット等）は無視する（ゲスト rootfs に不要かつ扱いが煩雑なため）
 
 
-# rootfs tar → ext4 変換で使う scratch（展開先）のサイズを、入力 tar の圧縮サイズから
-# 事前計算するための倍率・余白。tar は展開すると（圧縮効率次第で）数倍に増えることがあるため、
-# 十分に大きい倍率を取った上で固定の余白も足す。実サイズに応じた動的な再計算は行わない
+# rootfs tar → ext4 変換で使う scratch（展開先）のサイズを、入力 tar のサイズから
+# 事前計算するための余白。docker export の tar は無圧縮の生データなので、tarサイズは
+# ほぼそのまま展開後の実データ量に相当する。ext4のオーバーヘッド（inode・ジャーナル等）に加え、
+# VM起動後にゲスト内で使う分の余白として固定MBを足す。実サイズに応じた動的な再計算は行わない
 # （ビルド用VMの中では事前にサイズを確定したディスクが必要なため）。
-_ROOTFS_CONVERT_SIZE_MULTIPLIER = 4
-_ROOTFS_CONVERT_SIZE_MARGIN_MB = 256
+# 余白MB自体は呼び出し元（プロジェクト単位の Image.rootfs_margin_mb、または
+# GlobalSetting.rootfs_margin_max_mb）が解決して margin_mb として渡す。
 
 
-async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB) -> None:
+async def convert_tar_to_ext4(
+    tar_path: str, dest_path: str, size_mb: int = ROOTFS_SIZE_MB, margin_mb: int = 0
+) -> None:
     """信用できない rootfs tar（ユーザアップロード）を、ビルド用VMの中で安全に展開し
     ext4 イメージへ変換する。dest_path へ os.replace する。
 
@@ -235,7 +238,7 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
     ホストに影響することはない。
 
     手順:
-      1. 入力 tar の圧縮サイズから、十分な余白を持つ scratch（展開先）サイズを事前計算
+      1. 入力 tar の圧縮サイズ + margin_mb から、十分な余白を持つ scratch（展開先）サイズを事前計算
       2. scratch（空の ext4）・input（tar の生バイト列を書き込んだブロックデバイス）・
          status（結果報告用の小さな ext4）をホスト上に用意
       3. rootfs 変換専用ベース（vm_assets.ROOTFS_CONVERTER_BASE_PATH）をベースに
@@ -258,12 +261,12 @@ async def convert_tar_to_ext4(tar_path: str, dest_path: str, size_mb: int = ROOT
         scratch_disk = os.path.join(tmpdir, "scratch.ext4")
         status_disk = os.path.join(tmpdir, "status.ext4")
 
-        # 1. scratch サイズを tar の圧縮サイズから事前計算する
+        # 1. scratch サイズを tar のサイズ + margin_mb から事前計算する
         try:
             tar_size = os.path.getsize(tar_path)
         except OSError as e:
             raise RuntimeError(f"rootfs tar が読み取れません: {e}")
-        auto_mb = int(tar_size * _ROOTFS_CONVERT_SIZE_MULTIPLIER / (1024 * 1024)) + _ROOTFS_CONVERT_SIZE_MARGIN_MB
+        auto_mb = int(tar_size / (1024 * 1024)) + max(margin_mb, 0)
         image_mb = max(size_mb, auto_mb)
 
         # 2. 各ディスクを用意する（いずれもブロッキングI/O。executor 経由で実行）

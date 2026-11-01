@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import event, text
 from config import settings
-from models import Base
+from models import Base, GlobalSetting
 import logging
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,21 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate(conn)
+        await _ensure_global_settings(conn)
+
+
+async def _ensure_global_settings(conn):
+    """GlobalSetting の id=1 行が無ければ、.env の値を初期値として投入する。
+
+    以後の値は admin 画面からの変更が正になる（.env を変更しても再投入されない）。
+    """
+    result = await conn.execute(text("SELECT id FROM global_settings WHERE id = 1"))
+    if result.first() is None:
+        await conn.execute(
+            text("INSERT INTO global_settings (id, rootfs_margin_max_mb) VALUES (1, :v)"),
+            {"v": settings.ROOTFS_CONVERT_SIZE_MARGIN_MB},
+        )
+        logger.info(f"GlobalSetting initialized: rootfs_margin_max_mb={settings.ROOTFS_CONVERT_SIZE_MARGIN_MB}")
 
 
 async def _migrate(conn):
@@ -96,6 +111,7 @@ async def _migrate(conn):
         ("default_rootfs_assets", "base_image", "ALTER TABLE default_rootfs_assets ADD COLUMN base_image VARCHAR(256)"),
         ("images", "build_phase", "ALTER TABLE images ADD COLUMN build_phase VARCHAR(32)"),
         ("environments", "is_unlimited", "ALTER TABLE environments ADD COLUMN is_unlimited BOOLEAN NOT NULL DEFAULT 0"),
+        ("images", "rootfs_margin_mb", "ALTER TABLE images ADD COLUMN rootfs_margin_mb INTEGER"),
     ]
     for table, column, ddl in migrations:
         result = await conn.execute(text(f"PRAGMA table_info({table})"))

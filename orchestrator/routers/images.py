@@ -14,6 +14,7 @@ from models import Image, Difficulty, Visibility, User, UserRole, ImageCollabora
 from deps import get_current_user, require_username_set
 from services.vm_assets import DEFAULTS_DIR
 from services.rootfs_tar import detect_archive_kind as _detect_archive_kind
+from services.global_settings import get_global_settings
 from models import RootfsConversionStatus
 from config import settings
 
@@ -75,6 +76,7 @@ class ImageResponse(BaseModel):
     base_rootfs_asset_id: Optional[int] = None
     compose_summary: Optional[dict] = None
     extra_boot_args: Optional[str] = None
+    rootfs_margin_mb: int = 0
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -171,6 +173,7 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         base_rootfs_asset_id=getattr(image, "base_rootfs_asset_id", None),
         compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
         extra_boot_args=getattr(image, "extra_boot_args", None),
+        rootfs_margin_mb=getattr(image, "rootfs_margin_mb", None) or 0,
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -490,6 +493,7 @@ async def upload_image(
     cpu_limit: Optional[int] = Form(None),
     memory_limit_mb: Optional[int] = Form(None),
     extra_boot_args: Optional[str] = Form(None),
+    rootfs_margin_mb: Optional[int] = Form(None),
     visibility: Visibility = Form(Visibility.protected),
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
@@ -501,11 +505,16 @@ async def upload_image(
         cpu_limit = settings.VM_CPU_LIMIT
     if memory_limit_mb is None:
         memory_limit_mb = settings.VM_MEMORY_LIMIT_MB
+    if rootfs_margin_mb is None:
+        rootfs_margin_mb = 0
 
     if cpu_limit < 1 or cpu_limit > settings.VM_CPU_LIMIT:
         raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{settings.VM_CPU_LIMIT} の範囲で指定してください")
     if memory_limit_mb < 128 or memory_limit_mb > settings.VM_MEMORY_LIMIT_MB:
         raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{settings.VM_MEMORY_LIMIT_MB} の範囲で指定してください")
+    rootfs_margin_max_mb = (await get_global_settings(db)).rootfs_margin_max_mb
+    if rootfs_margin_mb < 0 or rootfs_margin_mb > rootfs_margin_max_mb:
+        raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{rootfs_margin_max_mb} の範囲で指定してください")
     if timeout_minutes not in settings.TIMEOUT_MINUTES_OPTIONS:
         raise HTTPException(status_code=400, detail="timeout_minutes は許可された候補の中から指定してください")
     if len(name) > 128:
@@ -670,6 +679,7 @@ async def upload_image(
         rootfs_conversion_status=rootfs_conversion_status,
         rootfs_source_archive_path=rootfs_source_archive_path,
         extra_boot_args=(extra_boot_args.strip() if extra_boot_args and extra_boot_args.strip() else None),
+        rootfs_margin_mb=rootfs_margin_mb,
         readme_path=readme_path,
         difficulty=difficulty,
         category=category,
@@ -712,6 +722,7 @@ async def update_image(
     category: Optional[str] = Form(None),
     timeout_minutes: Optional[int] = Form(None),
     extra_boot_args: Optional[str] = Form(None),
+    rootfs_margin_mb: Optional[int] = Form(None),
     visibility: Optional[Visibility] = Form(None),
     kernel: Optional[UploadFile] = File(None),
     rootfs: Optional[UploadFile] = File(None),
@@ -917,6 +928,11 @@ async def update_image(
         if len(extra_boot_args) > 512:
             raise HTTPException(status_code=400, detail="extra_boot_args は 512 文字以内で指定してください")
         image.extra_boot_args = extra_boot_args.strip() or None
+    if rootfs_margin_mb is not None:
+        rootfs_margin_max_mb = (await get_global_settings(db)).rootfs_margin_max_mb
+        if rootfs_margin_mb < 0 or rootfs_margin_mb > rootfs_margin_max_mb:
+            raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{rootfs_margin_max_mb} の範囲で指定してください")
+        image.rootfs_margin_mb = rootfs_margin_mb
     if visibility is not None and is_owner:
         image.visibility = visibility
 
