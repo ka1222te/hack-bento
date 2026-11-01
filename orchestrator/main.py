@@ -23,7 +23,7 @@ from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_m
 from services.rootfs_convert import run_rootfs_conversion_worker, reset_stuck_conversions
 from services.bundle_build import run_bundle_build_worker
 from services.docker_base_assets import run_docker_base_build_worker
-from services.smolvm import cleanup_orphaned_vms
+from services.smolvm import cleanup_orphaned_vms, run_rootfs_cleanup_worker
 from services.global_settings import get_global_settings
 from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
     bundle_build_task = asyncio.create_task(run_bundle_build_worker())
     attack_machine_task = asyncio.create_task(ensure_attack_machine_assets())
     docker_base_build_task = asyncio.create_task(run_docker_base_build_worker())
+    rootfs_cleanup_task = asyncio.create_task(run_rootfs_cleanup_worker())
     yield
     task.cancel()
     vm_assets_task.cancel()
@@ -55,7 +56,8 @@ async def lifespan(app: FastAPI):
     bundle_build_task.cancel()
     attack_machine_task.cancel()
     docker_base_build_task.cancel()
-    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task):
+    rootfs_cleanup_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task, rootfs_cleanup_task):
         try:
             await t
         except asyncio.CancelledError:

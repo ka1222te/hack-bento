@@ -471,12 +471,20 @@ async def delete_default_asset(
 
 class GlobalSettingResponse(BaseModel):
     rootfs_margin_max_mb: int
+    vm_cpu_max: int
+    vm_memory_max_mb: int
+    vm_pids_max: int
+    vm_disk_max_gb: int
 
     model_config = {"from_attributes": True}
 
 
 class GlobalSettingUpdate(BaseModel):
-    rootfs_margin_max_mb: int
+    rootfs_margin_max_mb: Optional[int] = None
+    vm_cpu_max: Optional[int] = None
+    vm_memory_max_mb: Optional[int] = None
+    vm_pids_max: Optional[int] = None
+    vm_disk_max_gb: Optional[int] = None
 
 
 @router.get("/global-settings", response_model=GlobalSettingResponse)
@@ -490,10 +498,22 @@ async def update_global_settings(
     _: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if payload.rootfs_margin_max_mb < 0:
-        raise HTTPException(status_code=400, detail="rootfs_margin_max_mb は 0 以上を指定してください")
+    # (フィールド名, 最小許容値, 日本語ラベル)
+    fields = [
+        ("rootfs_margin_max_mb", 0, "rootfs_margin_max_mb"),
+        ("vm_cpu_max", 1, "vm_cpu_max"),
+        ("vm_memory_max_mb", 128, "vm_memory_max_mb"),
+        ("vm_pids_max", 1, "vm_pids_max"),
+        ("vm_disk_max_gb", 1, "vm_disk_max_gb"),
+    ]
     row = await get_global_settings(db)
-    row.rootfs_margin_max_mb = payload.rootfs_margin_max_mb
+    for field, min_value, label in fields:
+        value = getattr(payload, field)
+        if value is None:
+            continue
+        if value < min_value:
+            raise HTTPException(status_code=400, detail=f"{label} は {min_value} 以上を指定してください")
+        setattr(row, field, value)
     await db.commit()
     await db.refresh(row)
     return row

@@ -133,6 +133,9 @@ class Image(Base):
     timeout_minutes = Column(Integer, default=60)
     cpu_limit = Column(Integer, default=1)
     memory_limit_mb = Column(Integer, default=1024)
+    # VM cgroup の pids.max。NULL の場合は VM 起動時に GlobalSetting.vm_pids_max を使う
+    # （後方互換: 既存行は未設定）。
+    pids_limit = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
     visibility = Column(Enum(Visibility), default=Visibility.protected, nullable=False)
     # システム提供の Attack Machine テンプレート（owner_id は NULL）であることを示すフラグ
@@ -236,3 +239,11 @@ class GlobalSetting(Base):
     # rootfs tar→ext4 自動変換時、プロジェクト作成者が選べる余裕MBの最大値。
     # Image.rootfs_margin_mb はこの値を上限とする。
     rootfs_margin_max_mb = Column(Integer, nullable=False, default=256)
+    # VM リソースの既定値・プロジェクト作成者が選べる上限値（.env の VM_CPU_LIMIT 等の後継）。
+    # Image.cpu_limit/memory_limit_mb/pids_limit はこれらを上限とする。
+    vm_cpu_max = Column(Integer, nullable=False, default=1)
+    vm_memory_max_mb = Column(Integer, nullable=False, default=1024)
+    vm_pids_max = Column(Integer, nullable=False, default=256)
+    # VM ごとのディスク容量上限（GB）の設定値。現時点では quota 等の実機能は未実装で、
+    # 将来の実装に備えて設定値のみ admin 画面で管理できるようにしている。
+    vm_disk_max_gb = Column(Integer, nullable=False, default=10)

@@ -280,6 +280,54 @@
         </details>
         </div><!-- /os-fields -->
 
+        <!-- VM リソース上限（CPU/メモリ/PID数。OS/Composeいずれの登録形式でも共通） -->
+        <div class="np-field">
+          <label class="np-label">VM リソース上限 <span class="np-optional">optional</span></label>
+          <p class="np-hint" style="margin:0 0 .6rem">
+            このプロジェクトのVMに割り当てるCPU・メモリ・PID数の上限。管理者が設定した最大値の範囲内で指定できます。
+            変更は次回起動時から反映されます。
+          </p>
+
+          <div class="np-field" style="margin-bottom:.75rem">
+            <label class="np-label" style="font-size:.85rem">CPUコア数</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="cpu_limit" id="cpu-limit-range"
+                     min="1" max="{{ global_settings.vm_cpu_max }}" step="1" value="1"
+                     style="flex:1" />
+              <input type="number" id="cpu-limit-number"
+                     min="1" max="{{ global_settings.vm_cpu_max }}" step="1" value="1"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_cpu_max }} コア</p>
+          </div>
+
+          <div class="np-field" style="margin-bottom:.75rem">
+            <label class="np-label" style="font-size:.85rem">メモリ（MB）</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="memory_limit_mb" id="memory-limit-mb-range"
+                     min="128" max="{{ global_settings.vm_memory_max_mb }}" step="1" value="128"
+                     style="flex:1" />
+              <input type="number" id="memory-limit-mb-number"
+                     min="128" max="{{ global_settings.vm_memory_max_mb }}" step="1" value="128"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_memory_max_mb }} MB </p>
+          </div>
+
+          <div class="np-field">
+            <label class="np-label" style="font-size:.85rem">PID数</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="pids_limit" id="pids-limit-range"
+                     min="1" max="{{ global_settings.vm_pids_max }}" step="1" value="1"
+                     style="flex:1" />
+              <input type="number" id="pids-limit-number"
+                     min="1" max="{{ global_settings.vm_pids_max }}" step="1" value="1"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_pids_max }}</p>
+          </div>
+        </div>
+
         {% if global_settings.rootfs_margin_max_mb > 0 %}
         <!-- rootfs 変換の余裕MB（OS/Composeいずれの登録形式でもrootfs tar→ext4変換時に使う） -->
         <div class="np-field">
@@ -297,7 +345,7 @@
                    class="np-input" style="width:7rem" />
             <span class="np-hint">MB</span>
           </div>
-          <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.rootfs_margin_max_mb }} MB（管理者設定）</p>
+          <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.rootfs_margin_max_mb }} MB</p>
         </div>
         {% endif %}
 
@@ -432,6 +480,20 @@ async function init() {
     _marginRange.value = _margin;
     _marginNumber.value = _margin;
   }
+  // 既存の CPU/メモリ/PID数の上限をフォームに反映
+  function _applyRangeValue(rangeId, numberId, current, fallback) {
+    const range = document.getElementById(rangeId);
+    const number = document.getElementById(numberId);
+    if (!range || !number) return;
+    const min = parseInt(range.min, 10);
+    const max = parseInt(range.max, 10);
+    const v = Math.max(min, Math.min(max, current || fallback));
+    range.value = v;
+    number.value = v;
+  }
+  _applyRangeValue('cpu-limit-range', 'cpu-limit-number', imageData.cpu_limit, 1);
+  _applyRangeValue('memory-limit-mb-range', 'memory-limit-mb-number', imageData.memory_limit_mb, 128);
+  _applyRangeValue('pids-limit-range', 'pids-limit-number', imageData.pids_limit, 1);
   // 登録形式（OS イメージ / Compose バンドル）に応じてフィールドを出し分ける。
   // new_project.html とは異なり作成後に形式を変更することはできない。
   const isCompose = imageData.rootfs_kind === 'compose';
@@ -636,21 +698,26 @@ setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placehol
   container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));
 })();
 
-// rootfs 変換の余裕MB: range と number を同期する
-(function setupRootfsMarginSync() {
-  const range = document.getElementById('rootfs-margin-mb-range');
-  const number = document.getElementById('rootfs-margin-mb-number');
+// range と number の組を同期する（rootfs 変換の余裕MB・CPU/メモリ/PID数上限で共通使用）
+function setupRangeNumberSync(rangeId, numberId) {
+  const range = document.getElementById(rangeId);
+  const number = document.getElementById(numberId);
   if (!range || !number) return;
   range.addEventListener('input', () => { number.value = range.value; });
   number.addEventListener('input', () => {
+    const min = parseInt(range.min, 10);
     const max = parseInt(range.max, 10);
     let v = parseInt(number.value, 10);
-    if (isNaN(v)) v = 0;
-    v = Math.max(0, Math.min(max, v));
+    if (isNaN(v)) v = min;
+    v = Math.max(min, Math.min(max, v));
     number.value = v;
     range.value = v;
   });
-})();
+}
+setupRangeNumberSync('rootfs-margin-mb-range', 'rootfs-margin-mb-number');
+setupRangeNumberSync('cpu-limit-range', 'cpu-limit-number');
+setupRangeNumberSync('memory-limit-mb-range', 'memory-limit-mb-number');
+setupRangeNumberSync('pids-limit-range', 'pids-limit-number');
 
 // コラボレーター
 async function loadCollaborators() {

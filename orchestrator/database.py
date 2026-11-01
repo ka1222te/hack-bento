@@ -74,10 +74,25 @@ async def _ensure_global_settings(conn):
     result = await conn.execute(text("SELECT id FROM global_settings WHERE id = 1"))
     if result.first() is None:
         await conn.execute(
-            text("INSERT INTO global_settings (id, rootfs_margin_max_mb) VALUES (1, :v)"),
-            {"v": settings.ROOTFS_CONVERT_SIZE_MARGIN_MB},
+            text(
+                "INSERT INTO global_settings "
+                "(id, rootfs_margin_max_mb, vm_cpu_max, vm_memory_max_mb, vm_pids_max, vm_disk_max_gb) "
+                "VALUES (1, :margin, :cpu, :mem, :pids, :disk)"
+            ),
+            {
+                "margin": settings.ROOTFS_CONVERT_SIZE_MARGIN_MB,
+                "cpu": settings.VM_CPU_LIMIT,
+                "mem": settings.VM_MEMORY_LIMIT_MB,
+                "pids": settings.VM_PIDS_LIMIT,
+                "disk": settings.VM_DISK_LIMIT_GB,
+            },
         )
-        logger.info(f"GlobalSetting initialized: rootfs_margin_max_mb={settings.ROOTFS_CONVERT_SIZE_MARGIN_MB}")
+        logger.info(
+            "GlobalSetting initialized: "
+            f"rootfs_margin_max_mb={settings.ROOTFS_CONVERT_SIZE_MARGIN_MB} "
+            f"vm_cpu_max={settings.VM_CPU_LIMIT} vm_memory_max_mb={settings.VM_MEMORY_LIMIT_MB} "
+            f"vm_pids_max={settings.VM_PIDS_LIMIT} vm_disk_max_gb={settings.VM_DISK_LIMIT_GB}"
+        )
 
 
 async def _migrate(conn):
@@ -112,13 +127,35 @@ async def _migrate(conn):
         ("images", "build_phase", "ALTER TABLE images ADD COLUMN build_phase VARCHAR(32)"),
         ("environments", "is_unlimited", "ALTER TABLE environments ADD COLUMN is_unlimited BOOLEAN NOT NULL DEFAULT 0"),
         ("images", "rootfs_margin_mb", "ALTER TABLE images ADD COLUMN rootfs_margin_mb INTEGER"),
+        ("images", "pids_limit", "ALTER TABLE images ADD COLUMN pids_limit INTEGER"),
+        ("global_settings", "vm_cpu_max", "ALTER TABLE global_settings ADD COLUMN vm_cpu_max INTEGER NOT NULL DEFAULT 1"),
+        ("global_settings", "vm_memory_max_mb", "ALTER TABLE global_settings ADD COLUMN vm_memory_max_mb INTEGER NOT NULL DEFAULT 1024"),
+        ("global_settings", "vm_pids_max", "ALTER TABLE global_settings ADD COLUMN vm_pids_max INTEGER NOT NULL DEFAULT 256"),
+        ("global_settings", "vm_disk_max_gb", "ALTER TABLE global_settings ADD COLUMN vm_disk_max_gb INTEGER NOT NULL DEFAULT 10"),
     ]
+    newly_added = set()
     for table, column, ddl in migrations:
         result = await conn.execute(text(f"PRAGMA table_info({table})"))
         columns = [row[1] for row in result.fetchall()]
         if column not in columns:
             await conn.execute(text(ddl))
             logger.info(f"Migration applied: {table}.{column}")
+            newly_added.add((table, column))
+
+    # global_settings に既存行がある状態で新カラムが追加された場合、DDLのデフォルト値
+    # ではなく .env の値で初期化する（_ensure_global_settings は新規行のみを対象とするため）。
+    global_settings_env_defaults = {
+        "vm_cpu_max": settings.VM_CPU_LIMIT,
+        "vm_memory_max_mb": settings.VM_MEMORY_LIMIT_MB,
+        "vm_pids_max": settings.VM_PIDS_LIMIT,
+        "vm_disk_max_gb": settings.VM_DISK_LIMIT_GB,
+    }
+    for column, env_value in global_settings_env_defaults.items():
+        if ("global_settings", column) in newly_added:
+            await conn.execute(
+                text(f"UPDATE global_settings SET {column} = :v WHERE id = 1"),
+                {"v": env_value},
+            )
 
 
 async def get_db():
