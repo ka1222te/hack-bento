@@ -4,6 +4,7 @@ import json
 import logging
 import ipaddress
 import os
+import re
 import signal
 import shutil
 import tempfile
@@ -49,7 +50,7 @@ def _cgroup_available() -> bool:
     return os.path.isdir(VM_CGROUP_ROOT) and os.access(VM_CGROUP_ROOT, os.W_OK)
 
 
-def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
+def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int, pids_limit: int) -> bool:
     """VM 専用の leaf cgroup を作成し、メモリ・PID数・CPU使用率の上限をホスト側で設定する。
 
     成功した場合のみ True を返す。委譲ツリーが無い、または書き込みに失敗した場合は
@@ -73,7 +74,7 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
         with open(os.path.join(path, "memory.max"), "w") as f:
             f.write(str((memory_mb + _MEM_OVERHEAD_MB) * 1024 * 1024))
         with open(os.path.join(path, "pids.max"), "w") as f:
-            f.write(str(settings.VM_PIDS_LIMIT))
+            f.write(str(pids_limit))
         # cpu.max: "<quota> <period>" 。1コアあたり period=100000us とし、
         # cpu 個数分の使用率を上限とする（例: cpu=1 → "100000 100000" = 1コア分）。
         period_us = 100_000
@@ -81,7 +82,7 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
         with open(os.path.join(path, "cpu.max"), "w") as f:
             f.write(f"{quota_us} {period_us}")
         logger.info(
-            f"VM cgroup を作成しました: vm_id={vm_id[:8]} memory={memory_mb}MiB pids={settings.VM_PIDS_LIMIT} cpu={cpu}"
+            f"VM cgroup を作成しました: vm_id={vm_id[:8]} memory={memory_mb}MiB pids={pids_limit} cpu={cpu}"
         )
         return True
     except OSError as e:
@@ -464,7 +465,7 @@ def _sanitize_extra_boot_args(extra: str | None) -> str:
 
 
 async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int,
-                             extra_boot_args: str | None = None) -> VMStartResult:
+                             pids_limit: int, extra_boot_args: str | None = None) -> VMStartResult:
     """
     Firecracker microVM を起動する。
 
@@ -506,7 +507,7 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         tap = await create_tap(vm_id, ip)
 
         # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
-        _create_vm_cgroup(vm_id, cpu, memory_mb)
+        _create_vm_cgroup(vm_id, cpu, memory_mb, pids_limit)
 
         # Firecracker プロセスを起動（--no-api はなし、REST API 経由で設定）
         fc_proc = await asyncio.create_subprocess_exec(
@@ -733,6 +734,46 @@ def _find_orphan_fc_pid(vm_id: str) -> int | None:
     return None
 
 
+_UUID_FILENAME_RE = re.compile(
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.ext4(\.tmp)?$"
+)
+
+
+def _cleanup_orphaned_rootfs_files(active_vm_ids: set[str]) -> int:
+    """FC_ROOTFS_DIR / FC_ROOTFS_DIR_FALLBACK 配下の writable rootfs コピーのうち、
+    active_vm_ids（現在 running な Environment の vm_id）に対応しないものを削除する。
+
+    対象になるのは、DB レコード自体が削除された後に残った .ext4 や、
+    _prepare_writable_rootfs 実行中のクラッシュで中途半端に残った .ext4.tmp。
+    ファイル名が vm_id（UUID）.ext4[.tmp] の形式であるものだけを対象にする
+    （デフォルト資産等、別の命名規則のファイルは誤って触らないため）。
+
+    戻り値: 削除したファイル数。
+    """
+    removed = 0
+    for base_dir in (FC_ROOTFS_DIR, FC_ROOTFS_DIR_FALLBACK):
+        try:
+            entries = os.listdir(base_dir)
+        except OSError:
+            continue
+        for name in entries:
+            m = _UUID_FILENAME_RE.match(name)
+            if not m:
+                continue
+            vm_id = m.group(1)
+            if vm_id in active_vm_ids:
+                continue
+            path = os.path.join(base_dir, name)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                removed += 1
+                logger.info(f"孤立した writable rootfs コピーを削除しました: {path} ({size // (1024*1024)}MiB)")
+            except OSError as e:
+                logger.warning(f"孤立した writable rootfs コピーの削除に失敗しました: {path}: {e}")
+    return removed
+
+
 async def cleanup_orphaned_vms() -> None:
     """オーケストレータ起動時に、前回プロセスが残した VM・TAP・DBレコードを後始末する。
 
@@ -760,6 +801,16 @@ async def cleanup_orphaned_vms() -> None:
     from sqlalchemy import select
 
     async with AsyncSessionLocal() as db:
+        # running な Environment の vm_id 一覧を基準に、FC_ROOTFS_DIR 配下の孤立した
+        # writable rootfs コピー（対応する Environment が無い .ext4/.tmp）を掃除する。
+        # DB レコード自体が削除された後や、_prepare_writable_rootfs 実行中のクラッシュで
+        # Environment 行が存在しないまま残った残骸はこの経路でしか回収できない。
+        running_result = await db.execute(
+            select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+        )
+        active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
+        _cleanup_orphaned_rootfs_files(active_vm_ids)
+
         result = await db.execute(
             # stopping は前回プロセスが停止処理の途中でクラッシュした場合に残り得る。
             # 含めないと該当環境が永久に stopping のまま孤児化するため、
@@ -801,6 +852,36 @@ async def cleanup_orphaned_vms() -> None:
         await db.commit()
 
 
+_ROOTFS_CLEANUP_INTERVAL_SECONDS = 300
+
+
+async def run_rootfs_cleanup_worker() -> None:
+    """FC_ROOTFS_DIR 配下の孤立 writable rootfs コピーを定期的に掃除するバックグラウンドループ。
+
+    cleanup_orphaned_vms は起動時に一度だけ実行されるため、長時間稼働中に発生した
+    残骸（_prepare_writable_rootfs 実行中のクラッシュによる .ext4.tmp、DB レコードが
+    削除された後に残った .ext4 等）は次回再起動まで残り続けてしまう。
+    watchdog（services/watchdog.py）と同じ「while True + try/except でログに握り込み +
+    末尾 asyncio.sleep」パターンで、稼働中もこの種の残骸を定期回収する。
+    """
+    from database import AsyncSessionLocal
+    from models import Environment, EnvStatus
+    from sqlalchemy import select
+
+    logger.info("Rootfs cleanup worker started")
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                running_result = await db.execute(
+                    select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+                )
+                active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
+            _cleanup_orphaned_rootfs_files(active_vm_ids)
+        except Exception as e:
+            logger.error(f"Rootfs cleanup worker error: {e}")
+        await asyncio.sleep(_ROOTFS_CLEANUP_INTERVAL_SECONDS)
+
+
 def _ip_to_mac(ip: str) -> str:
     """IP アドレスから決定論的な MAC アドレスを生成する（06:00:xx:xx:xx:xx）。"""
     parts = ip.split(".")
@@ -809,12 +890,12 @@ def _ip_to_mac(ip: str) -> str:
 
 # ---- 公開インターフェース ----
 
-async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024) -> VMStartResult:
+async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024, pids_limit: int = 256) -> VMStartResult:
     """
     Image レコードのゲストカーネル・rootfs を Firecracker microVM として起動する。
     """
     return await _start_firecracker(
-        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb,
+        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb, pids_limit,
         extra_boot_args=getattr(image, "extra_boot_args", None),
     )
 

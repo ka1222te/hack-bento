@@ -77,6 +77,9 @@ class ImageResponse(BaseModel):
     compose_summary: Optional[dict] = None
     extra_boot_args: Optional[str] = None
     rootfs_margin_mb: int = 0
+    cpu_limit: int = 1
+    memory_limit_mb: int = 1024
+    pids_limit: int = 256
     difficulty: str
     category: Optional[str]
     estimated_minutes: int
@@ -174,6 +177,9 @@ async def _build_response(image: Image, db: AsyncSession, include_readme: bool =
         compose_summary=_parse_compose_summary(getattr(image, "compose_summary", None)),
         extra_boot_args=getattr(image, "extra_boot_args", None),
         rootfs_margin_mb=getattr(image, "rootfs_margin_mb", None) or 0,
+        cpu_limit=image.cpu_limit or 1,
+        memory_limit_mb=image.memory_limit_mb or 1024,
+        pids_limit=getattr(image, "pids_limit", None) or 256,
         difficulty=image.difficulty.value,
         category=image.category,
         estimated_minutes=image.estimated_minutes,
@@ -492,29 +498,35 @@ async def upload_image(
     timeout_minutes: Optional[int] = Form(None),
     cpu_limit: Optional[int] = Form(None),
     memory_limit_mb: Optional[int] = Form(None),
+    pids_limit: Optional[int] = Form(None),
     extra_boot_args: Optional[str] = Form(None),
     rootfs_margin_mb: Optional[int] = Form(None),
     visibility: Visibility = Form(Visibility.protected),
     current_user: User = Depends(require_username_set),
     db: AsyncSession = Depends(get_db),
 ):
-    # .env のデフォルト値を適用し、システム上限を超えないようクランプ
+    gs = await get_global_settings(db)
+
+    # 既定値を適用し、GlobalSetting の上限を超えないようクランプ
     if timeout_minutes is None:
         timeout_minutes = settings.DEFAULT_TIMEOUT_MINUTES
     if cpu_limit is None:
-        cpu_limit = settings.VM_CPU_LIMIT
+        cpu_limit = gs.vm_cpu_max
     if memory_limit_mb is None:
-        memory_limit_mb = settings.VM_MEMORY_LIMIT_MB
+        memory_limit_mb = gs.vm_memory_max_mb
+    if pids_limit is None:
+        pids_limit = gs.vm_pids_max
     if rootfs_margin_mb is None:
         rootfs_margin_mb = 0
 
-    if cpu_limit < 1 or cpu_limit > settings.VM_CPU_LIMIT:
-        raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{settings.VM_CPU_LIMIT} の範囲で指定してください")
-    if memory_limit_mb < 128 or memory_limit_mb > settings.VM_MEMORY_LIMIT_MB:
-        raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{settings.VM_MEMORY_LIMIT_MB} の範囲で指定してください")
-    rootfs_margin_max_mb = (await get_global_settings(db)).rootfs_margin_max_mb
-    if rootfs_margin_mb < 0 or rootfs_margin_mb > rootfs_margin_max_mb:
-        raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{rootfs_margin_max_mb} の範囲で指定してください")
+    if cpu_limit < 1 or cpu_limit > gs.vm_cpu_max:
+        raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{gs.vm_cpu_max} の範囲で指定してください")
+    if memory_limit_mb < 128 or memory_limit_mb > gs.vm_memory_max_mb:
+        raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{gs.vm_memory_max_mb} の範囲で指定してください")
+    if pids_limit < 1 or pids_limit > gs.vm_pids_max:
+        raise HTTPException(status_code=400, detail=f"pids_limit は 1〜{gs.vm_pids_max} の範囲で指定してください")
+    if rootfs_margin_mb < 0 or rootfs_margin_mb > gs.rootfs_margin_max_mb:
+        raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{gs.rootfs_margin_max_mb} の範囲で指定してください")
     if timeout_minutes not in settings.TIMEOUT_MINUTES_OPTIONS:
         raise HTTPException(status_code=400, detail="timeout_minutes は許可された候補の中から指定してください")
     if len(name) > 128:
@@ -686,6 +698,7 @@ async def upload_image(
         timeout_minutes=timeout_minutes,
         cpu_limit=cpu_limit,
         memory_limit_mb=memory_limit_mb,
+        pids_limit=pids_limit,
         visibility=visibility,
         created_by=current_user.id,
     )
@@ -723,6 +736,9 @@ async def update_image(
     timeout_minutes: Optional[int] = Form(None),
     extra_boot_args: Optional[str] = Form(None),
     rootfs_margin_mb: Optional[int] = Form(None),
+    cpu_limit: Optional[int] = Form(None),
+    memory_limit_mb: Optional[int] = Form(None),
+    pids_limit: Optional[int] = Form(None),
     visibility: Optional[Visibility] = Form(None),
     kernel: Optional[UploadFile] = File(None),
     rootfs: Optional[UploadFile] = File(None),
@@ -928,11 +944,24 @@ async def update_image(
         if len(extra_boot_args) > 512:
             raise HTTPException(status_code=400, detail="extra_boot_args は 512 文字以内で指定してください")
         image.extra_boot_args = extra_boot_args.strip() or None
-    if rootfs_margin_mb is not None:
-        rootfs_margin_max_mb = (await get_global_settings(db)).rootfs_margin_max_mb
-        if rootfs_margin_mb < 0 or rootfs_margin_mb > rootfs_margin_max_mb:
-            raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{rootfs_margin_max_mb} の範囲で指定してください")
-        image.rootfs_margin_mb = rootfs_margin_mb
+    if rootfs_margin_mb is not None or cpu_limit is not None or memory_limit_mb is not None or pids_limit is not None:
+        gs = await get_global_settings(db)
+        if rootfs_margin_mb is not None:
+            if rootfs_margin_mb < 0 or rootfs_margin_mb > gs.rootfs_margin_max_mb:
+                raise HTTPException(status_code=400, detail=f"rootfs_margin_mb は 0〜{gs.rootfs_margin_max_mb} の範囲で指定してください")
+            image.rootfs_margin_mb = rootfs_margin_mb
+        if cpu_limit is not None:
+            if cpu_limit < 1 or cpu_limit > gs.vm_cpu_max:
+                raise HTTPException(status_code=400, detail=f"cpu_limit は 1〜{gs.vm_cpu_max} の範囲で指定してください")
+            image.cpu_limit = cpu_limit
+        if memory_limit_mb is not None:
+            if memory_limit_mb < 128 or memory_limit_mb > gs.vm_memory_max_mb:
+                raise HTTPException(status_code=400, detail=f"memory_limit_mb は 128〜{gs.vm_memory_max_mb} の範囲で指定してください")
+            image.memory_limit_mb = memory_limit_mb
+        if pids_limit is not None:
+            if pids_limit < 1 or pids_limit > gs.vm_pids_max:
+                raise HTTPException(status_code=400, detail=f"pids_limit は 1〜{gs.vm_pids_max} の範囲で指定してください")
+            image.pids_limit = pids_limit
     if visibility is not None and is_owner:
         image.visibility = visibility
 

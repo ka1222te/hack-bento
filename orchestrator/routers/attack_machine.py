@@ -15,6 +15,7 @@ from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
+from services.global_settings import get_global_settings
 from services import vm_assets
 from config import settings
 
@@ -193,11 +194,13 @@ async def start_attack_machine(
     # ここでの commit は env への以降の変更（なければ no-op）を確定させる保険。
 
     try:
+        pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
         vm_result = await start_vm(
             image=image,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
+            pids_limit=pids_limit,
         )
     except Exception as e:
         logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}")

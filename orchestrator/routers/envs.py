@@ -13,6 +13,7 @@ from deps import get_current_user, require_username_set
 from services.smolvm import start_vm, stop_vm
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env, claim_env_for_stop
+from services.global_settings import get_global_settings
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -160,11 +161,13 @@ async def start_env(
         raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
 
     try:
+        pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
         vm_result = await start_vm(
             image=image,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
+            pids_limit=pids_limit,
         )
     except Exception as e:
         logger.error(f"start_vm failed env_id={env.id}: {e}")
