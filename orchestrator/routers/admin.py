@@ -19,6 +19,7 @@ from reserved import is_reserved
 from deps import require_admin
 from services.vm_assets import DEFAULTS_DIR
 from services.rootfs_tar import detect_archive_kind as _detect_archive_kind
+from services.global_settings import get_global_settings
 
 _VALID_USERNAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 from services.auth_local import hash_password
@@ -466,3 +467,33 @@ async def delete_default_asset(
 
     await db.delete(asset)
     await db.commit()
+
+
+class GlobalSettingResponse(BaseModel):
+    rootfs_margin_max_mb: int
+
+    model_config = {"from_attributes": True}
+
+
+class GlobalSettingUpdate(BaseModel):
+    rootfs_margin_max_mb: int
+
+
+@router.get("/global-settings", response_model=GlobalSettingResponse)
+async def get_global_settings_api(_: User = Depends(require_admin), db: AsyncSession = Depends(get_db_readonly)):
+    return await get_global_settings(db)
+
+
+@router.patch("/global-settings", response_model=GlobalSettingResponse)
+async def update_global_settings(
+    payload: GlobalSettingUpdate,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.rootfs_margin_max_mb < 0:
+        raise HTTPException(status_code=400, detail="rootfs_margin_max_mb は 0 以上を指定してください")
+    row = await get_global_settings(db)
+    row.rootfs_margin_max_mb = payload.rootfs_margin_max_mb
+    await db.commit()
+    await db.refresh(row)
+    return row

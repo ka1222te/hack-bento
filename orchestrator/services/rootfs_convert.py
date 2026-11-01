@@ -32,7 +32,7 @@ _TARGETS = [
 ]
 
 
-async def _claim_pending() -> tuple[dict, int, str, str] | None:
+async def _claim_pending() -> tuple[dict, int, str, str, int] | None:
     """変換待ち(pending)の行を1件、行ロック付きで取得し converting へ遷移させる。
 
     claim_env_for_stop（services/watchdog.py）と同じ「SELECT ... FOR UPDATE で行ロック
@@ -68,8 +68,10 @@ async def _claim_pending() -> tuple[dict, int, str, str] | None:
             row_id = row.id
             tar_path = getattr(row, target["source_col"])
             dest_path = getattr(row, target["path_col"])
+            # DefaultRootfsAsset（共有デフォルト）にはプロジェクト単位の概念が無いため 0（余裕なし）。
+            margin_mb = getattr(row, "rootfs_margin_mb", None) or 0
             await db.commit()
-            return target, row_id, tar_path, dest_path
+            return target, row_id, tar_path, dest_path, margin_mb
     return None
 
 
@@ -83,10 +85,10 @@ async def _finish(target: dict, row_id: int, status: str, error: str | None) -> 
             await db.commit()
 
 
-async def _convert_one(target: dict, row_id: int, tar_path: str, dest_path: str) -> None:
+async def _convert_one(target: dict, row_id: int, tar_path: str, dest_path: str, margin_mb: int) -> None:
     label = target["model"].__tablename__
     try:
-        await convert_tar_to_ext4(tar_path, dest_path)
+        await convert_tar_to_ext4(tar_path, dest_path, margin_mb=margin_mb)
         await _finish(target, row_id, RootfsConversionStatus.ready.value, None)
         logger.info(f"rootfs 変換が完了しました: {label}.id={row_id} -> {dest_path}")
     except Exception as e:
@@ -142,8 +144,8 @@ async def run_rootfs_conversion_worker() -> None:
         try:
             claimed = await _claim_pending()
             if claimed is not None:
-                target, row_id, tar_path, dest_path = claimed
-                await _convert_one(target, row_id, tar_path, dest_path)
+                target, row_id, tar_path, dest_path, margin_mb = claimed
+                await _convert_one(target, row_id, tar_path, dest_path, margin_mb)
                 continue
         except Exception as e:
             logger.error(f"Rootfs conversion worker error: {e}")

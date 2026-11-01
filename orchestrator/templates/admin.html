@@ -90,6 +90,25 @@
         Compose バンドルの土台となる rootfs。アップロードではなく、指定したベースイメージから
         サーバ側で Docker + compose を自動インストールしてビルドする（数分〜数十分かかる）。
       </p>
+
+      <div class="panel-header" style="margin-top:2rem">
+        <h2 class="panel-title">rootfs 変換の余裕設定</h2>
+      </div>
+      <p class="np-hint" style="margin:.25rem 0 .75rem">
+        プロジェクト作成者が新規作成・編集画面で選べる、rootfs tar→ext4 自動変換時の
+        追加余裕MBの最大値。Docker等を含む大きめのrootfsをアップロードする場合、
+        VM起動後にゲスト内で apt install/docker pull等を行うとすぐ容量が尽きるため、
+        個々のプロジェクトでこの範囲内で余裕を調整できるようにする。
+      </p>
+      <form id="form-global-settings" style="max-width:360px">
+        <div id="form-global-settings-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
+        <div class="form-group">
+          <label>余裕MBの最大値（0以上）</label>
+          <input type="number" name="rootfs_margin_max_mb" id="rootfs-margin-max-mb" min="0" step="1" required />
+        </div>
+        <button type="submit" class="btn btn-sm btn-primary">保存</button>
+        <span id="global-settings-saved" class="np-hint hidden" style="margin-left:.5rem">保存しました</span>
+      </form>
     </div>
   </div>
 </div>
@@ -521,7 +540,40 @@ async function loadVmAssets() {
     pollTargets = pollTargets.concat(_renderRootfsLikeTable('docker-base-assets-tbody', assets, 'rootfs'));
   }
   _maybeToggleVmAssetPolling(pollTargets);
+
+  const globalSettingsRes = await API.get('/api/admin/global-settings');
+  if (globalSettingsRes.ok) {
+    const gs = await globalSettingsRes.json();
+    document.getElementById('rootfs-margin-max-mb').value = gs.rootfs_margin_max_mb;
+  }
 }
+
+document.getElementById('form-global-settings').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('form-global-settings-error');
+  const savedLabel = document.getElementById('global-settings-saved');
+  errorBox.classList.add('hidden');
+  savedLabel.classList.add('hidden');
+  const value = parseInt(document.getElementById('rootfs-margin-max-mb').value, 10);
+  if (isNaN(value) || value < 0) {
+    errorBox.textContent = '0以上の整数を指定してください';
+    errorBox.classList.remove('hidden');
+    return;
+  }
+  try {
+    const res = await API.patch('/api/admin/global-settings', { rootfs_margin_max_mb: value });
+    if (res.ok) {
+      savedLabel.classList.remove('hidden');
+      return;
+    }
+    const d = await res.json();
+    errorBox.textContent = d.detail || 'エラーが発生しました';
+    errorBox.classList.remove('hidden');
+  } catch {
+    errorBox.textContent = '通信エラーが発生しました';
+    errorBox.classList.remove('hidden');
+  }
+});
 
 // ボタンにスピナー表示をセット/解除する（HTML構造は <span class="btn-spinner">+<span class="btn-text"> 前提）。
 function _setBtnBusy(btn, busyLabel) {

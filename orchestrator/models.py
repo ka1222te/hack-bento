@@ -120,6 +120,9 @@ class Image(Base):
     # プロジェクト別の追加カーネル起動引数（カーネル exploit 問題で nokaslr 等を渡す用途）。
     # ip=/init=/console=/root= 等 HackBento が管理する引数はホスト側で除去・上書き不可。
     extra_boot_args = Column(String(512), nullable=True)
+    # rootfs tar→ext4 自動変換時に追加する余裕MB（0〜GlobalSetting.rootfs_margin_max_mb の範囲で
+    # プロジェクト作成者が選択）。NULL の場合は変換時に 0 として扱う（後方互換: 既存行は未設定）。
+    rootfs_margin_mb = Column(Integer, nullable=True)
     # 「default」モードで選択された共有デフォルトへの参照（編集画面の初期表示用）
     default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
     default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
@@ -218,3 +221,18 @@ class Environment(Base):
 
     user = relationship("User", back_populates="environments")
     image = relationship("Image", back_populates="environments")
+
+
+class GlobalSetting(Base):
+    """管理者が /admin から動的に変更できるグローバル設定（単一行固定・id=1 のみ使用）。
+
+    .env の値はアプリ初回起動時にこの行の初期値として投入されるだけで、以後は
+    こちらの値が正として使われる（config.py の Settings は再起動しないと変わらないため、
+    admin 画面から即時反映したい値はこちらに置く）。
+    """
+    __tablename__ = "global_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    # rootfs tar→ext4 自動変換時、プロジェクト作成者が選べる余裕MBの最大値。
+    # Image.rootfs_margin_mb はこの値を上限とする。
+    rootfs_margin_max_mb = Column(Integer, nullable=False, default=256)

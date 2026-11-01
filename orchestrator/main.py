@@ -24,6 +24,7 @@ from services.rootfs_convert import run_rootfs_conversion_worker, reset_stuck_co
 from services.bundle_build import run_bundle_build_worker
 from services.docker_base_assets import run_docker_base_build_worker
 from services.smolvm import cleanup_orphaned_vms
+from services.global_settings import get_global_settings
 from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -372,7 +373,12 @@ async def new_project_page(request: Request):
     user = await _get_request_user(request)
     if not user or user.needs_username_setup:
         return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
-    return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
+    async with AsyncSessionLocalReadonly() as db:
+        global_settings = await get_global_settings(db)
+    return templates.TemplateResponse(
+        "new_project.html",
+        {"request": request, "settings": settings, "global_settings": global_settings},
+    )
 
 
 @app.get("/docs/rootfs/compose", response_class=HTMLResponse)
@@ -429,7 +435,12 @@ async def edit_project_page(owner: str, slug: str, request: Request):
         return templates.TemplateResponse(
             "404.html", {"request": request, "settings": settings}, status_code=404
         )
-    return templates.TemplateResponse("edit_project.html", {"request": request, "owner": owner, "slug": slug, "settings": settings})
+    async with AsyncSessionLocalReadonly() as db:
+        global_settings = await get_global_settings(db)
+    return templates.TemplateResponse(
+        "edit_project.html",
+        {"request": request, "owner": owner, "slug": slug, "settings": settings, "global_settings": global_settings},
+    )
 
 
 @app.get("/{owner}/{slug}", response_class=HTMLResponse)
