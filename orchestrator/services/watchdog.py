@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ため、実際には起動処理が進行中（裏でFirecracker起動自体は成功している）にも関わらず
 # watchdogが先に「起動失敗」と判定して停止させてしまい、UIが「起動していない」ように
 # 見える事故が起きた（実際に発生）。
-_STARTING_TIMEOUT_MINUTES = 10
+_STARTING_TIMEOUT_MINUTES = 30
 # running 遷移直後の一時的な未登録・計測誤差で誤検知しないための猶予
 _CRASH_GRACE_SECONDS = 20
 

@@ -10,7 +10,7 @@ from typing import Optional
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
-from services.smolvm import start_vm, stop_vm
+from services.smolvm import start_vm, stop_vm, get_copy_progress
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.global_settings import get_global_settings
@@ -63,6 +63,8 @@ class EnvResponse(BaseModel):
     warning: bool
     is_attack_machine: bool
     last_error: Optional[str] = None
+    # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
+    copy_progress_percent: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -73,6 +75,8 @@ def _to_response(env: Environment) -> EnvResponse:
     img_timeout = env.image.timeout_minutes if env.image else None
     timeout = img_timeout if img_timeout is not None else settings.DEFAULT_TIMEOUT_MINUTES
     owner = env.image.owner.username if env.image and env.image.owner else None
+    progress = get_copy_progress(env.id)
+    copy_progress_percent = int(progress[0] * 100 / progress[1]) if progress and progress[1] > 0 else None
     return EnvResponse(
         id=env.id,
         image_id=env.image_id,
@@ -89,6 +93,7 @@ def _to_response(env: Environment) -> EnvResponse:
         warning=not env.is_unlimited and remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
         is_attack_machine=env.image.is_attack_machine if env.image else False,
         last_error=env.last_error,
+        copy_progress_percent=copy_progress_percent,
     )
 
 
@@ -234,6 +239,7 @@ async def start_env(
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
             pids_limit=pids_limit,
+            env_id=env.id,
         )
     except Exception as e:
         logger.error(f"start_vm failed env_id={env.id}: {e}", exc_info=True)

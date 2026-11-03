@@ -392,8 +392,8 @@ RemainAfterExit=yes
 ExecStart=/bin/sh -c '\\
     set -e; \\
     mkdir -p ${VM_CGROUP_PATH}; \\
-    echo "+memory +pids +cpu +cpuset" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \\
-    echo "+memory +pids +cpu +cpuset" > ${VM_CGROUP_PATH}/cgroup.subtree_control \\
+    echo "+memory +pids +cpu +cpuset +io" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \\
+    echo "+memory +pids +cpu +cpuset +io" > ${VM_CGROUP_PATH}/cgroup.subtree_control \\
 '
 ExecStop=/bin/sh -c 'rmdir ${VM_CGROUP_PATH}/* 2>/dev/null || true; rmdir ${VM_CGROUP_PATH} 2>/dev/null || true'
 

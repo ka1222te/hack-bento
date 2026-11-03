@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
-from services.smolvm import start_vm, stop_vm
+from services.smolvm import start_vm, stop_vm, get_copy_progress
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
@@ -38,6 +38,8 @@ class AttackMachineResponse(BaseModel):
     seconds_remaining: int
     timeout_minutes: int
     is_unlimited: bool
+    # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
+    copy_progress_percent: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -57,6 +59,8 @@ class AttackMachineStatusResponse(BaseModel):
 def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineResponse:
     now = datetime.utcnow()
     remaining = max(0, int((env.expires_at - now).total_seconds()))
+    progress = get_copy_progress(env.id)
+    copy_progress_percent = int(progress[0] * 100 / progress[1]) if progress and progress[1] > 0 else None
     return AttackMachineResponse(
         id=env.id,
         ip_address=env.ip_address,
@@ -66,6 +70,7 @@ def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineRespons
         seconds_remaining=remaining,
         timeout_minutes=timeout_minutes,
         is_unlimited=env.is_unlimited,
+        copy_progress_percent=copy_progress_percent,
     )
 
 
@@ -233,6 +238,7 @@ async def start_attack_machine(
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
             pids_limit=pids_limit,
+            env_id=env.id,
         )
     except Exception as e:
         logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}", exc_info=True)

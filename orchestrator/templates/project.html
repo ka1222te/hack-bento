@@ -346,6 +346,9 @@ function renderLaunchPanel() {
   }
 
   if (running && running.status === 'starting') {
+    const _startingLabel = (running.copy_progress_percent != null)
+      ? `&#x23F3; rootfsコピー中... (${running.copy_progress_percent}%)`
+      : '&#x23F3; VM起動中...';
     panel.innerHTML = `
       <div class="launch-panel launch-panel-running">
         <div class="launch-panel-info">
@@ -354,7 +357,7 @@ function renderLaunchPanel() {
             <div class="launch-panel-label">環境を起動しています</div>
             <div class="env-timer" id="proj-timer-${running.id}">
               <span class="spinner-inline"></span>
-              <span class="env-starting-label">&#x23F3; VM起動中...</span>
+              <span class="env-starting-label">${_startingLabel}</span>
             </div>
           </div>
         </div>
