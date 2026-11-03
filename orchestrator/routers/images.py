@@ -401,22 +401,22 @@ def _check_rootfs_archive(saved_path: str, suffix: str) -> tuple[str, Optional[i
 
 
 async def _get_optional_user(request: Request, db: AsyncSession) -> Optional[User]:
+    """認証はCookie（access_token、httponly）のみで行う。JWTが無効/欠落している
+    場合のみ None を返す（DBエラー等の予期しない例外は呼び出し元に伝播させる）。"""
+    from jose import JWTError
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer "):
-                token = auth_header[7:].strip()
-        if not token:
-            return None
         from services.jwt_utils import decode_token
         payload = decode_token(token)
-        result = await db.execute(
-            select(User).where(User.id == int(payload["sub"]), User.is_active == True)
-        )
-        return result.scalar_one_or_none()
-    except Exception:
+        user_id = int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
         return None
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.is_active == True)
+    )
+    return result.scalar_one_or_none()
 
 
 @router.get("/", response_model=list[ImageResponse])

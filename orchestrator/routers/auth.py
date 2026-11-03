@@ -101,8 +101,8 @@ async def ldap_status():
 
 
 @router.get("/me")
-async def me(request: Request, current_user: User = Depends(get_current_user)):
-    result: dict = {
+async def me(current_user: User = Depends(get_current_user)):
+    return {
         "id": current_user.id,
         "username": current_user.username,
         "email": current_user.email,
@@ -110,13 +110,6 @@ async def me(request: Request, current_user: User = Depends(get_current_user)):
         "auth_provider": current_user.auth_provider.value,
         "needs_username_setup": current_user.needs_username_setup,
     }
-    # BearerヘッダなしはCookie認証（OAuthログイン直後）→ localStorage同期用にトークンを返す
-    if not request.headers.get("authorization", "").lower().startswith("bearer "):
-        result["access_token"] = create_access_token(
-            current_user.id, current_user.username,
-            current_user.role.value, current_user.needs_username_setup,
-        )
-    return result
 
 
 # ---- Google OAuth2 (authlib不使用・httpx直接実装) ----
@@ -201,12 +194,7 @@ async def oauth_google_callback(request: Request, db: AsyncSession = Depends(get
     resp = RedirectResponse(url=redirect_url, status_code=302)
     # 既存セッションを破棄してから新規発行（セッション固定化対策）
     resp.delete_cookie("access_token")
-    resp.set_cookie(
-        "access_token", token,
-        httponly=True, samesite="lax",
-        secure=(settings.SCHEME == "https"),
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
+    _issue_cookie(resp, token)
     resp.delete_cookie("oauth_state")
     resp.delete_cookie("oauth_next")
     return resp

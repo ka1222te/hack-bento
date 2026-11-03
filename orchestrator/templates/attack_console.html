@@ -59,7 +59,7 @@
 {% block scripts %}
 <script>
 function _amHeaders() {
-  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('hb_token')}` };
+  return { 'Content-Type': 'application/json' };
 }
 function _amGet(url) { return fetch(url, { headers: _amHeaders() }); }
 function _amPost(url) { return fetch(url, { method: 'POST', headers: _amHeaders() }); }
@@ -85,14 +85,9 @@ function showToast(msg, type = 'info') {
 }
 
 (async () => {
-  // sessionStorageにトークンがない場合はCookie認証を試みてsessionStorageを同期する
-  if (!sessionStorage.getItem('hb_token')) {
-    const res = await fetch('/api/auth/me');
-    if (!res.ok) { window.location.href = '/login'; return; }
-    const me = await res.json();
-    if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
-    sessionStorage.setItem('hb_token', me.access_token);
-  }
+  const me = await fetchMe();
+  if (!me) { window.location.href = '/login'; return; }
+  if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
   init();
   // ナビバー側での延長操作はstorageイベントで即時反映されるが、保険として
   // 定期的にも残り時間を再取得し、ナビバーと表示がズレないようにする。

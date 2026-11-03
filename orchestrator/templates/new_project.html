@@ -429,23 +429,14 @@
 
 {% block scripts %}
 <script>
-const token = sessionStorage.getItem('hb_token');
-if (!token) { window.location.href = '/login'; }
-if (sessionStorage.getItem('hb_needs_setup') === 'true') { window.location.href = '/setup-username'; }
-
 initNavbar();
 
 // オーナー表示を /api/auth/me から取得
 (async () => {
-  const token = sessionStorage.getItem('hb_token');
-  if (!token) return;
-  try {
-    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-    if (res.ok) {
-      const me = await res.json();
-      document.getElementById('owner-display').textContent = me.username || '';
-    }
-  } catch {}
+  const me = await fetchMe();
+  if (!me) { window.location.href = '/login'; return; }
+  if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
+  document.getElementById('owner-display').textContent = me.username || '';
 })();
 
 // name → slug 自動生成
@@ -523,9 +514,7 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
     const select = document.getElementById(selectId);
     const hint = document.getElementById(hintId);
     try {
-      const res = await fetch(`/api/images/default-assets?kind=${kind}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      const res = await fetch(`/api/images/default-assets?kind=${kind}`);
       const assets = res.ok ? await res.json() : [];
       select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
       if (assets.length === 0) {
@@ -552,9 +541,7 @@ function setupUploadArea(areaId, inputId, phId, selId, fnId, fsId, unit) {
     const select = document.getElementById('docker-base-asset-select');
     const hint = document.getElementById('docker-base-asset-empty-hint');
     try {
-      const res = await fetch('/api/images/default-assets?kind=docker-base', {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      const res = await fetch('/api/images/default-assets?kind=docker-base');
       const assets = res.ok ? await res.json() : [];
       select.innerHTML = '<option value="">— デフォルトを使用 —</option>'
         + assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
@@ -721,7 +708,6 @@ document.getElementById('new-project-form').addEventListener('submit', async e =
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/images/upload');
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.upload.addEventListener('progress', ev => {
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);

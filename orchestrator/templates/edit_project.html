@@ -1,7 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Edit — {{ owner }}/{{ slug }}{% endblock %}
+{% block title %}{% if can_edit %}Edit — {{ owner }}/{{ slug }}{% else %}404 — HackBento{% endif %}{% endblock %}
 
 {% block body %}
+{% if not can_edit %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+  <div class="container" style="max-width:600px;padding-top:6rem;text-align:center">
+    <p style="font-size:5rem;margin-bottom:1rem">🔒</p>
+    <h1 style="font-size:2rem;font-weight:700;margin-bottom:.75rem">404 — Not Found</h1>
+    <p style="color:var(--text2);margin-bottom:1rem">
+      このページは存在しないか、閲覧する権限がありません。
+    </p>
+    <a href="/{{ owner }}/{{ slug }}" class="btn btn-primary">プロジェクトページに戻る</a>
+  </div>
+</div>
+<div id="toast-container"></div>
+{% else %}
 <div id="app">
   {% include "partials/navbar.html" %}
 
@@ -413,20 +427,23 @@
   </div>
 </div>
 <div id="toast-container"></div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
+{% if not can_edit %}
+<script>
+initNavbar();
+</script>
+{% else %}
 <script>
 const OWNER = {{ owner | tojson }};
 const SLUG  = {{ slug  | tojson }};
-const token = sessionStorage.getItem('hb_token');
-if (!token) { window.location.href = '/login'; }
 
 initNavbar();
 
 const API = {
-  token: () => token,
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
@@ -435,9 +452,9 @@ const API = {
 let imageData = null;
 
 async function init() {
-  const [imgRes, meRes] = await Promise.all([
+  const [imgRes, me] = await Promise.all([
     API.get('/api/images/'),
-    API.get('/api/auth/me'),
+    fetchMe(),
   ]);
   const images = imgRes.ok ? await imgRes.json() : [];
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
@@ -449,7 +466,6 @@ async function init() {
   if (!ce.can_edit) { alert('編集権限がありません'); window.location.href = `/${OWNER}/${SLUG}`; return; }
 
   // オーナーまたは管理者のみ Danger Zone を表示
-  const me = meRes.ok ? await meRes.json() : null;
   if (me && (me.role === 'admin' || me.username === OWNER)) {
     document.getElementById('danger-zone').classList.remove('hidden');
   }
@@ -641,9 +657,7 @@ window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) 
   const hint = document.getElementById(`${prefix}-default-empty-hint`);
   let assets = [];
   try {
-    const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
+    const res = await fetch(`/api/images/default-assets?kind=${prefix}`);
     assets = res.ok ? await res.json() : [];
   } catch {}
   select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
@@ -670,9 +684,7 @@ async function loadDockerBaseAssetOptions(currentAssetId) {
   const hint = document.getElementById('docker-base-asset-empty-hint');
   let assets = [];
   try {
-    const res = await fetch('/api/images/default-assets?kind=docker-base', {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
+    const res = await fetch('/api/images/default-assets?kind=docker-base');
     assets = res.ok ? await res.json() : [];
   } catch {}
   select.innerHTML = '<option value="">— 変更しない —</option>'
@@ -914,7 +926,6 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PATCH', `/api/images/${imageData.id}`);
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.upload.addEventListener('progress', ev => {
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);
@@ -1012,4 +1023,5 @@ document.addEventListener('mousedown', e => {
 
 init();
 </script>
+{% endif %}
 {% endblock %}

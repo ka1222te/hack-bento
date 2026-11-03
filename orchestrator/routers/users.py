@@ -1,5 +1,5 @@
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from pydantic import BaseModel, field_validator
@@ -11,6 +11,7 @@ from models import User, Image, ImageCollaborator, CollaboratorRole, Visibility,
 from deps import get_current_user, require_username_set
 from services.jwt_utils import create_access_token
 from services.auth_local import hash_password
+from routers.auth import _issue_cookie
 from config import settings
 from reserved import is_reserved
 
@@ -33,7 +34,6 @@ class UsernameSetupRequest(BaseModel):
 
 
 class UsernameSetupResponse(BaseModel):
-    access_token: str
     username: str
     role: str
 
@@ -41,6 +41,7 @@ class UsernameSetupResponse(BaseModel):
 @router.post("/setup-username", response_model=UsernameSetupResponse)
 async def setup_username(
     body: UsernameSetupRequest,
+    response: Response,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -67,8 +68,12 @@ async def setup_username(
         await db.rollback()
         raise HTTPException(status_code=409, detail="このユーザ名は既に使用されています")
 
+    # needs_username_setup=False に更新した新しいトークンでCookieを更新する
+    # （更新しないと古いCookieのneeds_username_setup=Trueが残り、以後のページ
+    # ルーティングでユーザ名設定画面に戻され続けてしまう）。
     token = create_access_token(user.id, body.username, user.role.value, False)
-    return UsernameSetupResponse(access_token=token, username=body.username, role=user.role.value)
+    _issue_cookie(response, token)
+    return UsernameSetupResponse(username=body.username, role=user.role.value)
 
 
 @router.get("/search")
