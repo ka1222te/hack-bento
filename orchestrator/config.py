@@ -39,13 +39,16 @@ class Settings(BaseSettings):
     # apt install/docker pull等を行うとすぐ容量が尽きるため）。
     ROOTFS_CONVERT_SIZE_MARGIN_MB: int = 256
 
-    # rootfsのwritableコピー（shutil.copy2相当）・debugfsによるresolv.conf注入は、
-    # 複数VMの同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト
-    # （ログイン・ページ閲覧等）がイベントループをブロックされて応答不能になる
-    # 事故が起きた。cgroup v2のio.max（committed_vms配下の専用cgroup）でこれらの
-    # 処理のディスク帯域を制限し、他の処理に帯域を残す。0または未設定（None）の場合は
-    # 制限しない（cgroup委譲ツリーが無い環境ではこの制限自体も無効）。
-    ROOTFS_COPY_IO_LIMIT_MBPS: int = 0
+    # rootfsのwritableコピー・debugfsによるresolv.conf注入・running中のFirecracker VM
+    # 自体（ゲスト内のディスクI/O）は、複数VMの同時起動・稼働時にホストのディスクI/O
+    # 帯域を奪い合い、他の全リクエスト（ログイン・ページ閲覧等）がイベントループを
+    # ブロックされて応答不能になる事故が起きた。VM専用cgroup委譲ツリーのルート
+    # （smolvm.py::VM_CGROUP_ROOT、"hackbento-vms"）自体にcgroup v2のio.maxを設定し、
+    # その配下の全プロセス（起動処理中のコピー・debugfs、稼働中の全Firecracker VM）が
+    # 使うディスク帯域の合計をここで一括制限する。VMごとの個別上限ではなく、
+    # ホスト全体で合計この値を超えないようにする設計。0または未設定の場合は制限しない
+    # （cgroup委譲ツリーが無い環境ではこの制限自体も無効）。
+    VM_IO_LIMIT_MBPS: int = 0
 
     # 認証
     LDAP_ENABLED: bool = False
