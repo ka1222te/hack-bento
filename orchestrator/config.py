@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # DB
-    DATABASE_URL: str = "sqlite+aiosqlite:///./hackbento.db"
+    DATABASE_URL: str = "postgresql+asyncpg://hackbento:hackbento@localhost:5432/hackbento"
 
     # タイムアウト・制限
     DEFAULT_TIMEOUT_MINUTES: int = 60

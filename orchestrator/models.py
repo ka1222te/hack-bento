@@ -72,8 +72,8 @@ class User(Base):
     needs_username_setup = Column(Boolean, default=False, nullable=False)  # 初回ユーザ名設定が必要か
     email = Column(String(256), unique=True, nullable=True)
     hashed_password = Column(String(128), nullable=True)
-    role = Column(Enum(UserRole), default=UserRole.user, nullable=False)
-    auth_provider = Column(Enum(AuthProvider), default=AuthProvider.local, nullable=False)
+    role = Column(Enum(UserRole, native_enum=False), default=UserRole.user, nullable=False)
+    auth_provider = Column(Enum(AuthProvider, native_enum=False), default=AuthProvider.local, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
@@ -127,7 +127,7 @@ class Image(Base):
     default_kernel_asset_id = Column(Integer, ForeignKey("default_kernel_assets.id"), nullable=True)
     default_rootfs_asset_id = Column(Integer, ForeignKey("default_rootfs_assets.id"), nullable=True)
     readme_path = Column(String(512), nullable=True)
-    difficulty = Column(Enum(Difficulty), default=Difficulty.medium, nullable=False)
+    difficulty = Column(Enum(Difficulty, native_enum=False), default=Difficulty.medium, nullable=False)
     category = Column(String(64), nullable=True)
     estimated_minutes = Column(Integer, default=60)
     timeout_minutes = Column(Integer, default=60)
@@ -137,7 +137,7 @@ class Image(Base):
     # （後方互換: 既存行は未設定）。
     pids_limit = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
-    visibility = Column(Enum(Visibility), default=Visibility.protected, nullable=False)
+    visibility = Column(Enum(Visibility, native_enum=False), default=Visibility.protected, nullable=False)
     # システム提供の Attack Machine テンプレート（owner_id は NULL）であることを示すフラグ
     is_attack_machine = Column(Boolean, default=False, nullable=False)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -197,7 +197,7 @@ class ImageCollaborator(Base):
     id = Column(Integer, primary_key=True, index=True)
     image_id = Column(Integer, ForeignKey("images.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    role = Column(Enum(CollaboratorRole), default=CollaboratorRole.read, nullable=False)
+    role = Column(Enum(CollaboratorRole, native_enum=False), default=CollaboratorRole.read, nullable=False)
     added_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (UniqueConstraint("image_id", "user_id", name="uq_collab_image_user"),)
@@ -214,13 +214,28 @@ class Environment(Base):
     image_id = Column(Integer, ForeignKey("images.id"), nullable=False)
     vm_id = Column(String(128), nullable=True)
     ip_address = Column(String(45), nullable=True)
-    status = Column(Enum(EnvStatus), default=EnvStatus.starting, nullable=False)
+    status = Column(Enum(EnvStatus, native_enum=False), default=EnvStatus.starting, nullable=False)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # start_vm() の呼び出し直前（IP確保・同時起動数チェック等の待ち時間を含まない、
+    # 実際のFirecracker起動処理が始まる時刻）に設定される。同時に複数のVMを起動すると
+    # allocate_ip の _lock 待ちや、後続のTAP作成・debugfs処理（ディスクI/O輻輳時は
+    # 数分かかることがある）の順番待ちで、後発のVMは started_at から見かけ上長く
+    # 待たされる。watchdog の起動タイムアウト判定は「実際に処理が始まってから
+    # 何分経ったか」で測るべきで、この待ち時間を含めてしまうと複数VM同時起動時に
+    # 後発のVMが不公平に（実処理時間が短くても）タイムアウトしてしまう
+    # （実際に発生）。NULL の間は started_at にフォールバックする
+    # （allocate_ip 失敗等で start_vm() に到達しなかった環境は started_at のみで判定）。
+    vm_processing_started_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=False)
     extended_count = Column(Integer, default=0, nullable=False)
     # Image.timeout_minutes が 0（無制限）だった時点のスナップショット。
     # True の間、watchdog は expires_at によるタイムアウト判定を行わない。
     is_unlimited = Column(Boolean, default=False, nullable=False)
+    # starting が watchdog のタイムアウトで強制停止された場合にのみ設定される。
+    # 「起動に失敗した」のか「起動処理が長引いてタイムアウトで打ち切られた」のかを
+    # UI側で区別して表示するために使う（後者は裏でFirecracker起動自体は成功している
+    # 場合がある＝ユーザー操作のミスではないことを明示する）。
+    last_error = Column(String(512), nullable=True)
 
     user = relationship("User", back_populates="environments")
     image = relationship("Image", back_populates="environments")
