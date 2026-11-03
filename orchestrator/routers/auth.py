@@ -2,14 +2,14 @@ import secrets
 import httpx
 from typing import Optional
 from urllib.parse import urlencode, quote
-from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Response, Request, status, BackgroundTasks
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
 from datetime import datetime
 from pydantic import BaseModel
 
-from database import get_db
+from database import get_db, get_db_readonly
 from models import User
 from services import auth_local, auth_ldap, auth_oauth
 from services.jwt_utils import create_access_token
@@ -65,16 +65,42 @@ def _issue_cookie(response: Response, token: str) -> None:
     )
 
 
+async def _update_last_login(user_id: int) -> None:
+    """last_login はログインの成否に影響しないベストエフォートな記録のため、
+    レスポンス送信後にバックグラウンドで更新する（書き込みロック待ちで
+    ログイン応答自体を遅延・失敗させないため）。失敗してもログは出すだけで無視する。
+    """
+    from database import AsyncSessionLocal
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        async with AsyncSessionLocal() as bg_db:
+            await bg_db.execute(update(User).where(User.id == user_id).values(last_login=datetime.utcnow()))
+            await bg_db.commit()
+    except Exception as e:
+        logger.warning(f"last_login の更新に失敗しました（ログイン自体は成功済み）: user_id={user_id}: {e}")
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
-    user = await auth_local.authenticate(db, body.username, body.password)
+async def login(
+    body: LoginRequest,
+    response: Response,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    db_readonly: AsyncSession = Depends(get_db_readonly),
+):
+    # ユーザ名・パスワードの検証自体は読み取りのみで完結するため、まず読み取り専用
+    # セッション（BEGIN、書き込みロック不要）で行う。VM起動処理（allocate_ip等）が
+    # 書き込みロックを保持中でも、ログイン判定はブロックされずに完了できる。
+    # LDAP認証は初回ログイン時にユーザを新規作成する可能性があるため書き込み用
+    # db（BEGIN IMMEDIATE）が必要で、ローカル認証失敗時のみそちらを使う。
+    user = await auth_local.authenticate(db_readonly, body.username, body.password)
     if not user and settings.LDAP_ENABLED:
         user = await auth_ldap.authenticate(db, body.username, body.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="ユーザ名またはパスワードが正しくありません")
 
-    await db.execute(update(User).where(User.id == user.id).values(last_login=datetime.utcnow()))
-    await db.commit()
+    background_tasks.add_task(_update_last_login, user.id)
 
     token = create_access_token(user.id, user.username, user.role.value, user.needs_username_setup)
     _issue_cookie(response, token)
@@ -88,7 +114,11 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
 
 @router.post("/logout")
 async def logout(response: Response):
-    response.delete_cookie("access_token")
+    response.delete_cookie(
+        "access_token",
+        httponly=True, samesite="lax",
+        secure=(settings.SCHEME == "https"),
+    )
     return {"message": "ログアウトしました"}
 
 

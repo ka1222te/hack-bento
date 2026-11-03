@@ -117,7 +117,7 @@ document.getElementById('nav-user-btn').addEventListener('click', toggleUserMenu
 
 // ===== Attack Machine (navbar) =====
 function _amHeaders() {
-  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('hb_token')}` };
+  return { 'Content-Type': 'application/json' };
 }
 function _amGet(url) { return fetch(url, { headers: _amHeaders() }); }
 function _amPost(url) { return fetch(url, { method: 'POST', headers: _amHeaders() }); }
@@ -295,7 +295,6 @@ function initNavbar() {
   const udLogout = document.getElementById('ud-logout');
   if (udLogout) udLogout.addEventListener('click', async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
-    sessionStorage.clear();
     window.location.href = '/login';
   });
 
@@ -309,15 +308,11 @@ function initNavbar() {
 }
 
 async function _loadNavbarUser() {
-  // 新規タブ（target=_blank）はsessionStorageを引き継がないため、hb_tokenが無い場合は
-  // httponly Cookie（access_token）だけで /api/auth/me を呼ぶ。Cookie認証時はレスポンスに
-  // access_tokenが含まれるので、このタブ用にsessionStorageへ同期する。
-  const token = sessionStorage.getItem('hb_token');
+  // 認証はCookie（access_token、httponly）のみで行う。トークンをJSから読める
+  // sessionStorage等に置かないため、/api/auth/me をCookie経由でそのまま呼ぶ。
   try {
-    const res = await fetch('/api/auth/me', token ? { headers: { Authorization: `Bearer ${token}` } } : {});
-    if (!res.ok) return;
-    const me = await res.json();
-    if (!token && me.access_token) sessionStorage.setItem('hb_token', me.access_token);
+    const me = await fetchMe();
+    if (!me) return;
 
     const avatarEl = document.getElementById('nav-user-avatar');
     if (avatarEl) avatarEl.textContent = me.username ? me.username[0].toUpperCase() : '?';
@@ -333,12 +328,10 @@ async function _loadNavbarUser() {
 }
 
 async function _loadMyProjects(username) {
-  const token = sessionStorage.getItem('hb_token');
-  if (!token || !username) return;
-  // _loadNavbarUserがhb_tokenをCookie経由で同期した直後に呼ばれるため、ここでは既に設定済みのはず
+  if (!username) return;
   const el = document.getElementById('drawer-my-projects');
   try {
-    const res = await fetch('/api/images/', { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch('/api/images/');
     if (!res.ok) { el.innerHTML = ''; return; }
     const images = await res.json();
     const mine = images.filter(i => i.owner_username === username);
