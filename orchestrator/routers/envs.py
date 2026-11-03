@@ -21,6 +21,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/envs", tags=["environments"])
 
 
+# VM起動失敗の原因分類: smolvm.py/network.py が投げる例外メッセージ（キーワード）
+# → 一般ユーザー向けの分かりやすい文言。文字列全文は一致させずキーワード部分一致で
+# 判定する（内部のメッセージ文言が多少変わっても分類が壊れないようにするため）。
+_START_VM_ERROR_PATTERNS: list[tuple[str, str]] = [
+    ("/dev/kvm", "ホストでKVMが有効になっていません。管理者に連絡してください。"),
+    ("ディスク空き容量が不足", "ホストのディスク容量が不足しています。しばらく待ってから再試行するか、管理者に連絡してください。"),
+    ("ゲストカーネルが見つかりません", "プロジェクトのゲストカーネルファイルが見つかりません。プロジェクト編集画面でカーネルを再登録してください。"),
+    ("rootfs が見つかりません", "プロジェクトのrootfsファイルが見つかりません。プロジェクト編集画面でrootfsを再登録してください。"),
+    ("がタイムアウトしました", "VMの起動がタイムアウトしました。しばらく待ってから再試行してください。"),
+    ("以内に応答しませんでした", "VMの起動がタイムアウトしました。しばらく待ってから再試行してください。"),
+    ("ブリッジ", "ホストのネットワーク設定に問題があります。管理者に連絡してください。"),
+    ("IP_POOL", "ホストのネットワーク設定に問題があります。管理者に連絡してください。"),
+]
+
+
+def _classify_start_vm_error(exc: Exception) -> str:
+    """start_vm() が投げた例外を一般ユーザー向けの分かりやすい文言に分類する。
+    どのパターンにも当たらない場合は原因不明として扱う。実際の例外内容は
+    呼び出し元が必ずログに出す（ここでは出さない）。"""
+    msg = str(exc)
+    for keyword, user_message in _START_VM_ERROR_PATTERNS:
+        if keyword in msg:
+            return user_message
+    return "VM起動に失敗しました（原因不明）。しばらく待ってから再試行するか、管理者に連絡してください。"
+
+
 class EnvResponse(BaseModel):
     id: int
     image_id: int
@@ -173,7 +199,10 @@ async def start_env(
         logger.error(f"start_vm failed env_id={env.id}: {e}")
         await destroy_env(env)
         await db.commit()
-        raise HTTPException(status_code=500, detail="VM起動に失敗しました")
+        user_message = _classify_start_vm_error(e)
+        if user.role == UserRole.admin:
+            user_message = f"{user_message}\n詳細: {e}"
+        raise HTTPException(status_code=500, detail=user_message)
 
     try:
         # vm_id は取得後すぐに確定させる（status=starting の行自体は allocate_ip 内で

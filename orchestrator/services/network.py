@@ -85,10 +85,21 @@ async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
     やらないと、flush 止まりの行が他リクエストの user_count/total_count
     チェックに反映されず、_lock で直列化していても上限チェックをすり抜けて
     同時に多重起動されてしまう（flush だけでは TOCTOU を防げない）。
+
+    db への最初のアクセス（db.execute）で SQLAlchemy の begin イベントが発火し
+    BEGIN IMMEDIATE で SQLite の書き込みロックを即座に取得してしまうため、
+    _get_bridge_used_ips()（外部コマンド ip neigh show、最大10秒かかり得る）は
+    db に触れる前に完了させる。これを怠ると、IP確保のたびに最大10秒間
+    SQLite の書き込みロックを単独で握り続け、その間ログイン等の他の書き込み
+    リクエストが database is locked になりかねない。
     """
     async with _lock:
         pool = _ip_pool()
         pool_set = set(pool)
+
+        # ホストの実使用IP（ブリッジ上のARP/近隣テーブル）もプール内のものだけを
+        # 考慮する（ゾンビ占有回避）。db セッションに触れる前に完了させる。
+        real_used = {ip for ip in await _get_bridge_used_ips() if ip in pool_set}
 
         result = await db.execute(
             select(Environment.ip_address).where(
@@ -100,10 +111,6 @@ async def allocate_ip(db: AsyncSession, flush_record) -> Optional[str]:
         )
         # DB に記録されたIPのうちプール内のものだけを使用中とみなす
         db_used = {row[0] for row in result.fetchall() if row[0] and row[0] in pool_set}
-
-        # ホストの実使用IP（ブリッジ上のARP/近隣テーブル）もプール内のものだけを
-        # 考慮する（ゾンビ占有回避）
-        real_used = {ip for ip in await _get_bridge_used_ips() if ip in pool_set}
 
         used = db_used | real_used
         for ip in pool:

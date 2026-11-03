@@ -65,6 +65,7 @@
       <div class="project-main">
         <!-- 起動パネル -->
         <div class="project-launch-panel" id="project-launch-panel"></div>
+        <div id="launch-error" class="alert alert-error hidden" style="margin-top:.6rem;white-space:pre-wrap"></div>
 
         <!-- メタ情報バー -->
         <div class="project-meta-bar">
@@ -276,6 +277,7 @@ const _editSvg = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentC
 
 function renderLaunchPanel() {
   const panel = document.getElementById('project-launch-panel');
+  _hideLaunchError();
 
   // 未ログインの場合は起動不可・ログイン誘導を表示
   if (!isLoggedIn) {
@@ -526,7 +528,19 @@ function _clearBtnBusy(btn, idleLabel) {
   else btn.textContent = idleLabel;
 }
 
+function _showLaunchError(msg) {
+  const box = document.getElementById('launch-error');
+  if (!box) return;
+  box.textContent = msg;
+  box.classList.remove('hidden');
+}
+function _hideLaunchError() {
+  const box = document.getElementById('launch-error');
+  if (box) box.classList.add('hidden');
+}
+
 async function startEnv(imageId, btn) {
+  _hideLaunchError();
   _setBtnBusy(btn, '起動中...');
   try {
     const res = await API.post(`/api/envs/${imageId}/start`);
@@ -537,9 +551,13 @@ async function startEnv(imageId, btn) {
       notifyEnvsChanged();
       return;
     }
-    const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
+    const d = await res.json();
+    const msg = d.detail || '起動に失敗しました';
+    showToast('起動に失敗しました', 'error');
+    _showLaunchError(msg);
   } catch {
     showToast('通信エラーが発生しました', 'error');
+    _showLaunchError('サーバとの通信に失敗しました（ネットワーク接続を確認してください）。解消しない場合は管理者に連絡してください。');
   }
   _clearBtnBusy(btn, '▶ 起動する');
 }
