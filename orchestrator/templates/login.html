@@ -98,8 +98,6 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
   if (res.ok) {
     const data = await res.json();
-    sessionStorage.setItem('hb_token', data.access_token);
-    if (data.needs_username_setup) sessionStorage.setItem('hb_needs_setup', 'true');
     const nextQuery = NEXT_PATH ? `?next=${encodeURIComponent(NEXT_PATH)}` : '';
     window.location.href = data.needs_username_setup ? `/setup-username${nextQuery}` : (NEXT_PATH || '/');
   } else {

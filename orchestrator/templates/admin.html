@@ -244,15 +244,12 @@
 {% block scripts %}
 <script>
 const API = {
-  token: () => sessionStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
 };
-
-if (!API.token()) { window.location.href = '/login'; }
 
 initNavbar();
 
@@ -680,7 +677,6 @@ document.getElementById('form-docker-base').addEventListener('submit', async e =
   try {
     const res = await fetch('/api/admin/default-assets/docker-base/build', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${API.token()}` },
       body: fd,
     });
     if (res.ok) {
@@ -710,7 +706,6 @@ document.getElementById('form-vm-asset').addEventListener('submit', async e => {
 
   const res = await fetch(`/api/admin/default-assets/${kind}`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${API.token()}` },
     body: fd,
   });
   if (res.ok) {
@@ -831,7 +826,10 @@ function showToast(msg, type='info') {
   setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3000);
 }
 
-loadAdminEnvs();
+(async () => {
+  if (!(await fetchMe())) { window.location.href = '/login'; return; }
+  loadAdminEnvs();
+})();
 </script>
 
 <style>

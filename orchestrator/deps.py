@@ -1,5 +1,4 @@
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError
@@ -7,19 +6,15 @@ from database import get_db_readonly
 from models import User, UserRole
 from services.jwt_utils import decode_token
 
-bearer = HTTPBearer(auto_error=False)
-
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: AsyncSession = Depends(get_db_readonly),
 ) -> User:
-    token = None
-    if credentials:
-        token = credentials.credentials
-    else:
-        token = request.cookies.get("access_token")
+    """認証はCookie（access_token、httponly）のみで行う。トークンをJSから読める
+    場所（sessionStorage等）に置かないことでXSS時のトークン窃取リスクを無くすため、
+    Bearerヘッダ方式はサポートしない。"""
+    token = request.cookies.get("access_token")
 
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")

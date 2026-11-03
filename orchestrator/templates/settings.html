@@ -48,17 +48,10 @@
 {% block scripts %}
 <script>
 (async () => {
-  const token = sessionStorage.getItem('hb_token');
-  if (!token) { window.location.href = '/login'; return; }
+  const me = await fetchMe();
+  if (!me) { window.location.href = '/login'; return; }
 
   initNavbar();
-
-  // auth_provider を API から取得してローカルユーザか判定
-  const res = await fetch('/api/auth/me', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) { window.location.href = '/login'; return; }
-  const me = await res.json();
 
   const isLocal = me.auth_provider === 'local';
   const form = document.getElementById('pw-form');
@@ -95,7 +88,7 @@
 
     const r = await fetch('/api/users/me/change-password', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ current_password: currentPw, new_password: newPw, confirm_password: confirmPw }),
     });
 
