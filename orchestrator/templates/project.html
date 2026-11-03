@@ -361,6 +361,7 @@ function renderLaunchPanel() {
       </div>`;
     // POST /start のレスポンス中にも関わらず他経路でstartingのまま残っている場合に備えて
     // running/stopped への遷移をポーリングで検知し、固まって見えないようにする。
+    const _startingEnvId = running.id;
     if (!_projStartingPollTimer) {
       _projStartingPollTimer = setInterval(async () => {
         const r = await API.get('/api/envs/');
@@ -370,6 +371,24 @@ function renderLaunchPanel() {
         if (!fresh || fresh.status !== 'starting') {
           clearInterval(_projStartingPollTimer);
           _projStartingPollTimer = null;
+          renderLaunchPanel();
+          // 一覧（starting/running/stopping のみ）から消えた場合、watchdogの
+          // タイムアウト処理で stopped になった可能性がある。起動失敗（ユーザーの
+          // 操作ミスやエラー）と区別するため、last_error の有無を個別に確認する。
+          // renderLaunchPanel() は内部で _hideLaunchError() を呼ぶため、表示は
+          // その後に行う。
+          if (!fresh) {
+            try {
+              const dr = await API.get(`/api/envs/by-id/${_startingEnvId}`);
+              if (dr.ok) {
+                const detail = await dr.json();
+                if (detail.last_error) {
+                  _showLaunchError(detail.last_error);
+                }
+              }
+            } catch {}
+          }
+          return;
         }
         renderLaunchPanel();
       }, 4000);

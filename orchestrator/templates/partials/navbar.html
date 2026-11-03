@@ -145,6 +145,13 @@ if (amNavBtn) {
 
 let _amNavTimer = null;
 let _amNavPollTimer = null;
+let _amLastShownStopError = null;
+// このページ訪問中にstarting状態を実際に観測したか。ページロード直後（リロード含む）の
+// 最初のrefreshAttackMachineNav()呼び出しでは、watchdogのタイムアウトで既にstoppedに
+// なっていたとしても「いつ起動されてタイムアウトしたか」をこのタブは見ていないため、
+// last_stopped_errorのトースト表示はしない（起動した本人のタブでのみ、起動中の
+// 進行を見ていた上でタイムアウトに至った場合にだけ案内する）。
+let _amObservedStarting = false;
 
 function _amTimerPhase(s, timeoutSec) {
   const pct = s / timeoutSec;
@@ -223,6 +230,7 @@ async function refreshAttackMachineNav() {
     // 起動・停止処理が完了するまでは操作不可。ページ再読み込み後もポーリングで自動的に
     // running/stopped へ遷移したら再描画されるため、多重に起動/停止リクエストが
     // 送られることを防ぐ。
+    if (machine.status === 'starting') _amObservedStarting = true;
     navTimerEl.classList.add('hidden');
     const label = machine.status === 'starting' ? '起動中...' : '停止中...';
     actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start" disabled>${label}</button>`;
@@ -234,6 +242,17 @@ async function refreshAttackMachineNav() {
     navTimerEl.classList.add('hidden');
     actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start">&#x25B6; VM起動</button>`;
     document.getElementById('am-nav-start').addEventListener('click', startAttackMachineNav);
+    // 直前までstarting中だったものがwatchdogのタイムアウト処理でstoppedになった場合、
+    // 「起動する」ボタンに戻るだけでは「起動していなかった」ように見えてしまうため、
+    // last_stopped_error（タイムアウトで打ち切られた等の理由）があれば案内する。
+    // ただし、このタブでstarting状態を実際に観測していた場合のみ表示する
+    // （ページロード直後の最初の呼び出しでは表示しない）。一度表示したら繰り返し
+    // 出さないよう、表示済みのenv由来の値を記憶する。
+    if (_amObservedStarting && data.last_stopped_error && data.last_stopped_error !== _amLastShownStopError) {
+      _amLastShownStopError = data.last_stopped_error;
+      showToast(data.last_stopped_error, 'error');
+    }
+    _amObservedStarting = false;
   }
 
   if (_amNavPollTimer) { clearInterval(_amNavPollTimer); _amNavPollTimer = null; }

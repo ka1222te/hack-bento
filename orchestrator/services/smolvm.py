@@ -866,17 +866,36 @@ async def run_rootfs_cleanup_worker() -> None:
     """
     from database import AsyncSessionLocal
     from models import Environment, EnvStatus
-    from sqlalchemy import select
+    from sqlalchemy import select, func
 
     logger.info("Rootfs cleanup worker started")
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                running_result = await db.execute(
-                    select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+                # VM起動処理（_start_firecracker）は vm_id を UUID として生成し
+                # writable rootfs コピーを作った後、TAP作成・Firecracker起動を経てから
+                # ようやく env.vm_id を確定・commit する（status=running への遷移はさらに後）。
+                # つまり starting の間は DB 上の vm_id が NULL のままで、ファイル名
+                # （vm_id）とDBで対応付けられない。running のみ・starting+running の
+                # vm_id 集合のどちらで判定しても、起動処理中は「対応するDBレコードがない
+                # ように見える」ため、このワーカーの定期実行（300秒間隔）が起動処理の
+                # 最中に重なると writable rootfs コピーを孤立ファイルと誤判定して削除し、
+                # 直後のFirecracker起動が「No such file or directory」で失敗する事故が
+                # 起きた（実際に発生）。starting の環境が1件でもある間は、
+                # 削除ではなく今回のサイクルをスキップして安全側に倒す。
+                starting_count = await db.scalar(
+                    select(func.count()).where(Environment.status == EnvStatus.starting)
                 )
-                active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
-            _cleanup_orphaned_rootfs_files(active_vm_ids)
+                if starting_count:
+                    logger.info(
+                        f"起動処理中の環境が{starting_count}件あるため、今回のrootfs掃除サイクルをスキップします"
+                    )
+                else:
+                    running_result = await db.execute(
+                        select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+                    )
+                    active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
+                    _cleanup_orphaned_rootfs_files(active_vm_ids)
         except Exception as e:
             logger.error(f"Rootfs cleanup worker error: {e}")
         await asyncio.sleep(_ROOTFS_CLEANUP_INTERVAL_SECONDS)
