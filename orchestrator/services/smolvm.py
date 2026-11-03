@@ -165,49 +165,78 @@ def _block_device_major_minor(path: str) -> list[str]:
     return devices
 
 
-# rootfsコピー・debugfs呼び出し専用の共有cgroup名。VM起動のたびに新しいcgroupを
-# 作ると、cgroup単位で別々にio.maxが適用されるため「同時に動いているコピー数 ×
-# ROOTFS_COPY_IO_LIMIT_MBPS」までディスク帯域を使えてしまい、複数VM同時起動時の
-# 輻輳対策にならない。全てのコピー・debugfs呼び出しをこの一つのcgroupに集約する
-# ことで、同時に何本実行中でも合計の帯域がROOTFS_COPY_IO_LIMIT_MBPSを超えない
-# ようにする（cgroup v2のio.maxはcgroup単位であり、所属する全プロセスの合計に
-# 適用される）。
+# VM_CGROUP_ROOT（hackbento-vms）自体にio.maxを設定したかどうかのプロセス内キャッシュ。
+# 複数VM起動のたびに毎回設定し直す必要はなく、アプリ起動後一度設定すればその配下の
+# 全子cgroup（個々のVM専用cgroup、起動処理中のコピー・debugfsプロセス）に効き続ける。
+_vm_cgroup_root_io_limit_applied = False
+
+# rootfsコピー・debugfs呼び出し専用の共有cgroup名。VM_CGROUP_ROOT自体にio.maxを
+# 設定しても、デフォルトではcp/debugfsプロセスはorchestratorコンテナのメイン
+# プロセスのcgroup（hackbento-vmsの外）に残るため制限が効かない。このcgroup
+# （hackbento-vms配下）へ明示的に移すことで、VM_CGROUP_ROOTのio.max（ホスト全体
+# 合計の上限）の対象に含める。このcgroup自身にはio.maxを設定しない
+# （VM_CGROUP_ROOT側の設定が子孫cgroup全体に継承されるため、個別設定は不要）。
 _IO_LIMITED_CGROUP_NAME = "rootfs-copy-shared"
 
 
-def _get_io_limited_cgroup() -> str | None:
-    """rootfsコピー・debugfs呼び出し専用の共有cgroupを返す（無ければ作成しio.maxを
-    設定する）。ROOTFS_COPY_IO_LIMIT_MBPS が未設定(0)、または委譲ツリーが無い場合は
-    何もせず None を返す（呼び出し元は制限なしで続行する）。
+def ensure_vm_cgroup_root_io_limit() -> None:
+    """VM_CGROUP_ROOT（hackbento-vms）自体にio.maxを設定し、その配下で動く全プロセス
+    （起動処理中のrootfsコピー・debugfs、稼働中の全Firecracker VM）が使うディスク帯域
+    の合計をホスト全体で一括制限する。VM_IO_LIMIT_MBPS が未設定(0)、または委譲ツリーが
+    無い場合は何もしない。
 
-    成功時はcgroupのパスを返す。失敗時はNoneを返し、呼び出し元は制限なしで続行する
-    （ディスクI/O帯域制限は性能保護のための追加対策であり、失敗してもVM起動自体を
-    止めるべきではない）。
+    VMごとに個別のcgroupへ制限をかける方式ではなく、委譲ツリーのルート自体に設定する
+    ことで、「同時に何台動いていても合計でVM_IO_LIMIT_MBPSを超えない」という挙動になる
+    （cgroup v2のio.maxは子孫cgroup全体の合計に効く）。ホスト側のsetup.shは
+    io コントローラを委譲するだけで、具体的な帯域の値はここ（アプリ側）で決める。
     """
-    if settings.ROOTFS_COPY_IO_LIMIT_MBPS <= 0:
-        return None
+    global _vm_cgroup_root_io_limit_applied
+    if _vm_cgroup_root_io_limit_applied:
+        return
+    if settings.VM_IO_LIMIT_MBPS <= 0:
+        return
     if not _cgroup_available():
-        return None
+        return
     devices = _block_device_major_minor(FC_ROOTFS_DIR)
     if not devices:
-        return None
-    path = os.path.join(VM_CGROUP_ROOT, _IO_LIMITED_CGROUP_NAME)
+        return
     try:
-        os.makedirs(path, exist_ok=True)
-        limit_bytes = settings.ROOTFS_COPY_IO_LIMIT_MBPS * 1024 * 1024
+        limit_bytes = settings.VM_IO_LIMIT_MBPS * 1024 * 1024
         # LVM等では論理デバイス（dm-N）だけに制限をかけても、下位の実デバイス
         # （パーティションを除いたホールディスク）側では素通りすることを確認した
         # ため、_block_device_major_minor が返す全デバイスに同じ上限を設定する。
         # io.max は1回のwrite()呼び出しにつき1デバイス分の設定のみ受け付ける
         # （複数行をまとめて書き込むとInvalid argumentになる）ため、デバイスごとに
         # 個別にopen/writeする。
-        io_max_path = os.path.join(path, "io.max")
+        io_max_path = os.path.join(VM_CGROUP_ROOT, "io.max")
         for dev in devices:
             with open(io_max_path, "w") as f:
                 f.write(f"{dev} rbps={limit_bytes} wbps={limit_bytes}")
+        logger.info(f"VM用cgroup全体のディスクI/O帯域を制限しました: {settings.VM_IO_LIMIT_MBPS}MB/s (devices={devices})")
+        _vm_cgroup_root_io_limit_applied = True
+    except OSError as e:
+        logger.warning(f"VM用cgroup全体のio.max設定に失敗しました（制限なしで続行します）: {e}")
+
+
+def _get_shared_copy_cgroup() -> str | None:
+    """rootfsコピー・debugfs呼び出し用の共有cgroup（VM_CGROUP_ROOT配下）を返す
+    （無ければ作成する）。VM_IO_LIMIT_MBPS が未設定、または委譲ツリーが無い場合は
+    Noneを返し、呼び出し元はプロセスをどこにも移さず続行する。
+
+    このcgroup自体にio.maxは設定しない。ensure_vm_cgroup_root_io_limit()が
+    VM_CGROUP_ROOT自体に設定した上限が、子孫であるこのcgroupにもそのまま継承される。
+    """
+    if settings.VM_IO_LIMIT_MBPS <= 0:
+        return None
+    if not _cgroup_available():
+        return None
+    ensure_vm_cgroup_root_io_limit()
+    path = os.path.join(VM_CGROUP_ROOT, _IO_LIMITED_CGROUP_NAME)
+    try:
+        os.makedirs(path, exist_ok=True)
         return path
     except OSError as e:
-        logger.warning(f"rootfsコピー用cgroupのio.max設定に失敗しました（制限なしで続行します）: {e}")
+        logger.warning(f"rootfsコピー用cgroupの作成に失敗しました（制限なしで続行します）: {e}")
         return None
 
 
@@ -445,8 +474,8 @@ def _write_resolv_conf(rootfs_path: str) -> None:
         )
         # debugfsは複数VM同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト
         # （ログイン等）がイベントループをブロックされて応答不能になる事故が起きたため、
-        # ROOTFS_COPY_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限する。
-        io_cgroup = _get_io_limited_cgroup()
+        # VM_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限する。
+        io_cgroup = _get_shared_copy_cgroup()
         _attach_current_process_to_cgroup(io_cgroup, proc.pid)
         try:
             stdout, stderr = proc.communicate(input=script, timeout=300)
@@ -507,7 +536,7 @@ def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> No
     """rootfsのwritableコピーを作る。shutil.copy2ではなく `cp` サブプロセスを使うのは、
     複数VM同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト（ログイン等）
     がイベントループをブロックされて応答不能になる事故が起きたため、
-    ROOTFS_COPY_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限できるように
+    VM_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限できるように
     するため（shutil.copy2はorchestratorプロセス自身のスレッドで実行されるため、
     cgroupでの帯域制限をプロセス単位で適用できない）。
 
@@ -516,7 +545,7 @@ def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> No
     「rootfsコピー中」表示に使われる。
     """
     import subprocess
-    io_cgroup = _get_io_limited_cgroup()
+    io_cgroup = _get_shared_copy_cgroup()
     try:
         total_bytes = os.path.getsize(src)
         if env_id is not None:
@@ -946,6 +975,7 @@ async def cleanup_orphaned_vms() -> None:
     状態を突き合わせ、不整合を解消する。
     """
     _cleanup_stale_vm_cgroups()
+    ensure_vm_cgroup_root_io_limit()
 
     # 起動直後は稼働中の VM は存在しないため、残っている anti-spoof テーブル
     # （bridge hb_*）は全て前回の残骸とみなして掃除する。
