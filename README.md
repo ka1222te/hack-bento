@@ -59,7 +59,7 @@ Corporate user terminal
 |---|---|
 | Backend | Python 3.12 + FastAPI |
 | Frontend | Jinja2 templates + Vanilla JS |
-| Database | SQLite (async via aiosqlite) |
+| Database | PostgreSQL (async via asyncpg) |
 | Authentication | JWT (Cookie + Bearer) / LDAP / Google OAuth2 |
 | Environment runtime | Firecracker microVM + Linux bridge network (KVM required) |
 | GUI access (Attack Machine) | Apache Guacamole, reverse-proxied by HackBento itself |
@@ -228,7 +228,7 @@ When `ATTACK_MACHINE_ENABLED=true`, each user can launch their own personal Kali
 | `PORT` | `8000` | Listening port |
 | `SECRET_KEY` | (required) | JWT signing key |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | JWT expiry (minutes) |
-| `DATABASE_URL` | SQLite | Database connection URL |
+| `DATABASE_URL` | PostgreSQL | Database connection URL |
 | `DEFAULT_TIMEOUT_MINUTES` | `60` | Default environment timeout (minutes) |
 | `TIMEOUT_MINUTES_OPTIONS` | `15,30,45,60,75,90,105,120` | Comma-separated list of selectable timeout options (minutes). `0` means unlimited. Negative/non-numeric values are ignored; falls back to the default list if empty |
 | `TIMEOUT_WARNING_MINUTES` | `10` | Minutes remaining before timeout warning |
