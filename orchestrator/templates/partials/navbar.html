@@ -232,7 +232,9 @@ async function refreshAttackMachineNav() {
     // 送られることを防ぐ。
     if (machine.status === 'starting') _amObservedStarting = true;
     navTimerEl.classList.add('hidden');
-    const label = machine.status === 'starting' ? '起動中...' : '停止中...';
+    const label = machine.status === 'starting'
+      ? (machine.copy_progress_percent != null ? `rootfsコピー中... (${machine.copy_progress_percent}%)` : '起動中...')
+      : '停止中...';
     actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start" disabled>${label}</button>`;
     if (!_amNavPollTimer) {
       _amNavPollTimer = setInterval(refreshAttackMachineNav, 5000);
@@ -250,7 +252,9 @@ async function refreshAttackMachineNav() {
     // 出さないよう、表示済みのenv由来の値を記憶する。
     if (_amObservedStarting && data.last_stopped_error && data.last_stopped_error !== _amLastShownStopError) {
       _amLastShownStopError = data.last_stopped_error;
-      showToast(data.last_stopped_error, 'error');
+      // このトーストはページ全体で共通のnavbarから出るため、他のVM（プロジェクト）の
+      // メッセージと紛れないよう「Attack Machine:」を明示する。
+      showToast(`Attack Machine: ${data.last_stopped_error}`, 'error');
     }
     _amObservedStarting = false;
   }

@@ -91,7 +91,7 @@ function renderMyEnvs() {
       <div class="env-timer" id="timer-${env.id}">
         ${env.status === 'starting' ? `
         <span class="spinner-inline"></span>
-        <span class="env-starting-label">&#x23F3; VM起動中...</span>
+        <span class="env-starting-label">&#x23F3; ${env.copy_progress_percent != null ? `rootfsコピー中... (${env.copy_progress_percent}%)` : 'VM起動中...'}</span>
         ` : env.is_unlimited ? `
         <span class="unlimited-badge">&#x267E; 無制限</span>
         ` : `
