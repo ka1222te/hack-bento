@@ -62,6 +62,7 @@ class EnvResponse(BaseModel):
     is_unlimited: bool
     warning: bool
     is_attack_machine: bool
+    last_error: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -87,6 +88,7 @@ def _to_response(env: Environment) -> EnvResponse:
         is_unlimited=env.is_unlimited,
         warning=not env.is_unlimited and remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
         is_attack_machine=env.image.is_attack_machine if env.image else False,
+        last_error=env.last_error,
     )
 
 
@@ -106,6 +108,31 @@ async def list_my_envs(
     )
     envs = result.scalars().all()
     return [_to_response(e) for e in envs]
+
+
+@router.get("/by-id/{env_id}", response_model=EnvResponse)
+async def get_env(
+    env_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_readonly),
+):
+    """starting/running/stopping に限らず、stopped になった直後の環境も取得できる。
+
+    list_my_envs（一覧）は starting/running/stopping のみを返すため、watchdog の
+    タイムアウト処理で stopped になった瞬間、ポーリング中のUIからは「対象が消えた」
+    ようにしか見えず、last_error（タイムアウトで打ち切られた等の理由）を伝えられない。
+    UIは一覧から対象が消えたタイミングでこのエンドポイントを呼び、last_error の
+    有無で「起動に失敗した」のか「タイムアウトで打ち切られた」のかを案内する。
+    """
+    result = await db.execute(
+        select(Environment)
+        .options(selectinload(Environment.image).selectinload(Image.owner))
+        .where(Environment.id == env_id, Environment.user_id == user.id)
+    )
+    env = result.scalar_one_or_none()
+    if env is None:
+        raise HTTPException(status_code=404, detail="環境が見つかりません")
+    return _to_response(env)
 
 
 @router.post("/{image_id}/start", response_model=EnvResponse, status_code=status.HTTP_201_CREATED)
@@ -188,6 +215,19 @@ async def start_env(
 
     try:
         pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
+        # watchdog の起動タイムアウト判定はこの時刻（実際にstart_vm()の処理が
+        # 始まる直前）を基準にする。started_at（IP確保・同時起動数チェック等の
+        # キュー待ち時間を含む）を基準にすると、複数VM同時起動時に後発のVMが
+        # _lock待ちやディスクI/O輻輳での待ち時間を含めて不公平にタイムアウトして
+        # しまうため（実際に発生）。
+        env.vm_processing_started_at = datetime.utcnow()
+        # get_global_settings の SELECT でトランザクションが開いたまま、この先の
+        # start_vm()（Firecracker起動、数十秒かかる）を実行すると、その間ずっと
+        # このDBセッション（＝プールからのコネクション）が「idle in transaction」
+        # のまま居座り続ける。複数のVM起動が重なるとDB接続プールを食い尽くして
+        # 全リクエストがハングする事故が起きたため、ここで明示的にコミットして
+        # トランザクションを終了し、コネクションを早期に解放する。
+        await db.commit()
         vm_result = await start_vm(
             image=image,
             ip=ip,
@@ -196,7 +236,7 @@ async def start_env(
             pids_limit=pids_limit,
         )
     except Exception as e:
-        logger.error(f"start_vm failed env_id={env.id}: {e}")
+        logger.error(f"start_vm failed env_id={env.id}: {e}", exc_info=True)
         await destroy_env(env)
         await db.commit()
         user_message = _classify_start_vm_error(e)

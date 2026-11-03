@@ -48,6 +48,10 @@ class AttackMachineStatusResponse(BaseModel):
     rootfs_error: Optional[str] = None
     # rootfs_status == "ready" の場合のみ起動・操作可能
     machine: Optional[AttackMachineResponse] = None
+    # machine が None になった直後（watchdogのタイムアウト処理でstoppedになった等）に、
+    # 「起動に失敗した」のではなく「タイムアウトで打ち切られた」ことをUIが案内できるように、
+    # 直近でstoppedになった環境のlast_errorを一度だけ返す（machineがNoneの時のみ設定）。
+    last_stopped_error: Optional[str] = None
 
 
 def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineResponse:
@@ -100,9 +104,23 @@ async def get_my_attack_machine(
     )
     env = env_result.scalar_one_or_none()
     machine = None
+    last_stopped_error = None
     if env is not None:
         img_timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
         machine = _to_response(env, img_timeout)
+    else:
+        # starting/running/stopping が無い場合、直近でstoppedになった環境の
+        # last_error（タイムアウトで打ち切られた等）があればUIに伝える。
+        last_result = await db.execute(
+            select(Environment.last_error).where(
+                Environment.user_id == user.id,
+                Environment.image_id == image.id,
+                Environment.status == EnvStatus.stopped,
+            ).order_by(Environment.started_at.desc()).limit(1)
+        )
+        row = last_result.first()
+        if row is not None:
+            last_stopped_error = row[0]
     # Attack Machine 用の Image レコードは rootfs ビルド開始前（register_attack_machine_image）
     # に作られるため、Image の存在だけでは rootfs の実体が揃っているとは限らない。
     # 常に実際のビルド状況（vm_assets.attack_rootfs_build_status）を返す必要がある
@@ -112,6 +130,7 @@ async def get_my_attack_machine(
         rootfs_status=vm_assets.attack_rootfs_build_status,
         rootfs_error=vm_assets.attack_rootfs_build_error,
         machine=machine,
+        last_stopped_error=last_stopped_error,
     )
 
 
@@ -195,6 +214,19 @@ async def start_attack_machine(
 
     try:
         pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
+        # watchdog の起動タイムアウト判定はこの時刻（実際にstart_vm()の処理が
+        # 始まる直前）を基準にする。started_at（IP確保・同時起動数チェック等の
+        # キュー待ち時間を含む）を基準にすると、複数VM同時起動時に後発のVMが
+        # _lock待ちやディスクI/O輻輳での待ち時間を含めて不公平にタイムアウトして
+        # しまうため（実際に発生）。
+        env.vm_processing_started_at = datetime.utcnow()
+        # get_global_settings の SELECT でトランザクションが開いたまま、この先の
+        # start_vm()（Firecracker起動、数十秒かかる）を実行すると、その間ずっと
+        # このDBセッション（＝プールからのコネクション）が「idle in transaction」
+        # のまま居座り続ける。複数のVM起動が重なるとDB接続プールを食い尽くして
+        # 全リクエストがハングする事故が起きたため、ここで明示的にコミットして
+        # トランザクションを終了し、コネクションを早期に解放する。
+        await db.commit()
         vm_result = await start_vm(
             image=image,
             ip=ip,
@@ -203,7 +235,7 @@ async def start_attack_machine(
             pids_limit=pids_limit,
         )
     except Exception as e:
-        logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}")
+        logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}", exc_info=True)
         await destroy_env(env)
         await db.commit()
         raise HTTPException(status_code=500, detail="Attack Machine の起動に失敗しました")
