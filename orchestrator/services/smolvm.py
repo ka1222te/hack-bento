@@ -566,6 +566,22 @@ def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> No
             raise RuntimeError(f"cp failed with exit code {returncode} (src={src}, dst={dst})")
         if env_id is not None:
             _copy_progress[env_id] = (total_bytes, total_bytes)
+        # cpで書き込んだ分のページキャッシュ（dirty→writeback済みのclean page）を
+        # 即座に解放する。数GB〜数十GBのrootfsコピーがホストのページキャッシュに
+        # 居座ると、他のcgroup（PostgreSQL等）がメモリ確保のためreclaimを
+        # トリガーした際にLRUスキャンが長時間化し、ホスト全体がハングする事故が
+        # あったため（KVM async page fault待ちでcontainerd-shimが固着した事例）。
+        try:
+            fd = os.open(dst, os.O_RDONLY)
+            try:
+                # POSIX_FADV_DONTNEEDはdirty pageには効かない（writeback待ちのページは
+                # ドロップされない）ため、先にfsyncでディスクへ書き切らせてから解放する。
+                os.fsync(fd)
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            logger.warning(f"rootfsコピー後のページキャッシュ解放に失敗しました（続行します）: dst={dst}: {e}")
     finally:
         if env_id is not None:
             _copy_progress.pop(env_id, None)
