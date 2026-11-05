@@ -59,6 +59,34 @@ ask_yn() {
     done
 }
 
+# path が存在するファイルシステムの背後にあるブロックデバイスのパス（/dev/配下）を
+# 全て返す（1行1パス）。LVM等の場合、論理デバイス自身と、その下位にある実デバイス
+# （ホールディスク）の両方を返す。orchestrator/services/smolvm.py の
+# _block_device_major_minor と同じ理屈（論理デバイスのみに制限をかけても実デバイス
+# 側で素通りするため、両方に同じ上限をかける必要がある）。
+block_devices_for_path() {
+    local target="$1"
+    local maj_min dev_name slaves_dir slave_name parent_dev
+    maj_min="$(findmnt -n -o MAJ:MIN --target "$target" 2>/dev/null | tr -d '[:space:]')"
+    [[ -z "$maj_min" ]] && return
+    dev_name="$(basename "$(readlink -f "/sys/dev/block/${maj_min}")" 2>/dev/null)"
+    [[ -z "$dev_name" ]] && return
+    [[ -e "/dev/${dev_name}" ]] && echo "/dev/${dev_name}"
+    slaves_dir="/sys/block/${dev_name}/slaves"
+    if [[ -d "$slaves_dir" ]]; then
+        for slave_name in "$slaves_dir"/*; do
+            slave_name="$(basename "$slave_name")"
+            # パーティション (例: sda3) の場合は親ディスク (sda) 名を lsblk で辿る。
+            parent_dev="$(lsblk -dno PKNAME "/dev/${slave_name}" 2>/dev/null)"
+            if [[ -n "$parent_dev" ]]; then
+                [[ -e "/dev/${parent_dev}" ]] && echo "/dev/${parent_dev}"
+            elif [[ -e "/dev/${slave_name}" ]]; then
+                echo "/dev/${slave_name}"
+            fi
+        done
+    fi
+}
+
 # ---------- 環境チェック ----------
 
 check_kvm() {
@@ -589,12 +617,66 @@ services:
       - ${VM_CGROUP_PATH}:${VM_CGROUP_PATH}:rw
 EOF
 
+    setup_docker_blkio_limit
+
     if [[ "$ATTACK_MACHINE_ENABLE" == true ]]; then
         setup_guacamole
     fi
 
     own "$OVERRIDE_FILE"
     green "[OK] docker-compose.override.yml を生成しました (bridge モード)"
+}
+
+# ---------- Docker コンテナ側のディスクI/O帯域制限 ----------
+
+# VM用cgroup（hackbento-vms）のio.max（VM_IO_LIMIT_MBPS）はそちらのcgroup階層
+# のみに効き、postgres/docker-base-builder等のDockerコンテナ側のディスクI/Oは
+# 対象外。複数VM起動時のI/O飽和とDockerコンテナのI/Oが重なってホスト全体が
+# フリーズする事故が起きたため、同じ上限値をDockerコンテナ側にもblkio設定で
+# かける。データディレクトリ（./data）が乗っているブロックデバイスを検出し、
+# postgres・docker-base-builderの両サービスに device_read_bps/device_write_bps
+# を追記する。VM_IO_LIMIT_MBPS が未設定(0)の場合は何もしない。
+setup_docker_blkio_limit() {
+    local limit_mbps devices dev rate_bytes
+    limit_mbps="$(grep -m1 '^VM_IO_LIMIT_MBPS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+    if [[ -z "$limit_mbps" || "$limit_mbps" -le 0 ]] 2>/dev/null; then
+        echo "[--] VM_IO_LIMIT_MBPS が未設定のため、Dockerコンテナ側のI/O制限はスキップします。"
+        return
+    fi
+
+    devices="$(block_devices_for_path "${SCRIPT_DIR}/data")"
+    if [[ -z "$devices" ]]; then
+        yellow "[WARN] データディレクトリのブロックデバイスを検出できなかったため、"
+        yellow "       Dockerコンテナ側のI/O制限はスキップします。"
+        return
+    fi
+
+    rate_bytes=$((limit_mbps * 1024 * 1024))
+
+    {
+        echo ""
+        echo "  # VM_IO_LIMIT_MBPS (${limit_mbps}MB/s) と同じ上限をDockerコンテナ側にも"
+        echo "  # かける（hackbento-vms cgroupのio.maxはDockerコンテナを対象にしないため）。"
+        echo "  # 検出したブロックデバイス: ${devices//$'\n'/ }"
+        for svc in postgres docker-base-builder; do
+            echo "  ${svc}:"
+            echo "    blkio_config:"
+            echo "      device_read_bps:"
+            while IFS= read -r dev; do
+                [[ -z "$dev" ]] && continue
+                echo "        - path: ${dev}"
+                echo "          rate: \"${rate_bytes}\""
+            done <<< "$devices"
+            echo "      device_write_bps:"
+            while IFS= read -r dev; do
+                [[ -z "$dev" ]] && continue
+                echo "        - path: ${dev}"
+                echo "          rate: \"${rate_bytes}\""
+            done <<< "$devices"
+        done
+    } >> "$OVERRIDE_FILE"
+
+    green "[OK] Dockerコンテナ(postgres/docker-base-builder)のディスクI/O上限を ${limit_mbps}MB/s に設定しました (devices=${devices//$'\n'/ })"
 }
 
 # ---------- Guacamole セットアップ ----------
