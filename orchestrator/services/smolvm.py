@@ -35,6 +35,30 @@ _fc_rootfs_paths: dict[str, str] = {}
 # このエントリは削除される（取得側は無ければ「コピー中ではない」と判断する）。
 _copy_progress: dict[int, tuple[int, int]] = {}
 
+# rootfsのwritableコピーの同時実行数を制限するセマフォ（VM_ROOTFS_COPY_CONCURRENCY）。
+# asyncio.Semaphore はイベントループに紐づくため、モジュール読み込み時点では
+# 作らず、最初に使うタイミングで遅延生成する（uvicorn --reload 等でモジュールが
+# イベントループ開始前にimportされるケースを避けるため）。
+_rootfs_copy_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_rootfs_copy_semaphore() -> asyncio.Semaphore:
+    global _rootfs_copy_semaphore
+    if _rootfs_copy_semaphore is None:
+        _rootfs_copy_semaphore = asyncio.Semaphore(max(1, settings.VM_ROOTFS_COPY_CONCURRENCY))
+    return _rootfs_copy_semaphore
+
+
+# VM_ROOTFS_COPY_CONCURRENCY の空きが無く、rootfsコピーの順番待ちをしている env_id の集合。
+# UI側で「VM起動中」（コピー実行中・Firecracker起動処理中）と「VM起動待機中」
+# （他のVMのコピーが終わるのを順番待ち）を区別して表示するために使う。
+_copy_waiting: set[int] = set()
+
+
+def is_copy_waiting(env_id: int) -> bool:
+    """env_id が VM_ROOTFS_COPY_CONCURRENCY の空き待ちで順番待ち中かどうか。"""
+    return env_id in _copy_waiting
+
 
 def get_copy_progress(env_id: int) -> tuple[int, int] | None:
     """env_id のrootfsコピー進捗（コピー済みバイト数, 合計バイト数）を返す。
@@ -532,6 +556,23 @@ def _select_rootfs_copy_dir(rootfs_path: str) -> str:
     )
 
 
+def _drop_page_cache(path: str) -> None:
+    """path のこれまでの書き込み済み分のページキャッシュ（clean page）を解放する。
+    POSIX_FADV_DONTNEEDはdirty pageには効かない（writeback待ちのページはドロップ
+    されない）ため、先にfsyncでディスクへ書き切らせてから解放する。cp実行中の
+    ファイルに対して呼んでも、その時点までに書かれた範囲だけが対象になるため安全。
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        logger.warning(f"ページキャッシュ解放に失敗しました（続行します）: path={path}: {e}")
+
+
 def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> None:
     """rootfsのwritableコピーを作る。shutil.copy2ではなく `cp` サブプロセスを使うのは、
     複数VM同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト（ログイン等）
@@ -553,6 +594,14 @@ def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> No
         # --preserve=timestamps,mode は shutil.copy2 相当（メタデータも保持）。
         proc = subprocess.Popen(["cp", "--preserve=timestamps,mode", src, dst])
         _attach_current_process_to_cgroup(io_cgroup, proc.pid)
+        # コピー完了後だけでなく、コピー進行中も数秒おきに書き込み済み分のページ
+        # キャッシュを解放する。数十GB規模のrootfsを丸ごとコピーし終えてから
+        # まとめて解放すると、その間キャッシュがホストメモリを圧迫し続け、複数VM
+        # 同時起動時に他のcgroup（PostgreSQL等）のメモリ確保が長時間ブロックされて
+        # ホスト全体がハングする事故があった（KVM async page fault待ちで
+        # containerd-shimが固着した事例）。
+        _CACHE_DROP_INTERVAL_SEC = 5
+        elapsed_since_drop = 0
         while proc.poll() is None:
             if env_id is not None:
                 try:
@@ -561,27 +610,16 @@ def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> No
                     copied = 0
                 _copy_progress[env_id] = (copied, total_bytes)
             time.sleep(1)
+            elapsed_since_drop += 1
+            if elapsed_since_drop >= _CACHE_DROP_INTERVAL_SEC:
+                elapsed_since_drop = 0
+                _drop_page_cache(dst)
         returncode = proc.returncode
         if returncode != 0:
             raise RuntimeError(f"cp failed with exit code {returncode} (src={src}, dst={dst})")
         if env_id is not None:
             _copy_progress[env_id] = (total_bytes, total_bytes)
-        # cpで書き込んだ分のページキャッシュ（dirty→writeback済みのclean page）を
-        # 即座に解放する。数GB〜数十GBのrootfsコピーがホストのページキャッシュに
-        # 居座ると、他のcgroup（PostgreSQL等）がメモリ確保のためreclaimを
-        # トリガーした際にLRUスキャンが長時間化し、ホスト全体がハングする事故が
-        # あったため（KVM async page fault待ちでcontainerd-shimが固着した事例）。
-        try:
-            fd = os.open(dst, os.O_RDONLY)
-            try:
-                # POSIX_FADV_DONTNEEDはdirty pageには効かない（writeback待ちのページは
-                # ドロップされない）ため、先にfsyncでディスクへ書き切らせてから解放する。
-                os.fsync(fd)
-                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-            finally:
-                os.close(fd)
-        except OSError as e:
-            logger.warning(f"rootfsコピー後のページキャッシュ解放に失敗しました（続行します）: dst={dst}: {e}")
+        _drop_page_cache(dst)
     finally:
         if env_id is not None:
             _copy_progress.pop(env_id, None)
@@ -703,10 +741,24 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     os.makedirs(FC_SOCKET_DIR, mode=0o700, exist_ok=True)
     # rootfsコピー（_copy_rootfs_io_limited）は数百MB単位のブロッキングI/Oになり得る
     # ため、event loop を専有しないよう executor で実行する（他リクエスト・watchdog
-    # 等が詰まるのを防ぐ）。
-    writable_rootfs_path = await asyncio.get_event_loop().run_in_executor(
-        None, _prepare_writable_rootfs, vm_id, rootfs_path, env_id
-    )
+    # 等が詰まるのを防ぐ）。また、複数VM同時起動時に同時に走るコピー本数を
+    # VM_ROOTFS_COPY_CONCURRENCY で絞る（同時に書き込まれるページキャッシュの量を
+    # 抑え、ホストメモリ圧迫によるハングを防ぐ）。空きが無い間は _copy_waiting に
+    # 記録し、UIが「VM起動中」（コピー実行中）と「VM起動待機中」（順番待ち）を
+    # 区別して表示できるようにする。
+    semaphore = _get_rootfs_copy_semaphore()
+    if env_id is not None:
+        _copy_waiting.add(env_id)
+    try:
+        async with semaphore:
+            if env_id is not None:
+                _copy_waiting.discard(env_id)
+            writable_rootfs_path = await asyncio.get_event_loop().run_in_executor(
+                None, _prepare_writable_rootfs, vm_id, rootfs_path, env_id
+            )
+    finally:
+        if env_id is not None:
+            _copy_waiting.discard(env_id)
     tap = None
     fc_proc = None
 
