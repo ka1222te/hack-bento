@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     VM_MEMORY_LIMIT_MB: int = 1024
     VM_DISK_LIMIT_GB: int = 10
     VM_PIDS_LIMIT: int = 256
+    # rootfsのwritableコピー（_copy_rootfs_io_limited）を同時に実行できる本数の上限。
+    # 複数VMが同時起動すると、その数だけcpプロセスが並行してホストのページキャッシュに
+    # 書き込み、ディスクI/O帯域（VM_IO_LIMIT_MBPS）を奪い合って完了が遅延し、
+    # その間キャッシュがホストメモリを圧迫してホスト全体がハングする事故があったため、
+    # 同時に走るコピー本数自体を絞る（I/O帯域制限とは別の、同時実行数での制限）。
+    VM_ROOTFS_COPY_CONCURRENCY: int = 2
+    # 起動待機中/起動中/rootfsコピー中の表示を更新するため、WebUIが環境状態を
+    # ポーリングする間隔（秒）。index.htmlの環境一覧全体更新、project.htmlの
+    # 起動中監視、navbar.htmlのAttack Machineナビポーリングで共通して使う。
+    WEB_POLL_INTERVAL_SECONDS: int = 5
     UPLOAD_IMAGE_MAX_MB: int = 6144
     UPLOAD_README_MAX_MB: int = 10
 
