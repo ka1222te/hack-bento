@@ -138,6 +138,7 @@ initNavbar();
 const OWNER    = {{ owner | tojson }};
 const SLUG     = {{ slug  | tojson }};
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 const CURRENT_PATH = `/${OWNER}/${SLUG}`;
 
 // highlight.js を marked.js のコードブロックレンダラーに組み込む（1回だけ実行）
@@ -340,7 +341,7 @@ function renderLaunchPanel() {
           _projConvPollTimer = null;
         }
         renderLaunchPanel();
-      }, 5000);
+      }, WEB_POLL_INTERVAL_MS);
     }
     return;
   }
@@ -348,6 +349,8 @@ function renderLaunchPanel() {
   if (running && running.status === 'starting') {
     const _startingLabel = (running.copy_progress_percent != null)
       ? `&#x23F3; rootfsコピー中... (${running.copy_progress_percent}%)`
+      : running.is_copy_waiting
+      ? '&#x23F3; VM起動待機中...'
       : '&#x23F3; VM起動中...';
     panel.innerHTML = `
       <div class="launch-panel launch-panel-running">
@@ -394,7 +397,7 @@ function renderLaunchPanel() {
           return;
         }
         renderLaunchPanel();
-      }, 4000);
+      }, WEB_POLL_INTERVAL_MS);
     }
   } else if (running) {
     panel.innerHTML = `

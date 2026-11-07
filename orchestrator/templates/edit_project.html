@@ -439,6 +439,7 @@ initNavbar();
 <script>
 const OWNER = {{ owner | tojson }};
 const SLUG  = {{ slug  | tojson }};
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 
 initNavbar();
 
@@ -599,7 +600,7 @@ function _maybeStartRootfsConversionPolling(img) {
         clearInterval(_rootfsConversionPollTimer);
         _rootfsConversionPollTimer = null;
       }
-    }, 5000);
+    }, WEB_POLL_INTERVAL_MS);
   }
 }
 

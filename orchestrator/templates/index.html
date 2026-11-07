@@ -41,6 +41,7 @@ let isAdmin = false;
 })();
 
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 let myEnvs = [];
 const timers = {};
 
@@ -91,7 +92,7 @@ function renderMyEnvs() {
       <div class="env-timer" id="timer-${env.id}">
         ${env.status === 'starting' ? `
         <span class="spinner-inline"></span>
-        <span class="env-starting-label">&#x23F3; ${env.copy_progress_percent != null ? `rootfsコピー中... (${env.copy_progress_percent}%)` : 'VM起動中...'}</span>
+        <span class="env-starting-label">&#x23F3; ${env.copy_progress_percent != null ? `rootfsコピー中... (${env.copy_progress_percent}%)` : env.is_copy_waiting ? 'VM起動待機中...' : 'VM起動中...'}</span>
         ` : env.is_unlimited ? `
         <span class="unlimited-badge">&#x267E; 無制限</span>
         ` : `
@@ -254,6 +255,6 @@ async function stopEnv(envId, btn) {
 
 // copyToClipboard / copyIP は navbar.html で定義済み
 
-setInterval(loadMyEnvs, 15000);
+setInterval(loadMyEnvs, WEB_POLL_INTERVAL_MS);
 </script>
 {% endblock %}
