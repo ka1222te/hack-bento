@@ -10,7 +10,7 @@ from typing import Optional
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
-from services.smolvm import start_vm, stop_vm, get_copy_progress
+from services.smolvm import start_vm, stop_vm, get_copy_progress, is_copy_waiting
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.global_settings import get_global_settings
@@ -65,6 +65,10 @@ class EnvResponse(BaseModel):
     last_error: Optional[str] = None
     # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
     copy_progress_percent: Optional[int] = None
+    # VM_ROOTFS_COPY_CONCURRENCYの空きが無く、他のVMのコピー完了を順番待ちしている間はTrue。
+    # UIが「VM起動中」（コピー実行中・Firecracker起動処理中）と「VM起動待機中」
+    # （順番待ち）を区別して表示するために使う。
+    is_copy_waiting: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -94,6 +98,7 @@ def _to_response(env: Environment) -> EnvResponse:
         is_attack_machine=env.image.is_attack_machine if env.image else False,
         last_error=env.last_error,
         copy_progress_percent=copy_progress_percent,
+        is_copy_waiting=is_copy_waiting(env.id),
     )
 
 

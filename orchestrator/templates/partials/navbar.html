@@ -88,6 +88,7 @@
 </nav>
 
 <script>
+const _NAVBAR_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 function openDrawer() {
   document.getElementById('drawer').classList.add('open');
   document.getElementById('drawer-overlay').classList.add('open');
@@ -233,11 +234,11 @@ async function refreshAttackMachineNav() {
     if (machine.status === 'starting') _amObservedStarting = true;
     navTimerEl.classList.add('hidden');
     const label = machine.status === 'starting'
-      ? (machine.copy_progress_percent != null ? `rootfsコピー中... (${machine.copy_progress_percent}%)` : '起動中...')
+      ? (machine.copy_progress_percent != null ? `rootfsコピー中... (${machine.copy_progress_percent}%)` : (machine.is_copy_waiting ? '起動待機中...' : '起動中...'))
       : '停止中...';
     actionsEl.innerHTML = `<button class="btn btn-sm btn-primary am-nav-start-btn" id="am-nav-start" disabled>${label}</button>`;
     if (!_amNavPollTimer) {
-      _amNavPollTimer = setInterval(refreshAttackMachineNav, 5000);
+      _amNavPollTimer = setInterval(refreshAttackMachineNav, _NAVBAR_POLL_INTERVAL_MS);
     }
     return;
   } else {
@@ -326,7 +327,7 @@ function initNavbar() {
 
   if (document.getElementById('am-nav-btn')) {
     refreshAttackMachineNav();
-    setInterval(refreshAttackMachineNav, 15000);
+    setInterval(refreshAttackMachineNav, _NAVBAR_POLL_INTERVAL_MS);
   }
 }
 

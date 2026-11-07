@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
-from services.smolvm import start_vm, stop_vm, get_copy_progress
+from services.smolvm import start_vm, stop_vm, get_copy_progress, is_copy_waiting
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
@@ -40,6 +40,8 @@ class AttackMachineResponse(BaseModel):
     is_unlimited: bool
     # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
     copy_progress_percent: Optional[int] = None
+    # VM_ROOTFS_COPY_CONCURRENCYの空きが無く、他のVMのコピー完了を順番待ちしている間はTrue。
+    is_copy_waiting: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -71,6 +73,7 @@ def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineRespons
         timeout_minutes=timeout_minutes,
         is_unlimited=env.is_unlimited,
         copy_progress_percent=copy_progress_percent,
+        is_copy_waiting=is_copy_waiting(env.id),
     )
 
 
