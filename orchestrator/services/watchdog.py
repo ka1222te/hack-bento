@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import AsyncSessionLocal
 from models import Environment, EnvStatus
@@ -10,7 +10,16 @@ from services.network import release_ip
 
 logger = logging.getLogger(__name__)
 
-_STARTING_TIMEOUT_MINUTES = 5
+# debugfs によるrootfsへのresolv.conf注入（services/smolvm.py::_write_resolv_conf）は
+# 最大300秒（5分）のタイムアウトを持つ。VM起動処理はさらにTAP作成・cgroup作成・
+# Firecracker起動などdebugfsの前後にも時間を要するため、起動タイムアウトは
+# debugfsの最大時間より十分長く取る必要がある。複数VMの同時起動でディスクI/Oが
+# 輻輳すると、debugfsがLinuxカーネルの「ディスクスリープ(D状態、SIGKILLでも終了不可)」
+# に陥って300秒ぎりぎりまで時間を使うことがあり、以前は両方の値が5分で一致していた
+# ため、実際には起動処理が進行中（裏でFirecracker起動自体は成功している）にも関わらず
+# watchdogが先に「起動失敗」と判定して停止させてしまい、UIが「起動していない」ように
+# 見える事故が起きた（実際に発生）。
+_STARTING_TIMEOUT_MINUTES = 30
 # running 遷移直後の一時的な未登録・計測誤差で誤検知しないための猶予
 _CRASH_GRACE_SECONDS = 20
 
@@ -40,12 +49,14 @@ async def claim_env_for_stop(db: AsyncSession, env_id: int) -> Environment | Non
     return env
 
 
-async def destroy_env(env: Environment) -> None:
+async def destroy_env(env: Environment, reason: str | None = None) -> None:
     if env.vm_id:
         await stop_vm(env.vm_id)
     if env.ip_address:
         await release_ip(env.ip_address)
     env.status = EnvStatus.stopped
+    if reason is not None:
+        env.last_error = reason
 
 
 async def run_watchdog() -> None:
@@ -76,12 +87,15 @@ async def run_watchdog() -> None:
                         logger.error(f"Failed to destroy env_id={env_id}: {e}")
                         await db.rollback()
 
-                # starting のまま一定時間経過した環境を停止（起動失敗の取りこぼし対策）
+                # starting のまま一定時間経過した環境を停止（起動失敗の取りこぼし対策）。
+                # vm_processing_started_at（実際にstart_vm()の処理が始まった時刻）が
+                # 優先で、まだ設定されていない（allocate_ip等のキュー待ち中でstart_vm()に
+                # 到達していない）場合は started_at にフォールバックする。
                 stuck_threshold = now - timedelta(minutes=_STARTING_TIMEOUT_MINUTES)
                 stuck_result = await db.execute(
                     select(Environment.id).where(
                         Environment.status == EnvStatus.starting,
-                        Environment.started_at <= stuck_threshold,
+                        func.coalesce(Environment.vm_processing_started_at, Environment.started_at) <= stuck_threshold,
                     )
                 )
                 stuck_ids = stuck_result.scalars().all()
@@ -91,7 +105,14 @@ async def run_watchdog() -> None:
                         if env is None:
                             continue
                         logger.warning(f"Stuck starting env cleaned up: env_id={env.id} vm_id={env.vm_id}")
-                        await destroy_env(env)
+                        await destroy_env(
+                            env,
+                            reason=(
+                                f"起動処理が{_STARTING_TIMEOUT_MINUTES}分以内に完了しなかったため、"
+                                "タイムアウトで停止しました。ディスクの混雑等が原因である可能性があります。"
+                                "時間をおいて再試行してください。"
+                            ),
+                        )
                         await db.commit()
                     except Exception as e:
                         logger.error(f"Failed to cleanup stuck env_id={env_id}: {e}")

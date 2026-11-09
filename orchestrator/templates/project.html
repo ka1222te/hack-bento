@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ owner }}/{{ slug }} — HackBento{% endblock %}
+{% block title %}{% if can_view %}{{ owner }}/{{ slug }} — HackBento{% else %}404 — HackBento{% endif %}{% endblock %}
 
 {% block head %}
 <!-- marked.js: マークダウン → HTML レンダリング -->
@@ -19,6 +19,23 @@
 {% endblock %}
 
 {% block body %}
+{% if not can_view %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+  <div class="container" style="max-width:600px;padding-top:6rem;text-align:center">
+    <p style="font-size:5rem;margin-bottom:1rem">🔒</p>
+    <h1 style="font-size:2rem;font-weight:700;margin-bottom:.75rem">404 — Not Found</h1>
+    <p style="color:var(--text2);margin-bottom:1rem">
+      このページは存在しないか、閲覧する権限がありません。
+    </p>
+    <p id="redirect-countdown-msg" style="display:none;color:var(--text3);font-size:.9rem;margin-bottom:2rem">
+      <span id="redirect-countdown">10</span> 秒後にログインページへリダイレクトします
+    </p>
+    <a id="login-btn" href="#" class="btn btn-primary" style="display:none">ログイン画面に進む</a>
+  </div>
+</div>
+<div id="toast-container"></div>
+{% else %}
 <div id="app">
   {% include "partials/navbar.html" %}
 
@@ -48,6 +65,7 @@
       <div class="project-main">
         <!-- 起動パネル -->
         <div class="project-launch-panel" id="project-launch-panel"></div>
+        <div id="launch-error" class="alert alert-error hidden" style="margin-top:.6rem;white-space:pre-wrap"></div>
 
         <!-- メタ情報バー -->
         <div class="project-meta-bar">
@@ -91,13 +109,36 @@
 </div>
 
 <div id="toast-container"></div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
+{% if not can_view %}
+<script>
+initNavbar();
+{% if not is_logged_in %}
+(() => {
+  const nextPath = safeNextPath(location.pathname);
+  const loginUrl = nextPath ? `/login?next=${encodeURIComponent(nextPath)}` : '/login';
+  document.getElementById('login-btn').href = loginUrl;
+  document.getElementById('redirect-countdown-msg').style.display = '';
+  document.getElementById('login-btn').style.display = '';
+  let _count = 10;
+  const _el = document.getElementById('redirect-countdown');
+  const _iv = setInterval(() => {
+    _count--;
+    if (_el) _el.textContent = _count;
+    if (_count <= 0) { clearInterval(_iv); window.location.href = loginUrl; }
+  }, 1000);
+})();
+{% endif %}
+</script>
+{% else %}
 <script>
 const OWNER    = {{ owner | tojson }};
 const SLUG     = {{ slug  | tojson }};
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 const CURRENT_PATH = `/${OWNER}/${SLUG}`;
 
 // highlight.js を marked.js のコードブロックレンダラーに組み込む（1回だけ実行）
@@ -119,19 +160,14 @@ if (typeof marked !== 'undefined' && typeof hljs !== 'undefined') {
 }
 
 const API = {
-  token: () => sessionStorage.getItem('hb_token'),
-  headers: () => {
-    const h = { 'Content-Type': 'application/json' };
-    if (API.token()) h['Authorization'] = `Bearer ${API.token()}`;
-    return h;
-  },
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
 };
 
-const isLoggedIn = !!API.token();
+let isLoggedIn = false;
 let isAdmin = false;
 initNavbar();
 
@@ -144,6 +180,10 @@ let _projConvPollTimer = null;
 let _projStartingPollTimer = null;
 
 async function init() {
+  const me = await fetchMe();
+  isLoggedIn = !!me;
+  isAdmin = !!me && me.role === 'admin';
+
   const imgRes = await API.get('/api/images/');
   const images = imgRes.ok ? await imgRes.json() : [];
 
@@ -151,20 +191,13 @@ async function init() {
   if (isLoggedIn) {
     const envRes = await API.get('/api/envs/');
     myEnvs = envRes.ok ? await envRes.json() : [];
-    const meRes = await API.get('/api/auth/me');
-    if (meRes.ok) { const me = await meRes.json(); isAdmin = me.role === 'admin'; }
   }
 
+  // 閲覧可否はサーバー側（can_view）で確定済み。ここに到達している時点で
+  // 閲覧は許可されているため、imageData が images 一覧に見つからない場合のみ
+  // （サーバーとクライアントの状態不整合という異常系）フォールバック表示する。
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
   if (!imageData) {
-    // 未ログインで非公開プロジェクトにアクセスした場合はログインへ誘導（ログイン後に元のページへ戻れるようにnextを付与）
-    if (!isLoggedIn) { window.location.href = `/login?next=${encodeURIComponent(CURRENT_PATH)}`; return; }
-    document.getElementById('project-header').innerHTML = '<p class="empty-msg">プロジェクトが見つかりません</p>';
-    return;
-  }
-
-  // 未ログインかつ public 以外は404表示
-  if (!isLoggedIn && imageData.visibility !== 'public') {
     document.getElementById('app').innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:1rem;color:var(--text2)">
         <div style="font-size:4rem;font-weight:700;color:var(--text3)">404</div>
@@ -245,6 +278,7 @@ const _editSvg = `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentC
 
 function renderLaunchPanel() {
   const panel = document.getElementById('project-launch-panel');
+  _hideLaunchError();
 
   // 未ログインの場合は起動不可・ログイン誘導を表示
   if (!isLoggedIn) {
@@ -307,12 +341,17 @@ function renderLaunchPanel() {
           _projConvPollTimer = null;
         }
         renderLaunchPanel();
-      }, 5000);
+      }, WEB_POLL_INTERVAL_MS);
     }
     return;
   }
 
   if (running && running.status === 'starting') {
+    const _startingLabel = (running.copy_progress_percent != null)
+      ? `&#x23F3; rootfsコピー中... (${running.copy_progress_percent}%)`
+      : running.is_copy_waiting
+      ? '&#x23F3; VM起動待機中...'
+      : '&#x23F3; VM起動中...';
     panel.innerHTML = `
       <div class="launch-panel launch-panel-running">
         <div class="launch-panel-info">
@@ -321,13 +360,14 @@ function renderLaunchPanel() {
             <div class="launch-panel-label">環境を起動しています</div>
             <div class="env-timer" id="proj-timer-${running.id}">
               <span class="spinner-inline"></span>
-              <span class="env-starting-label">&#x23F3; VM起動中...</span>
+              <span class="env-starting-label">${_startingLabel}</span>
             </div>
           </div>
         </div>
       </div>`;
     // POST /start のレスポンス中にも関わらず他経路でstartingのまま残っている場合に備えて
     // running/stopped への遷移をポーリングで検知し、固まって見えないようにする。
+    const _startingEnvId = running.id;
     if (!_projStartingPollTimer) {
       _projStartingPollTimer = setInterval(async () => {
         const r = await API.get('/api/envs/');
@@ -337,9 +377,27 @@ function renderLaunchPanel() {
         if (!fresh || fresh.status !== 'starting') {
           clearInterval(_projStartingPollTimer);
           _projStartingPollTimer = null;
+          renderLaunchPanel();
+          // 一覧（starting/running/stopping のみ）から消えた場合、watchdogの
+          // タイムアウト処理で stopped になった可能性がある。起動失敗（ユーザーの
+          // 操作ミスやエラー）と区別するため、last_error の有無を個別に確認する。
+          // renderLaunchPanel() は内部で _hideLaunchError() を呼ぶため、表示は
+          // その後に行う。
+          if (!fresh) {
+            try {
+              const dr = await API.get(`/api/envs/by-id/${_startingEnvId}`);
+              if (dr.ok) {
+                const detail = await dr.json();
+                if (detail.last_error) {
+                  _showLaunchError(detail.last_error);
+                }
+              }
+            } catch {}
+          }
+          return;
         }
         renderLaunchPanel();
-      }, 4000);
+      }, WEB_POLL_INTERVAL_MS);
     }
   } else if (running) {
     panel.innerHTML = `
@@ -495,7 +553,19 @@ function _clearBtnBusy(btn, idleLabel) {
   else btn.textContent = idleLabel;
 }
 
+function _showLaunchError(msg) {
+  const box = document.getElementById('launch-error');
+  if (!box) return;
+  box.textContent = msg;
+  box.classList.remove('hidden');
+}
+function _hideLaunchError() {
+  const box = document.getElementById('launch-error');
+  if (box) box.classList.add('hidden');
+}
+
 async function startEnv(imageId, btn) {
+  _hideLaunchError();
   _setBtnBusy(btn, '起動中...');
   try {
     const res = await API.post(`/api/envs/${imageId}/start`);
@@ -506,9 +576,13 @@ async function startEnv(imageId, btn) {
       notifyEnvsChanged();
       return;
     }
-    const d = await res.json(); showToast(d.detail || '起動に失敗しました', 'error');
+    const d = await res.json();
+    const msg = d.detail || '起動に失敗しました';
+    showToast('起動に失敗しました', 'error');
+    _showLaunchError(msg);
   } catch {
     showToast('通信エラーが発生しました', 'error');
+    _showLaunchError('サーバとの通信に失敗しました（ネットワーク接続を確認してください）。解消しない場合は管理者に連絡してください。');
   }
   _clearBtnBusy(btn, '▶ 起動する');
 }
@@ -622,4 +696,5 @@ async function loadCollaborators() {
 
 init();
 </script>
+{% endif %}
 {% endblock %}

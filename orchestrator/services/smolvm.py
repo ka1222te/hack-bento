@@ -4,9 +4,10 @@ import json
 import logging
 import ipaddress
 import os
+import re
 import signal
-import shutil
 import tempfile
+import time
 from config import settings
 from services.network import create_tap, delete_tap, _ip_pool, _get_bridge_subnet
 
@@ -27,6 +28,42 @@ _fc_pids: dict[str, int] = {}
 
 # vm_id → 起動時に作成した writable rootfs の実体パス
 _fc_rootfs_paths: dict[str, str] = {}
+
+# env_id → (コピー済みバイト数, コピー元の合計バイト数)。rootfsのwritableコピー中
+# （cp サブプロセス実行中）にUIへ進捗を表示するため、別スレッドでコピー先の
+# .tmp ファイルサイズを定期的にポーリングして更新する。コピー完了または失敗時に
+# このエントリは削除される（取得側は無ければ「コピー中ではない」と判断する）。
+_copy_progress: dict[int, tuple[int, int]] = {}
+
+# rootfsのwritableコピーの同時実行数を制限するセマフォ（VM_ROOTFS_COPY_CONCURRENCY）。
+# asyncio.Semaphore はイベントループに紐づくため、モジュール読み込み時点では
+# 作らず、最初に使うタイミングで遅延生成する（uvicorn --reload 等でモジュールが
+# イベントループ開始前にimportされるケースを避けるため）。
+_rootfs_copy_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_rootfs_copy_semaphore() -> asyncio.Semaphore:
+    global _rootfs_copy_semaphore
+    if _rootfs_copy_semaphore is None:
+        _rootfs_copy_semaphore = asyncio.Semaphore(max(1, settings.VM_ROOTFS_COPY_CONCURRENCY))
+    return _rootfs_copy_semaphore
+
+
+# VM_ROOTFS_COPY_CONCURRENCY の空きが無く、rootfsコピーの順番待ちをしている env_id の集合。
+# UI側で「VM起動中」（コピー実行中・Firecracker起動処理中）と「VM起動待機中」
+# （他のVMのコピーが終わるのを順番待ち）を区別して表示するために使う。
+_copy_waiting: set[int] = set()
+
+
+def is_copy_waiting(env_id: int) -> bool:
+    """env_id が VM_ROOTFS_COPY_CONCURRENCY の空き待ちで順番待ち中かどうか。"""
+    return env_id in _copy_waiting
+
+
+def get_copy_progress(env_id: int) -> tuple[int, int] | None:
+    """env_id のrootfsコピー進捗（コピー済みバイト数, 合計バイト数）を返す。
+    コピー中でない場合は None。"""
+    return _copy_progress.get(env_id)
 
 # VM ごとのホスト側リソース制限 (メモリ・PID数・CPU使用率) を強制するための
 # cgroup v2 委譲ツリーのルート。setup.sh の hackbento-vm-cgroup.service が
@@ -49,7 +86,7 @@ def _cgroup_available() -> bool:
     return os.path.isdir(VM_CGROUP_ROOT) and os.access(VM_CGROUP_ROOT, os.W_OK)
 
 
-def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
+def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int, pids_limit: int) -> bool:
     """VM 専用の leaf cgroup を作成し、メモリ・PID数・CPU使用率の上限をホスト側で設定する。
 
     成功した場合のみ True を返す。委譲ツリーが無い、または書き込みに失敗した場合は
@@ -73,7 +110,7 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
         with open(os.path.join(path, "memory.max"), "w") as f:
             f.write(str((memory_mb + _MEM_OVERHEAD_MB) * 1024 * 1024))
         with open(os.path.join(path, "pids.max"), "w") as f:
-            f.write(str(settings.VM_PIDS_LIMIT))
+            f.write(str(pids_limit))
         # cpu.max: "<quota> <period>" 。1コアあたり period=100000us とし、
         # cpu 個数分の使用率を上限とする（例: cpu=1 → "100000 100000" = 1コア分）。
         period_us = 100_000
@@ -81,7 +118,7 @@ def _create_vm_cgroup(vm_id: str, cpu: int, memory_mb: int) -> bool:
         with open(os.path.join(path, "cpu.max"), "w") as f:
             f.write(f"{quota_us} {period_us}")
         logger.info(
-            f"VM cgroup を作成しました: vm_id={vm_id[:8]} memory={memory_mb}MiB pids={settings.VM_PIDS_LIMIT} cpu={cpu}"
+            f"VM cgroup を作成しました: vm_id={vm_id[:8]} memory={memory_mb}MiB pids={pids_limit} cpu={cpu}"
         )
         return True
     except OSError as e:
@@ -104,6 +141,140 @@ def _attach_pid_to_cgroup(vm_id: str, pid: int) -> None:
         logger.info(f"Firecracker プロセスを cgroup に割り当てました: vm_id={vm_id[:8]} pid={pid}")
     except OSError as e:
         logger.warning(f"cgroup へのプロセス割り当てに失敗しました（ホスト側上限なしで続行します）: vm_id={vm_id[:8]} pid={pid}: {e}")
+
+
+def _block_device_major_minor(path: str) -> list[str]:
+    """path が存在するファイルシステムの背後にあるブロックデバイスの "major:minor" を
+    全て返す（LVM等の場合、論理デバイスと、その下位にある実デバイスの両方）。
+
+    cgroup v2 の io.max はデバイス単位（major:minor）で指定する必要があるが、
+    LVM（device-mapper）上のファイルシステムの場合、I/Oを最終的に発行する実デバイス
+    （例: dm-0 の下にある sda）がパーティション単位の番号（8:3 等）ではなく、
+    ホールディスク単位（8:0）でなければ io.max の制限が効かないことを確認した。
+    そのため、論理デバイス自身（dm-N）と、/sys/block/<dm-N>/slaves/ から辿れる
+    実デバイスのホールディスク（パーティション番号を除いた親デバイス）の両方に
+    制限をかける。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    major, minor = os.major(st.st_dev), os.minor(st.st_dev)
+    devices = [f"{major}:{minor}"]
+    try:
+        # /sys/dev/block/<major>:<minor> はこのデバイスの /sys/block 配下エントリへのリンク
+        sys_dev_link = f"/sys/dev/block/{major}:{minor}"
+        dev_name = os.path.basename(os.readlink(sys_dev_link))
+        slaves_dir = f"/sys/block/{dev_name}/slaves"
+        if os.path.isdir(slaves_dir):
+            for slave_name in os.listdir(slaves_dir):
+                # パーティション（例: sda3）ではなくホールディスク（sda）の
+                # major:minor を使う。/sys/block/<slave>/dev にホールディスクの
+                # major:minor が入っている（パーティションの場合は親ディレクトリを辿る）。
+                slave_path = f"/sys/block/{slave_name}"
+                if not os.path.isdir(slave_path):
+                    # sda3 等パーティションは /sys/block 直下に無く、親ディスクの
+                    # 配下（/sys/block/sda/sda3）にあるため、名前から親ディスク名を
+                    # 推測するのではなく /sys/class/block/<slave>/../dev を見る。
+                    parent_dev_file = f"/sys/class/block/{slave_name}/../dev"
+                else:
+                    parent_dev_file = f"{slave_path}/dev"
+                try:
+                    with open(parent_dev_file) as f:
+                        devices.append(f.read().strip())
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return devices
+
+
+# VM_CGROUP_ROOT（hackbento-vms）自体にio.maxを設定したかどうかのプロセス内キャッシュ。
+# 複数VM起動のたびに毎回設定し直す必要はなく、アプリ起動後一度設定すればその配下の
+# 全子cgroup（個々のVM専用cgroup、起動処理中のコピー・debugfsプロセス）に効き続ける。
+_vm_cgroup_root_io_limit_applied = False
+
+# rootfsコピー・debugfs呼び出し専用の共有cgroup名。VM_CGROUP_ROOT自体にio.maxを
+# 設定しても、デフォルトではcp/debugfsプロセスはorchestratorコンテナのメイン
+# プロセスのcgroup（hackbento-vmsの外）に残るため制限が効かない。このcgroup
+# （hackbento-vms配下）へ明示的に移すことで、VM_CGROUP_ROOTのio.max（ホスト全体
+# 合計の上限）の対象に含める。このcgroup自身にはio.maxを設定しない
+# （VM_CGROUP_ROOT側の設定が子孫cgroup全体に継承されるため、個別設定は不要）。
+_IO_LIMITED_CGROUP_NAME = "rootfs-copy-shared"
+
+
+def ensure_vm_cgroup_root_io_limit() -> None:
+    """VM_CGROUP_ROOT（hackbento-vms）自体にio.maxを設定し、その配下で動く全プロセス
+    （起動処理中のrootfsコピー・debugfs、稼働中の全Firecracker VM）が使うディスク帯域
+    の合計をホスト全体で一括制限する。VM_IO_LIMIT_MBPS が未設定(0)、または委譲ツリーが
+    無い場合は何もしない。
+
+    VMごとに個別のcgroupへ制限をかける方式ではなく、委譲ツリーのルート自体に設定する
+    ことで、「同時に何台動いていても合計でVM_IO_LIMIT_MBPSを超えない」という挙動になる
+    （cgroup v2のio.maxは子孫cgroup全体の合計に効く）。ホスト側のsetup.shは
+    io コントローラを委譲するだけで、具体的な帯域の値はここ（アプリ側）で決める。
+    """
+    global _vm_cgroup_root_io_limit_applied
+    if _vm_cgroup_root_io_limit_applied:
+        return
+    if settings.VM_IO_LIMIT_MBPS <= 0:
+        return
+    if not _cgroup_available():
+        return
+    devices = _block_device_major_minor(FC_ROOTFS_DIR)
+    if not devices:
+        return
+    try:
+        limit_bytes = settings.VM_IO_LIMIT_MBPS * 1024 * 1024
+        # LVM等では論理デバイス（dm-N）だけに制限をかけても、下位の実デバイス
+        # （パーティションを除いたホールディスク）側では素通りすることを確認した
+        # ため、_block_device_major_minor が返す全デバイスに同じ上限を設定する。
+        # io.max は1回のwrite()呼び出しにつき1デバイス分の設定のみ受け付ける
+        # （複数行をまとめて書き込むとInvalid argumentになる）ため、デバイスごとに
+        # 個別にopen/writeする。
+        io_max_path = os.path.join(VM_CGROUP_ROOT, "io.max")
+        for dev in devices:
+            with open(io_max_path, "w") as f:
+                f.write(f"{dev} rbps={limit_bytes} wbps={limit_bytes}")
+        logger.info(f"VM用cgroup全体のディスクI/O帯域を制限しました: {settings.VM_IO_LIMIT_MBPS}MB/s (devices={devices})")
+        _vm_cgroup_root_io_limit_applied = True
+    except OSError as e:
+        logger.warning(f"VM用cgroup全体のio.max設定に失敗しました（制限なしで続行します）: {e}")
+
+
+def _get_shared_copy_cgroup() -> str | None:
+    """rootfsコピー・debugfs呼び出し用の共有cgroup（VM_CGROUP_ROOT配下）を返す
+    （無ければ作成する）。VM_IO_LIMIT_MBPS が未設定、または委譲ツリーが無い場合は
+    Noneを返し、呼び出し元はプロセスをどこにも移さず続行する。
+
+    このcgroup自体にio.maxは設定しない。ensure_vm_cgroup_root_io_limit()が
+    VM_CGROUP_ROOT自体に設定した上限が、子孫であるこのcgroupにもそのまま継承される。
+    """
+    if settings.VM_IO_LIMIT_MBPS <= 0:
+        return None
+    if not _cgroup_available():
+        return None
+    ensure_vm_cgroup_root_io_limit()
+    path = os.path.join(VM_CGROUP_ROOT, _IO_LIMITED_CGROUP_NAME)
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError as e:
+        logger.warning(f"rootfsコピー用cgroupの作成に失敗しました（制限なしで続行します）: {e}")
+        return None
+
+
+def _attach_current_process_to_cgroup(cgroup_path: str | None, pid: int | None = None) -> None:
+    """指定プロセス（省略時は呼び出し元プロセス自身）を cgroup_path の cgroup.procs に書き込む。
+    cgroup_path が None（制限なし）の場合は何もしない。"""
+    if cgroup_path is None:
+        return
+    target_pid = pid if pid is not None else os.getpid()
+    try:
+        with open(os.path.join(cgroup_path, "cgroup.procs"), "w") as f:
+            f.write(str(target_pid))
+    except OSError as e:
+        logger.warning(f"cgroupへのプロセス割り当てに失敗しました（制限なしで続行します）: {cgroup_path}: pid={target_pid}: {e}")
 
 
 def _cleanup_stale_vm_cgroups() -> None:
@@ -299,6 +470,7 @@ def _write_resolv_conf(rootfs_path: str) -> None:
     resolv_content = "".join(f"nameserver {ns}\n" for ns in nameservers)
     tmp_resolv = None
     proc = None
+    io_cgroup = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".resolv", delete=False) as f:
             f.write(resolv_content)
@@ -324,6 +496,11 @@ def _write_resolv_conf(rootfs_path: str) -> None:
             stderr=subprocess.PIPE,
             text=True,
         )
+        # debugfsは複数VM同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト
+        # （ログイン等）がイベントループをブロックされて応答不能になる事故が起きたため、
+        # VM_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限する。
+        io_cgroup = _get_shared_copy_cgroup()
+        _attach_current_process_to_cgroup(io_cgroup, proc.pid)
         try:
             stdout, stderr = proc.communicate(input=script, timeout=300)
         except subprocess.TimeoutExpired:
@@ -379,7 +556,76 @@ def _select_rootfs_copy_dir(rootfs_path: str) -> str:
     )
 
 
-def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
+def _drop_page_cache(path: str) -> None:
+    """path のこれまでの書き込み済み分のページキャッシュ（clean page）を解放する。
+    POSIX_FADV_DONTNEEDはdirty pageには効かない（writeback待ちのページはドロップ
+    されない）ため、先にfsyncでディスクへ書き切らせてから解放する。cp実行中の
+    ファイルに対して呼んでも、その時点までに書かれた範囲だけが対象になるため安全。
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        logger.warning(f"ページキャッシュ解放に失敗しました（続行します）: path={path}: {e}")
+
+
+def _copy_rootfs_io_limited(src: str, dst: str, env_id: int | None = None) -> None:
+    """rootfsのwritableコピーを作る。shutil.copy2ではなく `cp` サブプロセスを使うのは、
+    複数VM同時起動時にホストのディスクI/O帯域を奪い合い、他の全リクエスト（ログイン等）
+    がイベントループをブロックされて応答不能になる事故が起きたため、
+    VM_IO_LIMIT_MBPSが設定されていればこのプロセスの帯域を制限できるように
+    するため（shutil.copy2はorchestratorプロセス自身のスレッドで実行されるため、
+    cgroupでの帯域制限をプロセス単位で適用できない）。
+
+    env_id が指定されている場合、コピー先(dst)のファイルサイズを定期的にポーリングし
+    _copy_progress へ進捗（コピー済みバイト数, 合計バイト数）を記録する。UIの
+    「rootfsコピー中」表示に使われる。
+    """
+    import subprocess
+    io_cgroup = _get_shared_copy_cgroup()
+    try:
+        total_bytes = os.path.getsize(src)
+        if env_id is not None:
+            _copy_progress[env_id] = (0, total_bytes)
+        # --preserve=timestamps,mode は shutil.copy2 相当（メタデータも保持）。
+        proc = subprocess.Popen(["cp", "--preserve=timestamps,mode", src, dst])
+        _attach_current_process_to_cgroup(io_cgroup, proc.pid)
+        # コピー完了後だけでなく、コピー進行中も数秒おきに書き込み済み分のページ
+        # キャッシュを解放する。数十GB規模のrootfsを丸ごとコピーし終えてから
+        # まとめて解放すると、その間キャッシュがホストメモリを圧迫し続け、複数VM
+        # 同時起動時に他のcgroup（PostgreSQL等）のメモリ確保が長時間ブロックされて
+        # ホスト全体がハングする事故があった（KVM async page fault待ちで
+        # containerd-shimが固着した事例）。
+        _CACHE_DROP_INTERVAL_SEC = 5
+        elapsed_since_drop = 0
+        while proc.poll() is None:
+            if env_id is not None:
+                try:
+                    copied = os.path.getsize(dst)
+                except OSError:
+                    copied = 0
+                _copy_progress[env_id] = (copied, total_bytes)
+            time.sleep(1)
+            elapsed_since_drop += 1
+            if elapsed_since_drop >= _CACHE_DROP_INTERVAL_SEC:
+                elapsed_since_drop = 0
+                _drop_page_cache(dst)
+        returncode = proc.returncode
+        if returncode != 0:
+            raise RuntimeError(f"cp failed with exit code {returncode} (src={src}, dst={dst})")
+        if env_id is not None:
+            _copy_progress[env_id] = (total_bytes, total_bytes)
+        _drop_page_cache(dst)
+    finally:
+        if env_id is not None:
+            _copy_progress.pop(env_id, None)
+
+
+def _prepare_writable_rootfs(vm_id: str, rootfs_path: str, env_id: int | None = None) -> str:
     """VM 専用の writable rootfs を作る。
 
     共有 rootfs をそのまま rw で渡すと、複数 VM 間で書き込みが競合したり
@@ -402,7 +648,7 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
             os.remove(tmp_path)
         if os.path.exists(runtime_path):
             os.remove(runtime_path)
-        shutil.copy2(rootfs_path, tmp_path)
+        _copy_rootfs_io_limited(rootfs_path, tmp_path, env_id=env_id)
         os.replace(tmp_path, runtime_path)
         _fc_rootfs_paths[vm_id] = runtime_path
         try:
@@ -413,7 +659,7 @@ def _prepare_writable_rootfs(vm_id: str, rootfs_path: str) -> str:
             )
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            shutil.copy2(rootfs_path, tmp_path)
+            _copy_rootfs_io_limited(rootfs_path, tmp_path, env_id=env_id)
             os.replace(tmp_path, runtime_path)
         return runtime_path
     except Exception:
@@ -464,7 +710,8 @@ def _sanitize_extra_boot_args(extra: str | None) -> str:
 
 
 async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: int, memory_mb: int,
-                             extra_boot_args: str | None = None) -> VMStartResult:
+                             pids_limit: int, extra_boot_args: str | None = None,
+                             env_id: int | None = None) -> VMStartResult:
     """
     Firecracker microVM を起動する。
 
@@ -492,11 +739,26 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
     vm_id = str(uuid.uuid4())
     socket_path = _fc_socket_path(vm_id)
     os.makedirs(FC_SOCKET_DIR, mode=0o700, exist_ok=True)
-    # shutil.copy2 は数百MB単位のブロッキングI/Oになり得るため、event loop を
-    # 専有しないよう executor で実行する（他リクエスト・watchdog 等が詰まるのを防ぐ）。
-    writable_rootfs_path = await asyncio.get_event_loop().run_in_executor(
-        None, _prepare_writable_rootfs, vm_id, rootfs_path
-    )
+    # rootfsコピー（_copy_rootfs_io_limited）は数百MB単位のブロッキングI/Oになり得る
+    # ため、event loop を専有しないよう executor で実行する（他リクエスト・watchdog
+    # 等が詰まるのを防ぐ）。また、複数VM同時起動時に同時に走るコピー本数を
+    # VM_ROOTFS_COPY_CONCURRENCY で絞る（同時に書き込まれるページキャッシュの量を
+    # 抑え、ホストメモリ圧迫によるハングを防ぐ）。空きが無い間は _copy_waiting に
+    # 記録し、UIが「VM起動中」（コピー実行中）と「VM起動待機中」（順番待ち）を
+    # 区別して表示できるようにする。
+    semaphore = _get_rootfs_copy_semaphore()
+    if env_id is not None:
+        _copy_waiting.add(env_id)
+    try:
+        async with semaphore:
+            if env_id is not None:
+                _copy_waiting.discard(env_id)
+            writable_rootfs_path = await asyncio.get_event_loop().run_in_executor(
+                None, _prepare_writable_rootfs, vm_id, rootfs_path, env_id
+            )
+    finally:
+        if env_id is not None:
+            _copy_waiting.discard(env_id)
     tap = None
     fc_proc = None
 
@@ -506,7 +768,7 @@ async def _start_firecracker(kernel_path: str, rootfs_path: str, ip: str, cpu: i
         tap = await create_tap(vm_id, ip)
 
         # ホスト側のメモリ・PID数・CPU使用率上限を cgroup で強制する（委譲ツリーが無ければスキップ）
-        _create_vm_cgroup(vm_id, cpu, memory_mb)
+        _create_vm_cgroup(vm_id, cpu, memory_mb, pids_limit)
 
         # Firecracker プロセスを起動（--no-api はなし、REST API 経由で設定）
         fc_proc = await asyncio.create_subprocess_exec(
@@ -733,6 +995,46 @@ def _find_orphan_fc_pid(vm_id: str) -> int | None:
     return None
 
 
+_UUID_FILENAME_RE = re.compile(
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.ext4(\.tmp)?$"
+)
+
+
+def _cleanup_orphaned_rootfs_files(active_vm_ids: set[str]) -> int:
+    """FC_ROOTFS_DIR / FC_ROOTFS_DIR_FALLBACK 配下の writable rootfs コピーのうち、
+    active_vm_ids（現在 running な Environment の vm_id）に対応しないものを削除する。
+
+    対象になるのは、DB レコード自体が削除された後に残った .ext4 や、
+    _prepare_writable_rootfs 実行中のクラッシュで中途半端に残った .ext4.tmp。
+    ファイル名が vm_id（UUID）.ext4[.tmp] の形式であるものだけを対象にする
+    （デフォルト資産等、別の命名規則のファイルは誤って触らないため）。
+
+    戻り値: 削除したファイル数。
+    """
+    removed = 0
+    for base_dir in (FC_ROOTFS_DIR, FC_ROOTFS_DIR_FALLBACK):
+        try:
+            entries = os.listdir(base_dir)
+        except OSError:
+            continue
+        for name in entries:
+            m = _UUID_FILENAME_RE.match(name)
+            if not m:
+                continue
+            vm_id = m.group(1)
+            if vm_id in active_vm_ids:
+                continue
+            path = os.path.join(base_dir, name)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                removed += 1
+                logger.info(f"孤立した writable rootfs コピーを削除しました: {path} ({size // (1024*1024)}MiB)")
+            except OSError as e:
+                logger.warning(f"孤立した writable rootfs コピーの削除に失敗しました: {path}: {e}")
+    return removed
+
+
 async def cleanup_orphaned_vms() -> None:
     """オーケストレータ起動時に、前回プロセスが残した VM・TAP・DBレコードを後始末する。
 
@@ -741,6 +1043,7 @@ async def cleanup_orphaned_vms() -> None:
     状態を突き合わせ、不整合を解消する。
     """
     _cleanup_stale_vm_cgroups()
+    ensure_vm_cgroup_root_io_limit()
 
     # 起動直後は稼働中の VM は存在しないため、残っている anti-spoof テーブル
     # （bridge hb_*）は全て前回の残骸とみなして掃除する。
@@ -760,6 +1063,16 @@ async def cleanup_orphaned_vms() -> None:
     from sqlalchemy import select
 
     async with AsyncSessionLocal() as db:
+        # running な Environment の vm_id 一覧を基準に、FC_ROOTFS_DIR 配下の孤立した
+        # writable rootfs コピー（対応する Environment が無い .ext4/.tmp）を掃除する。
+        # DB レコード自体が削除された後や、_prepare_writable_rootfs 実行中のクラッシュで
+        # Environment 行が存在しないまま残った残骸はこの経路でしか回収できない。
+        running_result = await db.execute(
+            select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+        )
+        active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
+        _cleanup_orphaned_rootfs_files(active_vm_ids)
+
         result = await db.execute(
             # stopping は前回プロセスが停止処理の途中でクラッシュした場合に残り得る。
             # 含めないと該当環境が永久に stopping のまま孤児化するため、
@@ -801,6 +1114,55 @@ async def cleanup_orphaned_vms() -> None:
         await db.commit()
 
 
+_ROOTFS_CLEANUP_INTERVAL_SECONDS = 300
+
+
+async def run_rootfs_cleanup_worker() -> None:
+    """FC_ROOTFS_DIR 配下の孤立 writable rootfs コピーを定期的に掃除するバックグラウンドループ。
+
+    cleanup_orphaned_vms は起動時に一度だけ実行されるため、長時間稼働中に発生した
+    残骸（_prepare_writable_rootfs 実行中のクラッシュによる .ext4.tmp、DB レコードが
+    削除された後に残った .ext4 等）は次回再起動まで残り続けてしまう。
+    watchdog（services/watchdog.py）と同じ「while True + try/except でログに握り込み +
+    末尾 asyncio.sleep」パターンで、稼働中もこの種の残骸を定期回収する。
+    """
+    from database import AsyncSessionLocal
+    from models import Environment, EnvStatus
+    from sqlalchemy import select, func
+
+    logger.info("Rootfs cleanup worker started")
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                # VM起動処理（_start_firecracker）は vm_id を UUID として生成し
+                # writable rootfs コピーを作った後、TAP作成・Firecracker起動を経てから
+                # ようやく env.vm_id を確定・commit する（status=running への遷移はさらに後）。
+                # つまり starting の間は DB 上の vm_id が NULL のままで、ファイル名
+                # （vm_id）とDBで対応付けられない。running のみ・starting+running の
+                # vm_id 集合のどちらで判定しても、起動処理中は「対応するDBレコードがない
+                # ように見える」ため、このワーカーの定期実行（300秒間隔）が起動処理の
+                # 最中に重なると writable rootfs コピーを孤立ファイルと誤判定して削除し、
+                # 直後のFirecracker起動が「No such file or directory」で失敗する事故が
+                # 起きた（実際に発生）。starting の環境が1件でもある間は、
+                # 削除ではなく今回のサイクルをスキップして安全側に倒す。
+                starting_count = await db.scalar(
+                    select(func.count()).where(Environment.status == EnvStatus.starting)
+                )
+                if starting_count:
+                    logger.info(
+                        f"起動処理中の環境が{starting_count}件あるため、今回のrootfs掃除サイクルをスキップします"
+                    )
+                else:
+                    running_result = await db.execute(
+                        select(Environment.vm_id).where(Environment.status == EnvStatus.running)
+                    )
+                    active_vm_ids = {vm_id for (vm_id,) in running_result.all() if vm_id}
+                    _cleanup_orphaned_rootfs_files(active_vm_ids)
+        except Exception as e:
+            logger.error(f"Rootfs cleanup worker error: {e}")
+        await asyncio.sleep(_ROOTFS_CLEANUP_INTERVAL_SECONDS)
+
+
 def _ip_to_mac(ip: str) -> str:
     """IP アドレスから決定論的な MAC アドレスを生成する（06:00:xx:xx:xx:xx）。"""
     parts = ip.split(".")
@@ -809,13 +1171,18 @@ def _ip_to_mac(ip: str) -> str:
 
 # ---- 公開インターフェース ----
 
-async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024) -> VMStartResult:
+async def start_vm(image, ip: str, cpu: int = 1, memory_mb: int = 1024, pids_limit: int = 256,
+                    env_id: int | None = None) -> VMStartResult:
     """
     Image レコードのゲストカーネル・rootfs を Firecracker microVM として起動する。
+
+    env_id を渡すと、rootfsのwritableコピー中の進捗を get_copy_progress(env_id) で
+    参照できるようになる（UIの「rootfsコピー中」表示に使われる）。
     """
     return await _start_firecracker(
-        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb,
+        image.kernel_path, image.rootfs_path, ip, cpu, memory_mb, pids_limit,
         extra_boot_args=getattr(image, "extra_boot_args", None),
+        env_id=env_id,
     )
 
 

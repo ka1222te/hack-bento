@@ -15,3 +15,13 @@ function safeNextPath(value) {
   if (value.startsWith('//') || value.startsWith('/\\')) return null;
   return value;
 }
+
+// 認証はCookie（access_token、httponly）のみで行う。トークンをJSから読める
+// sessionStorage等に置かないため、各ページはログイン状態を知りたい時・ユーザ情報
+// （role・needs_username_setup等）が必要な時に都度これを呼ぶ。
+// 戻り値: ログイン済みなら /api/auth/me のレスポンスJSON、未ログインなら null。
+async function fetchMe() {
+  const res = await fetch('/api/auth/me');
+  if (!res.ok) return null;
+  return await res.json();
+}

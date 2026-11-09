@@ -1,4 +1,25 @@
 services:
+  # PostgreSQL（HackBentoのDB。必須サービス）。
+  postgres:
+    image: postgres:16-alpine
+    container_name: hackbento-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hackbento}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-hackbento}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    # 他の全サービスと同じく network_mode: host で統一し、orchestrator から
+    # localhost:5432 でそのまま到達できるようにする（bridge ネットワークは使わない）。
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hackbento}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   orchestrator:
     build:
       context: ./orchestrator
@@ -20,8 +41,13 @@ services:
     depends_on:
       docker-base-builder:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8000}/health"]
+      # SCHEME=httpsの場合uvicornはそのポートでTLSのみ喋るため、
+      # 固定でhttp://にすると常に失敗する。コンテナ内の$SCHEME/$PORTを見て
+      # 動的に切り替える（-kは自己署名証明書を許容するため）。
+      test: ["CMD-SHELL", "curl -kfs ${SCHEME:-http}://127.0.0.1:${PORT:-8000}/health"]
       interval: 120s
       timeout: 10s
       retries: 3

@@ -22,7 +22,8 @@
 {% block scripts %}
 <script>
 initNavbar();
-if (!sessionStorage.getItem('hb_token')) {
+(async () => {
+  if (await fetchMe()) return;
   const nextPath = safeNextPath(location.pathname);
   const loginUrl = nextPath ? `/login?next=${encodeURIComponent(nextPath)}` : '/login';
   document.getElementById('login-btn').href = loginUrl;
@@ -35,6 +36,6 @@ if (!sessionStorage.getItem('hb_token')) {
     if (_el) _el.textContent = _count;
     if (_count <= 0) { clearInterval(_iv); window.location.href = loginUrl; }
   }, 1000);
-}
+})();
 </script>
 {% endblock %}

@@ -20,6 +20,7 @@ import uuid
 import logging
 
 from services import smolvm
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ async def run_build_vm(
 
         fc_proc = None
         try:
-            smolvm._create_vm_cgroup(bid, cpu, memory_mb)
+            smolvm._create_vm_cgroup(bid, cpu, memory_mb, settings.VM_PIDS_LIMIT)
 
             fc_proc = await asyncio.create_subprocess_exec(
                 "firecracker",

@@ -12,6 +12,7 @@
       <button class="tab-btn" data-tab="users">ユーザ管理</button>
       <button class="tab-btn" data-tab="images">プロジェクト管理</button>
       <button class="tab-btn" data-tab="vm-assets">デフォルトVM</button>
+      <button class="tab-btn" data-tab="resources">システムリソース</button>
     </div>
 
     <!-- Running Envs -->
@@ -90,6 +91,49 @@
         Compose バンドルの土台となる rootfs。アップロードではなく、指定したベースイメージから
         サーバ側で Docker + compose を自動インストールしてビルドする（数分〜数十分かかる）。
       </p>
+    </div>
+
+    <div id="tab-resources" class="tab-panel hidden">
+      <div class="panel-header">
+        <h2 class="panel-title">VM リソースの上限</h2>
+      </div>
+      <p class="np-hint" style="margin:.25rem 0 .75rem">
+        プロジェクト作成者が新規作成・編集画面で選べる、VMごとのCPU・メモリ・PID数・
+        rootfs変換の余裕MBの最大値。ここで設定した値が各プロジェクトの設定可能範囲の上限になる。
+      </p>
+      <form id="form-global-settings" style="max-width:420px">
+        <div id="form-global-settings-error" class="alert alert-error hidden" style="margin-bottom:.75rem"></div>
+        <div class="form-group">
+          <label>CPUコア数の最大値（1以上）</label>
+          <input type="number" name="vm_cpu_max" id="vm-cpu-max" min="1" step="1" required />
+        </div>
+        <div class="form-group">
+          <label>メモリの最大値（MB・128以上）</label>
+          <input type="number" name="vm_memory_max_mb" id="vm-memory-max-mb" min="128" step="1" required />
+        </div>
+        <div class="form-group">
+          <label>PID数の最大値（1以上）</label>
+          <input type="number" name="vm_pids_max" id="vm-pids-max" min="1" step="1" required />
+        </div>
+        <div class="form-group">
+          <label>ディスク容量の最大値（GB・1以上）</label>
+          <input type="number" name="vm_disk_max_gb" id="vm-disk-max-gb" min="1" step="1" required />
+          <p class="np-hint" style="margin:.3rem 0 0">
+            現時点ではVMごとの容量を強制するquota機能は未実装（設定値のみ）。
+          </p>
+        </div>
+        <div class="form-group">
+          <label>rootfs 変換の余裕MBの最大値（0以上）</label>
+          <input type="number" name="rootfs_margin_max_mb" id="rootfs-margin-max-mb" min="0" step="1" required />
+          <p class="np-hint" style="margin:.3rem 0 0">
+            rootfs tar→ext4 自動変換時に追加できる余裕MB。Docker等を含む大きめのrootfsを
+            アップロードする場合、VM起動後にゲスト内で apt install/docker pull等を行うと
+            すぐ容量が尽きるため、個々のプロジェクトでこの範囲内で余裕を調整できるようにする。
+          </p>
+        </div>
+        <button type="submit" class="btn btn-sm btn-primary">保存</button>
+        <span id="global-settings-saved" class="np-hint hidden" style="margin-left:.5rem">保存しました</span>
+      </form>
     </div>
   </div>
 </div>
@@ -200,15 +244,12 @@
 {% block scripts %}
 <script>
 const API = {
-  token: () => sessionStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async patch(url, body) { return fetch(url, { method: 'PATCH', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
 };
-
-if (!API.token()) { window.location.href = '/login'; }
 
 initNavbar();
 
@@ -223,6 +264,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'users') loadUsers();
     if (btn.dataset.tab === 'images') loadAdminImages();
     if (btn.dataset.tab === 'vm-assets') loadVmAssets();
+    if (btn.dataset.tab === 'resources') loadGlobalSettings();
   });
 });
 
@@ -523,6 +565,57 @@ async function loadVmAssets() {
   _maybeToggleVmAssetPolling(pollTargets);
 }
 
+async function loadGlobalSettings() {
+  const res = await API.get('/api/admin/global-settings');
+  if (!res.ok) return;
+  const gs = await res.json();
+  document.getElementById('vm-cpu-max').value = gs.vm_cpu_max;
+  document.getElementById('vm-memory-max-mb').value = gs.vm_memory_max_mb;
+  document.getElementById('vm-pids-max').value = gs.vm_pids_max;
+  document.getElementById('vm-disk-max-gb').value = gs.vm_disk_max_gb;
+  document.getElementById('rootfs-margin-max-mb').value = gs.rootfs_margin_max_mb;
+}
+
+document.getElementById('form-global-settings').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errorBox = document.getElementById('form-global-settings-error');
+  const savedLabel = document.getElementById('global-settings-saved');
+  errorBox.classList.add('hidden');
+  savedLabel.classList.add('hidden');
+
+  const fields = [
+    ['vm_cpu_max', 'vm-cpu-max', 1],
+    ['vm_memory_max_mb', 'vm-memory-max-mb', 128],
+    ['vm_pids_max', 'vm-pids-max', 1],
+    ['vm_disk_max_gb', 'vm-disk-max-gb', 1],
+    ['rootfs_margin_max_mb', 'rootfs-margin-max-mb', 0],
+  ];
+  const payload = {};
+  for (const [key, elId, min] of fields) {
+    const value = parseInt(document.getElementById(elId).value, 10);
+    if (isNaN(value) || value < min) {
+      errorBox.textContent = `${key} は ${min} 以上の整数を指定してください`;
+      errorBox.classList.remove('hidden');
+      return;
+    }
+    payload[key] = value;
+  }
+
+  try {
+    const res = await API.patch('/api/admin/global-settings', payload);
+    if (res.ok) {
+      savedLabel.classList.remove('hidden');
+      return;
+    }
+    const d = await res.json();
+    errorBox.textContent = d.detail || 'エラーが発生しました';
+    errorBox.classList.remove('hidden');
+  } catch {
+    errorBox.textContent = '通信エラーが発生しました';
+    errorBox.classList.remove('hidden');
+  }
+});
+
 // ボタンにスピナー表示をセット/解除する（HTML構造は <span class="btn-spinner">+<span class="btn-text"> 前提）。
 function _setBtnBusy(btn, busyLabel) {
   if (!btn) return;
@@ -584,7 +677,6 @@ document.getElementById('form-docker-base').addEventListener('submit', async e =
   try {
     const res = await fetch('/api/admin/default-assets/docker-base/build', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${API.token()}` },
       body: fd,
     });
     if (res.ok) {
@@ -614,7 +706,6 @@ document.getElementById('form-vm-asset').addEventListener('submit', async e => {
 
   const res = await fetch(`/api/admin/default-assets/${kind}`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${API.token()}` },
     body: fd,
   });
   if (res.ok) {
@@ -735,7 +826,10 @@ function showToast(msg, type='info') {
   setTimeout(() => { t.classList.remove('toast-show'); setTimeout(() => t.remove(), 300); }, 3000);
 }
 
-loadAdminEnvs();
+(async () => {
+  if (!(await fetchMe())) { window.location.href = '/login'; return; }
+  loadAdminEnvs();
+})();
 </script>
 
 <style>

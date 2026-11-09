@@ -127,11 +127,12 @@ def _validate_bundle_tar(tar_path: str) -> dict:
 
 # ---- scratch ディスク構築（loop マウント不要。mkfs.ext4 -d で直接 populate）----
 
-def _build_scratch_from_bundle(tar_path: str, project_name: str, scratch_path: str) -> None:
+def _build_scratch_from_bundle(tar_path: str, project_name: str, scratch_path: str, margin_mb: int = 0) -> None:
     """バンドル tar の中身を scratch 用ディレクトリへ展開し、ext4 を作る。
 
     ビルド用 VM が /dev/vdb としてマウントし、app/ images.tar overlay/ project_name を読む。
     展開はホスト上で行うが、_validate_bundle_tar でパス・リンクを検査済みのため安全。
+    margin_mb はプロジェクト作成者が選んだ追加の余裕MB（Image.rootfs_margin_mb）。
     """
     workdir = tempfile.mkdtemp(prefix="hackbento-bundle-scratch-")
     root = os.path.join(workdir, "scratch")
@@ -156,7 +157,7 @@ def _build_scratch_from_bundle(tar_path: str, project_name: str, scratch_path: s
                     total += os.path.getsize(os.path.join(dp, fn))
                 except OSError:
                     pass
-        mb = int(total / (1024 * 1024) * 1.3) + 256
+        mb = int(total / (1024 * 1024) * 1.3) + 256 + max(margin_mb, 0)
         tmp_img = scratch_path + ".tmp"
         if os.path.exists(tmp_img):
             os.remove(tmp_img)
@@ -330,6 +331,7 @@ async def _process_one(row_id: int) -> None:
             return
         tar_path = row.rootfs_source_archive_path
         dest_rootfs = row.rootfs_path
+        margin_mb = row.rootfs_margin_mb or 0
 
     try:
         if not tar_path:
@@ -346,7 +348,7 @@ async def _process_one(row_id: int) -> None:
         await _set_phase(row_id, BundlePhase.preparing.value)
         scratch = dest_rootfs + ".scratch"
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _build_scratch_from_bundle, tar_path, project_name, scratch)
+        await loop.run_in_executor(None, _build_scratch_from_bundle, tar_path, project_name, scratch, margin_mb)
 
         try:
             # 3) ビルド用 VM で docker-base にバンドルを焼き込み、成果物を dest_rootfs へ

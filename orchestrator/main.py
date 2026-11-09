@@ -23,7 +23,8 @@ from services.firecracker_setup import ensure_default_vm_assets, ensure_attack_m
 from services.rootfs_convert import run_rootfs_conversion_worker, reset_stuck_conversions
 from services.bundle_build import run_bundle_build_worker
 from services.docker_base_assets import run_docker_base_build_worker
-from services.smolvm import cleanup_orphaned_vms
+from services.smolvm import cleanup_orphaned_vms, run_rootfs_cleanup_worker
+from services.global_settings import get_global_settings
 from routers import auth, envs, images, admin, users, attack_machine
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
     bundle_build_task = asyncio.create_task(run_bundle_build_worker())
     attack_machine_task = asyncio.create_task(ensure_attack_machine_assets())
     docker_base_build_task = asyncio.create_task(run_docker_base_build_worker())
+    rootfs_cleanup_task = asyncio.create_task(run_rootfs_cleanup_worker())
     yield
     task.cancel()
     vm_assets_task.cancel()
@@ -54,7 +56,8 @@ async def lifespan(app: FastAPI):
     bundle_build_task.cancel()
     attack_machine_task.cancel()
     docker_base_build_task.cancel()
-    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task):
+    rootfs_cleanup_task.cancel()
+    for t in (task, vm_assets_task, rootfs_convert_task, bundle_build_task, attack_machine_task, docker_base_build_task, rootfs_cleanup_task):
         try:
             await t
         except asyncio.CancelledError:
@@ -231,24 +234,31 @@ async def guacamole_http_proxy(path: str, request: Request):
 
 
 async def _get_request_user(request: Request) -> Optional[User]:
-    """リクエストのトークン（Cookie or Bearer）からユーザを取得する。"""
+    """リクエストのCookie（access_token、httponly）からユーザを取得する。
+
+    認証はCookieのみで行う（JSが読めるsessionStorage等にトークンを置かないため、
+    Bearerヘッダ方式はサポートしない。XSS時のトークン窃取リスクを無くす目的）。
+
+    JWTが無効/欠落している場合のみ「未ログイン」として None を返す。DBエラー等の
+    予期しない例外はここで握り潰さず呼び出し元に伝播させる（握り潰すと、DB競合で
+    一時的にユーザ取得が失敗しただけなのに「未ログイン」扱いになり、ログイン済み
+    ユーザに誤って404が表示されてしまう）。
+    """
+    from jose import JWTError
     from services.jwt_utils import decode_token
     token = request.cookies.get("access_token")
-    if not token:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:].strip()
     if not token:
         return None
     try:
         payload = decode_token(token)
-        async with AsyncSessionLocalReadonly() as db:
-            result = await db.execute(
-                select(User).where(User.id == int(payload["sub"]), User.is_active == True)
-            )
-            return result.scalar_one_or_none()
-    except Exception:
+        user_id = int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
         return None
+    async with AsyncSessionLocalReadonly() as db:
+        result = await db.execute(
+            select(User).where(User.id == user_id, User.is_active == True)
+        )
+        return result.scalar_one_or_none()
 
 
 async def _can_view_project(owner: str, slug: str, user: Optional[User]) -> bool:
@@ -336,10 +346,6 @@ async def setup_username_page(request: Request):
     from services.jwt_utils import decode_token
     token = request.cookies.get("access_token")
     if not token:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:].strip()
-    if not token:
         return RedirectResponse(url="/login", status_code=303)
     try:
         payload = decode_token(token)
@@ -370,9 +376,16 @@ async def explore_page(request: Request):
 @app.get("/new", response_class=HTMLResponse)
 async def new_project_page(request: Request):
     user = await _get_request_user(request)
-    if not user or user.needs_username_setup:
-        return templates.TemplateResponse("404.html", {"request": request, "settings": settings}, status_code=404)
-    return templates.TemplateResponse("new_project.html", {"request": request, "settings": settings})
+    if not user:
+        return RedirectResponse(url="/login?next=%2Fnew", status_code=303)
+    if user.needs_username_setup:
+        return RedirectResponse(url="/setup-username", status_code=303)
+    async with AsyncSessionLocalReadonly() as db:
+        global_settings = await get_global_settings(db)
+    return templates.TemplateResponse(
+        "new_project.html",
+        {"request": request, "settings": settings, "global_settings": global_settings},
+    )
 
 
 @app.get("/docs/rootfs/compose", response_class=HTMLResponse)
@@ -424,19 +437,43 @@ async def user_profile_page(username: str, request: Request):
 
 @app.get("/{owner}/{slug}/edit", response_class=HTMLResponse)
 async def edit_project_page(owner: str, slug: str, request: Request):
+    """未ログインはログイン画面へリダイレクト（next付き）、ログイン済みだが編集権限が
+    無い場合は404をedit_project.html内で表示する。どちらもサーバー側で確定させ、
+    project.htmlと同様にクライアントJSのsessionStorage依存の再判定に委ねない。
+    """
     user = await _get_request_user(request)
-    if not await _can_edit_project(owner, slug, user):
-        return templates.TemplateResponse(
-            "404.html", {"request": request, "settings": settings}, status_code=404
-        )
-    return templates.TemplateResponse("edit_project.html", {"request": request, "owner": owner, "slug": slug, "settings": settings})
+    if user is None:
+        from urllib.parse import quote
+        next_path = quote(f"/{owner}/{slug}/edit", safe="")
+        return RedirectResponse(url=f"/login?next={next_path}", status_code=303)
+    can_edit = await _can_edit_project(owner, slug, user)
+    async with AsyncSessionLocalReadonly() as db:
+        global_settings = await get_global_settings(db)
+    return templates.TemplateResponse(
+        "edit_project.html",
+        {
+            "request": request, "owner": owner, "slug": slug, "settings": settings,
+            "global_settings": global_settings, "can_edit": can_edit,
+        },
+        status_code=200 if can_edit else 404,
+    )
 
 
 @app.get("/{owner}/{slug}", response_class=HTMLResponse)
 async def project_page(owner: str, slug: str, request: Request):
+    """閲覧可否はサーバー側（Cookie認証 + _can_view_project）で確定させ、project.html に
+    can_view として渡す。クライアントJSのsessionStorage依存の認証状態判定で
+    表示/404を再判定すると、タブごとに独立したsessionStorageとCookieの状態が
+    食い違い、ログイン済みでも新規タブ/直接URLアクセス時に誤って404表示される
+    問題があったため、権限判定をサーバー側の1箇所に一本化した。
+    """
     user = await _get_request_user(request)
-    if not await _can_view_project(owner, slug, user):
-        return templates.TemplateResponse(
-            "404.html", {"request": request, "settings": settings}, status_code=404
-        )
-    return templates.TemplateResponse("project.html", {"request": request, "owner": owner, "slug": slug, "settings": settings})
+    can_view = await _can_view_project(owner, slug, user)
+    return templates.TemplateResponse(
+        "project.html",
+        {
+            "request": request, "owner": owner, "slug": slug, "settings": settings,
+            "can_view": can_view, "is_logged_in": user is not None,
+        },
+        status_code=200 if can_view else 404,
+    )

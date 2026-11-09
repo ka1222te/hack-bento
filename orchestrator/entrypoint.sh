@@ -21,15 +21,18 @@ if [ "${SCHEME:-http}" = "https" ]; then
         echo "[entrypoint] TLS certificate found: $CRT_FILE"
     fi
 
+    # --reload は付けない。ソースコードはバインドマウントされており開発中の
+    # 即時反映には便利だが、ファイル変更を検知すると進行中のVM起動処理
+    # （rootfsコピー・Firecracker起動待ち等のバックグラウンドタスク）を巻き込んで
+    # プロセスを再起動してしまい、サイトが一時的に応答不能になる事故が複数回
+    # あったため（本番運用中の編集は docker compose restart/up -d で明示的に反映する）。
     exec uvicorn main:app \
         --host 0.0.0.0 \
         --port "$PORT" \
-        --reload \
         --ssl-keyfile "$KEY_FILE" \
         --ssl-certfile "$CRT_FILE"
 else
     exec uvicorn main:app \
         --host 0.0.0.0 \
-        --port "$PORT" \
-        --reload
+        --port "$PORT"
 fi

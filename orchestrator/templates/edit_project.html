@@ -1,7 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Edit — {{ owner }}/{{ slug }}{% endblock %}
+{% block title %}{% if can_edit %}Edit — {{ owner }}/{{ slug }}{% else %}404 — HackBento{% endif %}{% endblock %}
 
 {% block body %}
+{% if not can_edit %}
+<div id="app">
+  {% include "partials/navbar.html" %}
+  <div class="container" style="max-width:600px;padding-top:6rem;text-align:center">
+    <p style="font-size:5rem;margin-bottom:1rem">🔒</p>
+    <h1 style="font-size:2rem;font-weight:700;margin-bottom:.75rem">404 — Not Found</h1>
+    <p style="color:var(--text2);margin-bottom:1rem">
+      このページは存在しないか、閲覧する権限がありません。
+    </p>
+    <a href="/{{ owner }}/{{ slug }}" class="btn btn-primary">プロジェクトページに戻る</a>
+  </div>
+</div>
+<div id="toast-container"></div>
+{% else %}
 <div id="app">
   {% include "partials/navbar.html" %}
 
@@ -280,6 +294,75 @@
         </details>
         </div><!-- /os-fields -->
 
+        <!-- VM リソース上限（CPU/メモリ/PID数。OS/Composeいずれの登録形式でも共通） -->
+        <div class="np-field">
+          <label class="np-label">VM リソース上限 <span class="np-optional">optional</span></label>
+          <p class="np-hint" style="margin:0 0 .6rem">
+            このプロジェクトのVMに割り当てるCPU・メモリ・PID数の上限。管理者が設定した最大値の範囲内で指定できます。
+            変更は次回起動時から反映されます。
+          </p>
+
+          <div class="np-field" style="margin-bottom:.75rem">
+            <label class="np-label" style="font-size:.85rem">CPUコア数</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="cpu_limit" id="cpu-limit-range"
+                     min="1" max="{{ global_settings.vm_cpu_max }}" step="1" value="1"
+                     style="flex:1" />
+              <input type="number" id="cpu-limit-number"
+                     min="1" max="{{ global_settings.vm_cpu_max }}" step="1" value="1"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_cpu_max }} コア</p>
+          </div>
+
+          <div class="np-field" style="margin-bottom:.75rem">
+            <label class="np-label" style="font-size:.85rem">メモリ（MB）</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="memory_limit_mb" id="memory-limit-mb-range"
+                     min="128" max="{{ global_settings.vm_memory_max_mb }}" step="1" value="128"
+                     style="flex:1" />
+              <input type="number" id="memory-limit-mb-number"
+                     min="128" max="{{ global_settings.vm_memory_max_mb }}" step="1" value="128"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_memory_max_mb }} MB </p>
+          </div>
+
+          <div class="np-field">
+            <label class="np-label" style="font-size:.85rem">PID数</label>
+            <div style="display:flex;align-items:center;gap:.75rem">
+              <input type="range" name="pids_limit" id="pids-limit-range"
+                     min="1" max="{{ global_settings.vm_pids_max }}" step="1" value="1"
+                     style="flex:1" />
+              <input type="number" id="pids-limit-number"
+                     min="1" max="{{ global_settings.vm_pids_max }}" step="1" value="1"
+                     class="np-input" style="width:6rem" />
+            </div>
+            <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.vm_pids_max }}</p>
+          </div>
+        </div>
+
+        {% if global_settings.rootfs_margin_max_mb > 0 %}
+        <!-- rootfs 変換の余裕MB（OS/Composeいずれの登録形式でもrootfs tar→ext4変換時に使う） -->
+        <div class="np-field">
+          <label class="np-label">rootfs 変換の余裕 <span class="np-optional">optional</span></label>
+          <p class="np-hint" style="margin:0 0 .6rem">
+            rootfs（tar）をext4へ変換する際に追加する余裕MB。VM起動後にDocker等をインストールしたり
+            大きなファイルを扱う場合、ここで余裕を持たせておくとディスク容量不足を避けられます。
+          </p>
+          <div style="display:flex;align-items:center;gap:.75rem">
+            <input type="range" name="rootfs_margin_mb" id="rootfs-margin-mb-range"
+                   min="0" max="{{ global_settings.rootfs_margin_max_mb }}" step="1" value="0"
+                   style="flex:1" />
+            <input type="number" id="rootfs-margin-mb-number"
+                   min="0" max="{{ global_settings.rootfs_margin_max_mb }}" step="1" value="0"
+                   class="np-input" style="width:7rem" />
+            <span class="np-hint">MB</span>
+          </div>
+          <p class="np-hint" style="margin:.3rem 0 0">最大 {{ global_settings.rootfs_margin_max_mb }} MB</p>
+        </div>
+        {% endif %}
+
         <!-- README 変更 -->
         <div class="np-field">
           <label class="np-label">
@@ -344,20 +427,24 @@
   </div>
 </div>
 <div id="toast-container"></div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
+{% if not can_edit %}
+<script>
+initNavbar();
+</script>
+{% else %}
 <script>
 const OWNER = {{ owner | tojson }};
 const SLUG  = {{ slug  | tojson }};
-const token = sessionStorage.getItem('hb_token');
-if (!token) { window.location.href = '/login'; }
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 
 initNavbar();
 
 const API = {
-  token: () => token,
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
   async del(url) { return fetch(url, { method: 'DELETE', headers: API.headers() }); },
@@ -366,9 +453,9 @@ const API = {
 let imageData = null;
 
 async function init() {
-  const [imgRes, meRes] = await Promise.all([
+  const [imgRes, me] = await Promise.all([
     API.get('/api/images/'),
-    API.get('/api/auth/me'),
+    fetchMe(),
   ]);
   const images = imgRes.ok ? await imgRes.json() : [];
   imageData = images.find(i => i.owner_username === OWNER && i.slug === SLUG);
@@ -380,7 +467,6 @@ async function init() {
   if (!ce.can_edit) { alert('編集権限がありません'); window.location.href = `/${OWNER}/${SLUG}`; return; }
 
   // オーナーまたは管理者のみ Danger Zone を表示
-  const me = meRes.ok ? await meRes.json() : null;
   if (me && (me.role === 'admin' || me.username === OWNER)) {
     document.getElementById('danger-zone').classList.remove('hidden');
   }
@@ -403,6 +489,28 @@ async function init() {
     const details = document.getElementById('boot-args-checkboxes').closest('details');
     if (details) details.open = true;
   }
+  // 既存の rootfs 変換の余裕MBをフォームに反映
+  const _marginRange = document.getElementById('rootfs-margin-mb-range');
+  const _marginNumber = document.getElementById('rootfs-margin-mb-number');
+  if (_marginRange && _marginNumber) {
+    const _margin = Math.max(0, Math.min(parseInt(_marginRange.max, 10), imageData.rootfs_margin_mb || 0));
+    _marginRange.value = _margin;
+    _marginNumber.value = _margin;
+  }
+  // 既存の CPU/メモリ/PID数の上限をフォームに反映
+  function _applyRangeValue(rangeId, numberId, current, fallback) {
+    const range = document.getElementById(rangeId);
+    const number = document.getElementById(numberId);
+    if (!range || !number) return;
+    const min = parseInt(range.min, 10);
+    const max = parseInt(range.max, 10);
+    const v = Math.max(min, Math.min(max, current || fallback));
+    range.value = v;
+    number.value = v;
+  }
+  _applyRangeValue('cpu-limit-range', 'cpu-limit-number', imageData.cpu_limit, 1);
+  _applyRangeValue('memory-limit-mb-range', 'memory-limit-mb-number', imageData.memory_limit_mb, 128);
+  _applyRangeValue('pids-limit-range', 'pids-limit-number', imageData.pids_limit, 1);
   // 登録形式（OS イメージ / Compose バンドル）に応じてフィールドを出し分ける。
   // new_project.html とは異なり作成後に形式を変更することはできない。
   const isCompose = imageData.rootfs_kind === 'compose';
@@ -492,7 +600,7 @@ function _maybeStartRootfsConversionPolling(img) {
         clearInterval(_rootfsConversionPollTimer);
         _rootfsConversionPollTimer = null;
       }
-    }, 5000);
+    }, WEB_POLL_INTERVAL_MS);
   }
 }
 
@@ -550,9 +658,7 @@ window.initAssetToggle = async function initAssetToggle(prefix, currentAssetId) 
   const hint = document.getElementById(`${prefix}-default-empty-hint`);
   let assets = [];
   try {
-    const res = await fetch(`/api/images/default-assets?kind=${prefix}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
+    const res = await fetch(`/api/images/default-assets?kind=${prefix}`);
     assets = res.ok ? await res.json() : [];
   } catch {}
   select.innerHTML = assets.map(a => `<option value="${a.id}">${a.label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</option>`).join('');
@@ -579,9 +685,7 @@ async function loadDockerBaseAssetOptions(currentAssetId) {
   const hint = document.getElementById('docker-base-asset-empty-hint');
   let assets = [];
   try {
-    const res = await fetch('/api/images/default-assets?kind=docker-base', {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
+    const res = await fetch('/api/images/default-assets?kind=docker-base');
     assets = res.ok ? await res.json() : [];
   } catch {}
   select.innerHTML = '<option value="">— 変更しない —</option>'
@@ -606,6 +710,27 @@ setupUploadArea('bundle-upload-area','bundle-file-input','bundle-upload-placehol
   }
   container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.addEventListener('change', sync));
 })();
+
+// range と number の組を同期する（rootfs 変換の余裕MB・CPU/メモリ/PID数上限で共通使用）
+function setupRangeNumberSync(rangeId, numberId) {
+  const range = document.getElementById(rangeId);
+  const number = document.getElementById(numberId);
+  if (!range || !number) return;
+  range.addEventListener('input', () => { number.value = range.value; });
+  number.addEventListener('input', () => {
+    const min = parseInt(range.min, 10);
+    const max = parseInt(range.max, 10);
+    let v = parseInt(number.value, 10);
+    if (isNaN(v)) v = min;
+    v = Math.max(min, Math.min(max, v));
+    number.value = v;
+    range.value = v;
+  });
+}
+setupRangeNumberSync('rootfs-margin-mb-range', 'rootfs-margin-mb-number');
+setupRangeNumberSync('cpu-limit-range', 'cpu-limit-number');
+setupRangeNumberSync('memory-limit-mb-range', 'memory-limit-mb-number');
+setupRangeNumberSync('pids-limit-range', 'pids-limit-number');
 
 // コラボレーター
 async function loadCollaborators() {
@@ -802,7 +927,6 @@ document.getElementById('edit-form').addEventListener('submit', async e => {
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PATCH', `/api/images/${imageData.id}`);
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.upload.addEventListener('progress', ev => {
       if (ev.lengthComputable) {
         const pct = Math.round(ev.loaded / ev.total * 100);
@@ -900,4 +1024,5 @@ document.addEventListener('mousedown', e => {
 
 init();
 </script>
+{% endif %}
 {% endblock %}

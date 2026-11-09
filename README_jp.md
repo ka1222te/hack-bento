@@ -59,7 +59,7 @@ HackBento は **microVM への直接 IP 付与**（Linux ブリッジ経由）�
 |---|---|
 | バックエンド | Python 3.12 + FastAPI |
 | フロントエンド | Jinja2 テンプレート + バニラ JS |
-| DB | SQLite（aiosqlite 非同期）|
+| DB | PostgreSQL（asyncpg 非同期）|
 | 認証 | JWT（Cookie + Bearer）/ LDAP / Google OAuth2 |
 | 環境ランタイム | Firecracker microVM + Linux bridge ネットワーク（KVM必須）|
 | GUIアクセス（Attack Machine） | Apache Guacamole（HackBento自身がリバースプロキシ）|
@@ -228,7 +228,7 @@ OAUTH_ALLOWED_DOMAINS=example.com  # 空にすると全Googleアカウントを�
 | `PORT` | `8000` | リッスンポート |
 | `SECRET_KEY` | （要変更）| JWT 署名キー |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `480` | JWT の有効期限（分）|
-| `DATABASE_URL` | SQLite | DB 接続 URL |
+| `DATABASE_URL` | PostgreSQL | DB 接続 URL |
 | `DEFAULT_TIMEOUT_MINUTES` | `60` | 環境のデフォルトタイムアウト（分）|
 | `TIMEOUT_MINUTES_OPTIONS` | `15,30,45,60,75,90,105,120` | 選択可能なタイムアウト候補（分・カンマ区切り）。`0` は無制限を表す。負値・数値でない値は無視され、空になった場合は既定候補にフォールバック |
 | `TIMEOUT_WARNING_MINUTES` | `10` | タイムアウト警告を出す残り時間（分）|

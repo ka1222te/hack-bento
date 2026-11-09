@@ -24,8 +24,7 @@
 {% block scripts %}
 <script>
 const API = {
-  token: () => sessionStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
 };
@@ -33,26 +32,16 @@ const API = {
 let isAdmin = false;
 
 (async () => {
-  // sessionStorageにトークンがない場合はCookie認証を試みてsessionStorageを同期する
-  if (!API.token()) {
-    const res = await fetch('/api/auth/me');
-    if (!res.ok) { window.location.href = '/login'; return; }
-    const me = await res.json();
-    if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
-    // CookieのJWTをsessionStorageに同期してAPI呼び出しを統一する
-    sessionStorage.setItem('hb_token', me.access_token);
-    isAdmin = me.role === 'admin';
-  } else if (sessionStorage.getItem('hb_needs_setup') === 'true') {
-    window.location.href = '/setup-username'; return;
-  } else {
-    const res = await API.get('/api/auth/me');
-    if (res.ok) { const me = await res.json(); isAdmin = me.role === 'admin'; }
-  }
+  const me = await fetchMe();
+  if (!me) { window.location.href = '/login'; return; }
+  if (me.needs_username_setup) { window.location.href = '/setup-username'; return; }
+  isAdmin = me.role === 'admin';
   initNavbar();
   loadMyEnvs();
 })();
 
 const MAX_ENVS = {{ settings.MAX_ENVS_PER_USER }};
+const WEB_POLL_INTERVAL_MS = {{ settings.WEB_POLL_INTERVAL_SECONDS }} * 1000;
 let myEnvs = [];
 const timers = {};
 
@@ -103,7 +92,7 @@ function renderMyEnvs() {
       <div class="env-timer" id="timer-${env.id}">
         ${env.status === 'starting' ? `
         <span class="spinner-inline"></span>
-        <span class="env-starting-label">&#x23F3; VM起動中...</span>
+        <span class="env-starting-label">&#x23F3; ${env.copy_progress_percent != null ? `rootfsコピー中... (${env.copy_progress_percent}%)` : env.is_copy_waiting ? 'VM起動待機中...' : 'VM起動中...'}</span>
         ` : env.is_unlimited ? `
         <span class="unlimited-badge">&#x267E; 無制限</span>
         ` : `
@@ -266,6 +255,6 @@ async function stopEnv(envId, btn) {
 
 // copyToClipboard / copyIP は navbar.html で定義済み
 
-setInterval(loadMyEnvs, 15000);
+setInterval(loadMyEnvs, WEB_POLL_INTERVAL_MS);
 </script>
 {% endblock %}

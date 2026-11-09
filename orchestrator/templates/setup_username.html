@@ -38,25 +38,13 @@
 // リダイレクト元のパス（?next=...）を検証して保持する
 const NEXT_PATH = safeNextPath(new URLSearchParams(location.search).get('next'));
 
-// Cookie経由でもトークンを取得できる（OAuthコールバック後はCookieのみセットされる）
-let token = sessionStorage.getItem('hb_token');
-
 (async () => {
-  // /api/auth/me はCookie・Bearerどちらも受け付けるため、まず認証確認
-  const meRes = await fetch('/api/auth/me', {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const meRes = await fetch('/api/auth/me');
   if (!meRes.ok) { window.location.href = '/login'; return; }
   const me = await meRes.json();
 
   // ユーザ名設定不要なら next または / へ
   if (!me.needs_username_setup) { window.location.href = NEXT_PATH || '/'; return; }
-
-  // OAuthユーザ: CookieのJWTをsessionStorageに同期
-  if (!token && me.access_token) {
-    token = me.access_token;
-    sessionStorage.setItem('hb_token', token);
-  }
 
   const input = document.getElementById('username');
   if (me.username) {
@@ -86,9 +74,7 @@ document.getElementById('username').addEventListener('input', (e) => {
   }
   status.textContent = '確認中...'; status.style.color = 'var(--text2)';
   checkTimer = setTimeout(async () => {
-    const res = await fetch(`/api/users/check-username-for-setup?username=${encodeURIComponent(val)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(`/api/users/check-username-for-setup?username=${encodeURIComponent(val)}`);
     const data = await res.json();
     if (data.available) {
       status.textContent = '✓ 使用可能';
@@ -110,18 +96,13 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   btn.querySelector('.btn-text').textContent = '設定中...';
 
   const username = document.getElementById('username').value.trim();
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch('/api/users/setup-username', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username }),
   });
 
   if (res.ok) {
-    const data = await res.json();
-    sessionStorage.setItem('hb_token', data.access_token);
-    sessionStorage.removeItem('hb_needs_setup');
     window.location.href = NEXT_PATH || '/';
   } else {
     const data = await res.json();

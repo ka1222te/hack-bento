@@ -11,10 +11,11 @@ from pydantic import BaseModel
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole
 from deps import require_username_set
-from services.smolvm import start_vm, stop_vm
+from services.smolvm import start_vm, stop_vm, get_copy_progress, is_copy_waiting
 from services.network import allocate_ip, _lock as _ip_lock, _ip_pool
 from services.watchdog import destroy_env, claim_env_for_stop
 from services.guacamole import build_guac_iframe_url
+from services.global_settings import get_global_settings
 from services import vm_assets
 from config import settings
 
@@ -37,6 +38,10 @@ class AttackMachineResponse(BaseModel):
     seconds_remaining: int
     timeout_minutes: int
     is_unlimited: bool
+    # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
+    copy_progress_percent: Optional[int] = None
+    # VM_ROOTFS_COPY_CONCURRENCYの空きが無く、他のVMのコピー完了を順番待ちしている間はTrue。
+    is_copy_waiting: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -47,11 +52,17 @@ class AttackMachineStatusResponse(BaseModel):
     rootfs_error: Optional[str] = None
     # rootfs_status == "ready" の場合のみ起動・操作可能
     machine: Optional[AttackMachineResponse] = None
+    # machine が None になった直後（watchdogのタイムアウト処理でstoppedになった等）に、
+    # 「起動に失敗した」のではなく「タイムアウトで打ち切られた」ことをUIが案内できるように、
+    # 直近でstoppedになった環境のlast_errorを一度だけ返す（machineがNoneの時のみ設定）。
+    last_stopped_error: Optional[str] = None
 
 
 def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineResponse:
     now = datetime.utcnow()
     remaining = max(0, int((env.expires_at - now).total_seconds()))
+    progress = get_copy_progress(env.id)
+    copy_progress_percent = int(progress[0] * 100 / progress[1]) if progress and progress[1] > 0 else None
     return AttackMachineResponse(
         id=env.id,
         ip_address=env.ip_address,
@@ -61,6 +72,8 @@ def _to_response(env: Environment, timeout_minutes: int) -> AttackMachineRespons
         seconds_remaining=remaining,
         timeout_minutes=timeout_minutes,
         is_unlimited=env.is_unlimited,
+        copy_progress_percent=copy_progress_percent,
+        is_copy_waiting=is_copy_waiting(env.id),
     )
 
 
@@ -99,9 +112,23 @@ async def get_my_attack_machine(
     )
     env = env_result.scalar_one_or_none()
     machine = None
+    last_stopped_error = None
     if env is not None:
         img_timeout = image.timeout_minutes if image.timeout_minutes is not None else settings.ATTACK_MACHINE_TIMEOUT_MINUTES
         machine = _to_response(env, img_timeout)
+    else:
+        # starting/running/stopping が無い場合、直近でstoppedになった環境の
+        # last_error（タイムアウトで打ち切られた等）があればUIに伝える。
+        last_result = await db.execute(
+            select(Environment.last_error).where(
+                Environment.user_id == user.id,
+                Environment.image_id == image.id,
+                Environment.status == EnvStatus.stopped,
+            ).order_by(Environment.started_at.desc()).limit(1)
+        )
+        row = last_result.first()
+        if row is not None:
+            last_stopped_error = row[0]
     # Attack Machine 用の Image レコードは rootfs ビルド開始前（register_attack_machine_image）
     # に作られるため、Image の存在だけでは rootfs の実体が揃っているとは限らない。
     # 常に実際のビルド状況（vm_assets.attack_rootfs_build_status）を返す必要がある
@@ -111,6 +138,7 @@ async def get_my_attack_machine(
         rootfs_status=vm_assets.attack_rootfs_build_status,
         rootfs_error=vm_assets.attack_rootfs_build_error,
         machine=machine,
+        last_stopped_error=last_stopped_error,
     )
 
 
@@ -193,14 +221,30 @@ async def start_attack_machine(
     # ここでの commit は env への以降の変更（なければ no-op）を確定させる保険。
 
     try:
+        pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
+        # watchdog の起動タイムアウト判定はこの時刻（実際にstart_vm()の処理が
+        # 始まる直前）を基準にする。started_at（IP確保・同時起動数チェック等の
+        # キュー待ち時間を含む）を基準にすると、複数VM同時起動時に後発のVMが
+        # _lock待ちやディスクI/O輻輳での待ち時間を含めて不公平にタイムアウトして
+        # しまうため（実際に発生）。
+        env.vm_processing_started_at = datetime.utcnow()
+        # get_global_settings の SELECT でトランザクションが開いたまま、この先の
+        # start_vm()（Firecracker起動、数十秒かかる）を実行すると、その間ずっと
+        # このDBセッション（＝プールからのコネクション）が「idle in transaction」
+        # のまま居座り続ける。複数のVM起動が重なるとDB接続プールを食い尽くして
+        # 全リクエストがハングする事故が起きたため、ここで明示的にコミットして
+        # トランザクションを終了し、コネクションを早期に解放する。
+        await db.commit()
         vm_result = await start_vm(
             image=image,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
+            pids_limit=pids_limit,
+            env_id=env.id,
         )
     except Exception as e:
-        logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}")
+        logger.error(f"Attack Machine の起動に失敗しました env_id={env.id}: {e}", exc_info=True)
         await destroy_env(env)
         await db.commit()
         raise HTTPException(status_code=500, detail="Attack Machine の起動に失敗しました")

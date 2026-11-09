@@ -38,13 +38,11 @@
 const TARGET_USER = {{ username | tojson }};
 
 const API = {
-  token: () => sessionStorage.getItem('hb_token'),
-  headers: () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${API.token()}` }),
+  headers: () => ({ 'Content-Type': 'application/json' }),
   async get(url) { return fetch(url, { headers: API.headers() }); },
   async post(url, body) { return fetch(url, { method: 'POST', headers: API.headers(), body: JSON.stringify(body || {}) }); },
 };
 
-if (!API.token()) { window.location.href = '/login'; }
 initNavbar();
 
 const diffLabel = { none: '—', easy: 'Easy', medium: 'Medium', hard: 'Hard', insane: 'Insane' };
@@ -54,17 +52,15 @@ const diffColor = { none: 'diff-none', easy: 'diff-easy', medium: 'diff-medium',
 let myEnvs = [];
 
 async function init() {
+  const meData = await fetchMe();
+  if (!meData) { window.location.href = '/login'; return; }
   // アバター（頭文字）
   const av = document.getElementById('profile-avatar');
   av.textContent = TARGET_USER ? TARGET_USER[0].toUpperCase() : '?';
 
-  // 自分のプロフィールかどうか（/api/auth/me で判定）
-  const meRes2 = await API.get('/api/auth/me');
-  if (meRes2.ok) {
-    const meData = await meRes2.json();
-    if (meData.username === TARGET_USER) {
-      document.getElementById('profile-sub').textContent = 'あなたのプロフィール';
-    }
+  // 自分のプロフィールかどうか
+  if (meData.username === TARGET_USER) {
+    document.getElementById('profile-sub').textContent = 'あなたのプロフィール';
   }
 
   const [imgRes, envRes] = await Promise.all([

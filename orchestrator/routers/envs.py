@@ -10,14 +10,41 @@ from typing import Optional
 from database import get_db, get_db_readonly
 from models import Environment, EnvStatus, Image, User, UserRole, RootfsConversionStatus
 from deps import get_current_user, require_username_set
-from services.smolvm import start_vm, stop_vm
+from services.smolvm import start_vm, stop_vm, get_copy_progress, is_copy_waiting
 from services.network import allocate_ip, release_ip, _lock as _ip_lock
 from services.watchdog import destroy_env, claim_env_for_stop
+from services.global_settings import get_global_settings
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/envs", tags=["environments"])
+
+
+# VM起動失敗の原因分類: smolvm.py/network.py が投げる例外メッセージ（キーワード）
+# → 一般ユーザー向けの分かりやすい文言。文字列全文は一致させずキーワード部分一致で
+# 判定する（内部のメッセージ文言が多少変わっても分類が壊れないようにするため）。
+_START_VM_ERROR_PATTERNS: list[tuple[str, str]] = [
+    ("/dev/kvm", "ホストでKVMが有効になっていません。管理者に連絡してください。"),
+    ("ディスク空き容量が不足", "ホストのディスク容量が不足しています。しばらく待ってから再試行するか、管理者に連絡してください。"),
+    ("ゲストカーネルが見つかりません", "プロジェクトのゲストカーネルファイルが見つかりません。プロジェクト編集画面でカーネルを再登録してください。"),
+    ("rootfs が見つかりません", "プロジェクトのrootfsファイルが見つかりません。プロジェクト編集画面でrootfsを再登録してください。"),
+    ("がタイムアウトしました", "VMの起動がタイムアウトしました。しばらく待ってから再試行してください。"),
+    ("以内に応答しませんでした", "VMの起動がタイムアウトしました。しばらく待ってから再試行してください。"),
+    ("ブリッジ", "ホストのネットワーク設定に問題があります。管理者に連絡してください。"),
+    ("IP_POOL", "ホストのネットワーク設定に問題があります。管理者に連絡してください。"),
+]
+
+
+def _classify_start_vm_error(exc: Exception) -> str:
+    """start_vm() が投げた例外を一般ユーザー向けの分かりやすい文言に分類する。
+    どのパターンにも当たらない場合は原因不明として扱う。実際の例外内容は
+    呼び出し元が必ずログに出す（ここでは出さない）。"""
+    msg = str(exc)
+    for keyword, user_message in _START_VM_ERROR_PATTERNS:
+        if keyword in msg:
+            return user_message
+    return "VM起動に失敗しました（原因不明）。しばらく待ってから再試行するか、管理者に連絡してください。"
 
 
 class EnvResponse(BaseModel):
@@ -35,6 +62,13 @@ class EnvResponse(BaseModel):
     is_unlimited: bool
     warning: bool
     is_attack_machine: bool
+    last_error: Optional[str] = None
+    # rootfsのwritableコピー中のみ設定される（コピー中でない場合はNone）。
+    copy_progress_percent: Optional[int] = None
+    # VM_ROOTFS_COPY_CONCURRENCYの空きが無く、他のVMのコピー完了を順番待ちしている間はTrue。
+    # UIが「VM起動中」（コピー実行中・Firecracker起動処理中）と「VM起動待機中」
+    # （順番待ち）を区別して表示するために使う。
+    is_copy_waiting: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +79,8 @@ def _to_response(env: Environment) -> EnvResponse:
     img_timeout = env.image.timeout_minutes if env.image else None
     timeout = img_timeout if img_timeout is not None else settings.DEFAULT_TIMEOUT_MINUTES
     owner = env.image.owner.username if env.image and env.image.owner else None
+    progress = get_copy_progress(env.id)
+    copy_progress_percent = int(progress[0] * 100 / progress[1]) if progress and progress[1] > 0 else None
     return EnvResponse(
         id=env.id,
         image_id=env.image_id,
@@ -60,6 +96,9 @@ def _to_response(env: Environment) -> EnvResponse:
         is_unlimited=env.is_unlimited,
         warning=not env.is_unlimited and remaining < settings.TIMEOUT_WARNING_MINUTES * 60,
         is_attack_machine=env.image.is_attack_machine if env.image else False,
+        last_error=env.last_error,
+        copy_progress_percent=copy_progress_percent,
+        is_copy_waiting=is_copy_waiting(env.id),
     )
 
 
@@ -79,6 +118,31 @@ async def list_my_envs(
     )
     envs = result.scalars().all()
     return [_to_response(e) for e in envs]
+
+
+@router.get("/by-id/{env_id}", response_model=EnvResponse)
+async def get_env(
+    env_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_readonly),
+):
+    """starting/running/stopping に限らず、stopped になった直後の環境も取得できる。
+
+    list_my_envs（一覧）は starting/running/stopping のみを返すため、watchdog の
+    タイムアウト処理で stopped になった瞬間、ポーリング中のUIからは「対象が消えた」
+    ようにしか見えず、last_error（タイムアウトで打ち切られた等の理由）を伝えられない。
+    UIは一覧から対象が消えたタイミングでこのエンドポイントを呼び、last_error の
+    有無で「起動に失敗した」のか「タイムアウトで打ち切られた」のかを案内する。
+    """
+    result = await db.execute(
+        select(Environment)
+        .options(selectinload(Environment.image).selectinload(Image.owner))
+        .where(Environment.id == env_id, Environment.user_id == user.id)
+    )
+    env = result.scalar_one_or_none()
+    if env is None:
+        raise HTTPException(status_code=404, detail="環境が見つかりません")
+    return _to_response(env)
 
 
 @router.post("/{image_id}/start", response_model=EnvResponse, status_code=status.HTTP_201_CREATED)
@@ -160,17 +224,36 @@ async def start_env(
         raise HTTPException(status_code=503, detail="利用可能なIPアドレスがありません")
 
     try:
+        pids_limit = image.pids_limit or (await get_global_settings(db)).vm_pids_max
+        # watchdog の起動タイムアウト判定はこの時刻（実際にstart_vm()の処理が
+        # 始まる直前）を基準にする。started_at（IP確保・同時起動数チェック等の
+        # キュー待ち時間を含む）を基準にすると、複数VM同時起動時に後発のVMが
+        # _lock待ちやディスクI/O輻輳での待ち時間を含めて不公平にタイムアウトして
+        # しまうため（実際に発生）。
+        env.vm_processing_started_at = datetime.utcnow()
+        # get_global_settings の SELECT でトランザクションが開いたまま、この先の
+        # start_vm()（Firecracker起動、数十秒かかる）を実行すると、その間ずっと
+        # このDBセッション（＝プールからのコネクション）が「idle in transaction」
+        # のまま居座り続ける。複数のVM起動が重なるとDB接続プールを食い尽くして
+        # 全リクエストがハングする事故が起きたため、ここで明示的にコミットして
+        # トランザクションを終了し、コネクションを早期に解放する。
+        await db.commit()
         vm_result = await start_vm(
             image=image,
             ip=ip,
             cpu=image.cpu_limit,
             memory_mb=image.memory_limit_mb,
+            pids_limit=pids_limit,
+            env_id=env.id,
         )
     except Exception as e:
-        logger.error(f"start_vm failed env_id={env.id}: {e}")
+        logger.error(f"start_vm failed env_id={env.id}: {e}", exc_info=True)
         await destroy_env(env)
         await db.commit()
-        raise HTTPException(status_code=500, detail="VM起動に失敗しました")
+        user_message = _classify_start_vm_error(e)
+        if user.role == UserRole.admin:
+            user_message = f"{user_message}\n詳細: {e}"
+        raise HTTPException(status_code=500, detail=user_message)
 
     try:
         # vm_id は取得後すぐに確定させる（status=starting の行自体は allocate_ip 内で
